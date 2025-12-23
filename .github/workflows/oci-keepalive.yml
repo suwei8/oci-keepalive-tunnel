@@ -1,0 +1,222 @@
+name: OCI Keepalive via Tunnel
+
+on:
+  schedule:
+    # 每 2 小时执行一次
+    - cron: "0 */2 * * *"
+  workflow_dispatch:
+    inputs:
+      target_index:
+        description: '指定主机索引 (0-19, 留空=全部)'
+        required: false
+        default: ''
+
+jobs:
+  # 每个主机作为独立 Job (使用索引避免暴露主机名)
+  keepalive:
+    name: "Host ${{ matrix.index }}"
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      max-parallel: 10
+      matrix:
+        # 使用索引避免在 YAML 中硬编码主机信息 (支持最多 30 台)
+        index: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29]
+
+    steps:
+      - name: Get host info from secrets
+        id: host
+        env:
+          HOSTS_CONFIG: ${{ secrets.HOSTS_CONFIG }}
+          HOST_INDEX: ${{ matrix.index }}
+          TARGET_INDEX: ${{ github.event.inputs.target_index }}
+        run: |
+          # 如果指定了目标索引且不匹配，跳过
+          if [ -n "$TARGET_INDEX" ] && [ "$TARGET_INDEX" != "$HOST_INDEX" ]; then
+            echo "skip=true" >> $GITHUB_OUTPUT
+            echo "Skipping index $HOST_INDEX (target: $TARGET_INDEX)"
+            exit 0
+          fi
+          
+          # 从 secrets 获取主机信息
+          HOST_NAME=$(echo "$HOSTS_CONFIG" | jq -r ".[$HOST_INDEX].name")
+          SSH_HOST=$(echo "$HOSTS_CONFIG" | jq -r ".[$HOST_INDEX].ssh_host")
+          
+          if [ "$HOST_NAME" = "null" ] || [ -z "$HOST_NAME" ]; then
+            echo "skip=true" >> $GITHUB_OUTPUT
+            echo "No host at index $HOST_INDEX"
+            exit 0
+          fi
+          
+          echo "skip=false" >> $GITHUB_OUTPUT
+          echo "name=$HOST_NAME" >> $GITHUB_OUTPUT
+          echo "ssh_host=$SSH_HOST" >> $GITHUB_OUTPUT
+          echo "Host: $HOST_NAME ($SSH_HOST)"
+
+      - name: Checkout repository
+        if: steps.host.outputs.skip != 'true'
+        uses: actions/checkout@v4
+
+      - name: Install cloudflared
+        if: steps.host.outputs.skip != 'true'
+        run: |
+          curl -sL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o /tmp/cloudflared
+          chmod +x /tmp/cloudflared
+          sudo mv /tmp/cloudflared /usr/local/bin/cloudflared
+
+      - name: Setup SSH
+        if: steps.host.outputs.skip != 'true'
+        run: |
+          mkdir -p ~/.ssh
+          cat >> ~/.ssh/config << 'EOF'
+          Host *
+            StrictHostKeyChecking no
+            UserKnownHostsFile /dev/null
+            LogLevel ERROR
+          EOF
+          sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+
+      - name: Run keepalive
+        if: steps.host.outputs.skip != 'true'
+        env:
+          SSH_USERNAME: ${{ secrets.SSH_USERNAME }}
+          SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }}
+          HOST_NAME: ${{ steps.host.outputs.name }}
+          SSH_HOST: ${{ steps.host.outputs.ssh_host }}
+        run: |
+          echo "=========================================="
+          echo "Starting keepalive for: $HOST_NAME"
+          echo "=========================================="
+          
+          # 启动 Cloudflare Tunnel
+          cloudflared access ssh --hostname "$SSH_HOST" --url "ssh://127.0.0.1:2222" &
+          TUNNEL_PID=$!
+          sleep 5
+          
+          if ! kill -0 $TUNNEL_PID 2>/dev/null; then
+            echo "❌ Tunnel failed to start"
+            exit 1
+          fi
+          echo "✅ Tunnel established"
+          
+          SSH_OPTS="-o ConnectTimeout=30 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR"
+          
+          # 同步仓库
+          if sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -p 2222 "${SSH_USERNAME}@127.0.0.1" '
+            REPO_DIR="$HOME/oci-keepalive"
+            REPO_URL="https://github.com/suwei8/oci-keepalive-tunnel.git"
+            if [ -d "$REPO_DIR/.git" ]; then
+              cd "$REPO_DIR" && git pull --quiet 2>/dev/null || (git fetch --all && git reset --hard origin/main)
+            else
+              rm -rf "$REPO_DIR"
+              git clone --depth 1 "$REPO_URL" "$REPO_DIR"
+            fi
+          '; then
+            echo "✅ Repository synced"
+          else
+            echo "❌ Failed to sync repository"
+            kill $TUNNEL_PID 2>/dev/null || true
+            exit 1
+          fi
+          
+          # 执行保活脚本
+          if timeout 720 sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -p 2222 "${SSH_USERNAME}@127.0.0.1" \
+            "cd \$HOME/oci-keepalive && python3 scripts/remote_keepalive.py --hostname '$HOST_NAME'"; then
+            echo "✅ Keepalive completed successfully"
+            
+            # 回传预测结果
+            mkdir -p predictions
+            SAFE_NAME=$(echo "$HOST_NAME" | tr ' ' '_')
+            sshpass -p "$SSH_PASSWORD" scp $SSH_OPTS -P 2222 \
+              "${SSH_USERNAME}@127.0.0.1:/tmp/prediction_result.json" \
+              "predictions/${SAFE_NAME}.json" 2>/dev/null || echo "No prediction file"
+          else
+            echo "❌ Keepalive script failed"
+            kill $TUNNEL_PID 2>/dev/null || true
+            exit 1
+          fi
+          
+          kill $TUNNEL_PID 2>/dev/null || true
+          echo "✅ Done"
+
+      - name: Upload prediction artifact
+        if: success() && steps.host.outputs.skip != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: prediction-${{ matrix.index }}
+          path: predictions/*.json
+          if-no-files-found: ignore
+          retention-days: 1
+
+  # 收集所有预测结果
+  collect:
+    name: Collect Predictions
+    needs: keepalive
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download all prediction artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: prediction-*
+        continue-on-error: true
+
+      - name: Merge predictions to CSV
+        run: |
+          CSV_FILE="predictions/predictions.csv"
+          mkdir -p predictions
+          
+          if [ ! -f "$CSV_FILE" ]; then
+            echo "timestamp,hostname,issue,d1,d2,d3,model_type" > "$CSV_FILE"
+          fi
+          
+          if [ -d artifacts ]; then
+            find artifacts -name "*.json" -type f | while read json_file; do
+              if [ -f "$json_file" ]; then
+                timestamp=$(jq -r '.timestamp' "$json_file")
+                hostname=$(jq -r '.hostname' "$json_file")
+                issue=$(jq -r '.issue' "$json_file")
+                d1=$(jq -r '.d1' "$json_file")
+                d2=$(jq -r '.d2' "$json_file")
+                d3=$(jq -r '.d3' "$json_file")
+                model_type=$(jq -r '.model_type' "$json_file")
+                echo "${timestamp},${hostname},${issue},${d1},${d2},${d3},${model_type}" >> "$CSV_FILE"
+                echo "Added: $hostname -> $d1 $d2 $d3"
+              fi
+            done
+          fi
+          
+          if [ -f "$CSV_FILE" ] && [ $(wc -l < "$CSV_FILE") -gt 1 ]; then
+            head -1 "$CSV_FILE" > /tmp/csv_header.tmp
+            tail -n +2 "$CSV_FILE" | sort -t',' -k1 -r > /tmp/csv_body.tmp
+            cat /tmp/csv_header.tmp /tmp/csv_body.tmp > "$CSV_FILE"
+            rm -f /tmp/csv_header.tmp /tmp/csv_body.tmp
+          fi
+
+      - name: Commit predictions
+        run: |
+          if [ -f predictions/predictions.csv ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add predictions/predictions.csv
+            git diff --staged --quiet || git commit -m "Update predictions $(date -u +%Y-%m-%d)"
+            git push || echo "Nothing to push"
+          fi
+
+      - name: Summary
+        run: |
+          echo "## Keepalive Results" >> $GITHUB_STEP_SUMMARY
+          if [ -f predictions/predictions.csv ]; then
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            head -6 predictions/predictions.csv >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          fi
