@@ -536,6 +536,40 @@ def main(hostname: str = None):
         print(f"主机名称: {hostname}")
     print("=" * 60)
     
+    # 检查并清理重复进程
+    current_pid = os.getpid()
+    print(f"\n[启动] 当前进程 PID: {current_pid}")
+    print("[启动] 检查是否存在重复的保活进程...")
+    
+    try:
+        # 查找所有 remote_keepalive.py 进程
+        result = subprocess.run(
+            ["pgrep", "-f", "remote_keepalive.py"],
+            capture_output=True, text=True
+        )
+        if result.returncode == 0:
+            pids = [int(p.strip()) for p in result.stdout.strip().split('\n') if p.strip()]
+            other_pids = [p for p in pids if p != current_pid]
+            
+            if other_pids:
+                print(f"[启动] ⚠️ 发现 {len(other_pids)} 个重复进程: {other_pids}")
+                for pid in other_pids:
+                    try:
+                        os.kill(pid, 9)  # SIGKILL
+                        print(f"[启动] ✅ 已终止进程 {pid}")
+                    except ProcessLookupError:
+                        print(f"[启动] 进程 {pid} 已不存在")
+                    except PermissionError:
+                        print(f"[启动] ⚠️ 无权限终止进程 {pid}")
+                # 等待进程清理
+                time.sleep(1)
+            else:
+                print("[启动] ✅ 无重复进程")
+        else:
+            print("[启动] ✅ 无重复进程")
+    except Exception as e:
+        print(f"[启动] 检查进程时出错: {e}")
+    
     # 初始系统状态
     os.system("uname -a")
     os.system("uptime")
