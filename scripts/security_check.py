@@ -97,6 +97,12 @@ class SecurityChecker:
                             if '/usr/bin/python3' in cmd and 'networkd-dispatcher' in line:
                                 continue
                             
+                            # 跳过浏览器辅助进程 (Chromium/Chrome)
+                            if '--type=utility' in cmd or '--type=renderer' in cmd or '--type=gpu' in cmd:
+                                continue
+                            if '/proc/self/exe' in cmd and '--type=' in line:
+                                continue
+                            
                             self.add_issue("CRITICAL", f"疑似挖矿进程 (PID: {pid})", cmd)
                             found_suspicious = True
                         break
