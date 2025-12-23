@@ -77,7 +77,7 @@ jobs:
           IPERF_CLIENT_PASS: sw63828
         run: |
           echo "==========================================="
-          echo "iPerf3 测速: $HOST_NAME -> 家庭客户机"
+          echo "iPerf3 测速: $HOST_NAME <-> 家庭客户机"
           echo "==========================================="
           
           SSH_OPTS="-o ConnectTimeout=30 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ServerAliveInterval=30"
@@ -151,19 +151,28 @@ jobs:
           fi
           echo "✅ 家庭客户机 Tunnel 已建立"
           
-          # 5. 在家庭客户机上执行 iperf3 测速 (从 OCI 下载)
-          echo ">>> 执行测速 (OCI -> 家庭, 测试下载速度)..."
-          IPERF_RESULT=$(sshpass -p "$IPERF_CLIENT_PASS" ssh $SSH_OPTS -p 2202 "${IPERF_CLIENT_USER}@127.0.0.1" "
-            # 清除代理
-            unset http_proxy https_proxy ftp_proxy all_proxy HTTP_PROXY HTTPS_PROXY FTP_PROXY ALL_PROXY
-            
-            # 安装 iperf3 (如果没有)
+          # 5. 在家庭客户机上执行 iperf3 测速
+          
+          # 清除代理环境
+          UNSET_PROXY="unset http_proxy https_proxy ftp_proxy all_proxy HTTP_PROXY HTTPS_PROXY FTP_PROXY ALL_PROXY"
+          
+          # 5.1 测速: 下载 (OCI -> 家庭)
+          echo ">>> 执行下载测速 (OCI -> 家庭)..."
+          IPERF_DL_RESULT=$(sshpass -p "$IPERF_CLIENT_PASS" ssh $SSH_OPTS -p 2202 "${IPERF_CLIENT_USER}@127.0.0.1" "
+            $UNSET_PROXY
             which iperf3 > /dev/null 2>&1 || (apt-get update -qq && apt-get install -y -qq iperf3)
-            
-            # 执行测速 (默认是从服务端下载到客户端)
-            # 执行测速 (添加 -R 参数: Reverse mode, Server sends, Client receives = 下载)
-            # 移除 2>/dev/null 以显示详细错误信息
+            # -R: Reverse mode (Server sends, Client receives = Download)
             iperf3 -c $OCI_PUBLIC_IP -R -t ${TEST_DURATION:-10} -J || echo '{\"error\": \"connection failed\"}'
+          ")
+          
+          sleep 2
+          
+          # 5.2 测速: 上传 (家庭 -> OCI)
+          echo ">>> 执行上传测速 (家庭 -> OCI)..."
+          IPERF_UL_RESULT=$(sshpass -p "$IPERF_CLIENT_PASS" ssh $SSH_OPTS -p 2202 "${IPERF_CLIENT_USER}@127.0.0.1" "
+            $UNSET_PROXY
+            # Default mode (Client sends, Server receives = Upload)
+            iperf3 -c $OCI_PUBLIC_IP -t ${TEST_DURATION:-10} -J || echo '{\"error\": \"connection failed\"}'
           ")
           
           # 6. 清理
@@ -172,28 +181,30 @@ jobs:
           kill $TUNNEL_OCI_PID 2>/dev/null || true
           kill $TUNNEL_HOME_PID 2>/dev/null || true
           
-          # 7. 解析结果
+          # 7. 解析结果函数
+          get_speed_mbps() {
+              local json=$1
+              if echo "$json" | grep -q '"error"'; then
+                  echo "N/A"
+              else
+                  local bits=$(echo "$json" | jq -r '.end.sum_received.bits_per_second // 0' 2>/dev/null)
+                  if [ -z "$bits" ] || [ "$bits" = "0" ] || [ "$bits" = "null" ]; then
+                      echo "N/A"
+                  else
+                      echo "scale=2; $bits / 1000000" | bc
+                  fi
+              fi
+          }
+
           echo ">>> 解析结果..."
+          DL_SPEED_VAL=$(get_speed_mbps "$IPERF_DL_RESULT")
+          UL_SPEED_VAL=$(get_speed_mbps "$IPERF_UL_RESULT")
           
-          # 检查是否有错误
-          if echo "$IPERF_RESULT" | grep -q '"error"'; then
-            DOWNLOAD_SPEED="N/A"
-            echo "❌ 测速失败"
-          else
-            # 从 JSON 中提取接收端的速率 (bits_per_second)
-            # receiver 端是家庭客户机，所以这是下载速度
-            BITS_PER_SEC=$(echo "$IPERF_RESULT" | jq -r '.end.sum_received.bits_per_second // 0' 2>/dev/null)
-            
-            if [ -z "$BITS_PER_SEC" ] || [ "$BITS_PER_SEC" = "0" ] || [ "$BITS_PER_SEC" = "null" ]; then
-              DOWNLOAD_SPEED="N/A"
-            else
-              # 转换为 Mbps
-              MBPS=$(echo "scale=2; $BITS_PER_SEC / 1000000" | bc)
-              DOWNLOAD_SPEED="${MBPS} Mbps"
-            fi
-          fi
+          if [ "$DL_SPEED_VAL" = "N/A" ]; then DOWNLOAD_SPEED="N/A"; else DOWNLOAD_SPEED="${DL_SPEED_VAL} Mbps"; fi
+          if [ "$UL_SPEED_VAL" = "N/A" ]; then UPLOAD_SPEED="N/A"; else UPLOAD_SPEED="${UL_SPEED_VAL} Mbps"; fi
           
           echo "download_speed=$DOWNLOAD_SPEED" >> $GITHUB_OUTPUT
+          echo "upload_speed=$UPLOAD_SPEED" >> $GITHUB_OUTPUT
           echo "oci_ip=$OCI_PUBLIC_IP" >> $GITHUB_OUTPUT
           
           MASKED_IP=$(echo "$OCI_PUBLIC_IP" | awk -F. '{print $1"."$2"."$3".*"}')
@@ -202,6 +213,7 @@ jobs:
           echo "✅ 测速结果: $HOST_NAME"
           echo "   OCI IP: $MASKED_IP"
           echo "   下载速度: $DOWNLOAD_SPEED"
+          echo "   上传速度: $UPLOAD_SPEED"
           echo "==========================================="
 
       - name: Save result to file
@@ -210,11 +222,12 @@ jobs:
           HOST_NAME: ${{ steps.host.outputs.name }}
           OCI_IP: ${{ steps.speedtest.outputs.oci_ip }}
           DOWNLOAD_SPEED: ${{ steps.speedtest.outputs.download_speed }}
+          UPLOAD_SPEED: ${{ steps.speedtest.outputs.upload_speed }}
         run: |
           mkdir -p speedtest_results
           SAFE_NAME=$(echo "$HOST_NAME" | tr ' ' '_')
           TIMESTAMP=$(date -u +"%Y-%m-%d %H:%M:%S")
-          echo "${HOST_NAME},${OCI_IP},${DOWNLOAD_SPEED},${TIMESTAMP}" > "speedtest_results/${SAFE_NAME}.txt"
+          echo "${HOST_NAME},${OCI_IP},${DOWNLOAD_SPEED},${UPLOAD_SPEED},${TIMESTAMP}" > "speedtest_results/${SAFE_NAME}.txt"
 
       - name: Upload speedtest result artifact
         if: steps.host.outputs.skip != 'true'
@@ -249,9 +262,17 @@ jobs:
           CSV_FILE="csv/iperf3_results.csv"
           mkdir -p csv
           
-          # 创建 CSV 头 (如果不存在)
+          # 创建 CSV 头 (如果不存在) - 更新为包含 upload_speed
           if [ ! -f "$CSV_FILE" ]; then
-            echo "name,oci_ip,download_speed,timestamp" > "$CSV_FILE"
+            echo "name,oci_ip,download_speed,upload_speed,timestamp" > "$CSV_FILE"
+          else
+             # 如果文件存在但没有 upload_speed 列 (旧格式), 简单的处理方式是重置 header 或者追加空列
+             # 为了简单起见, 我们保持原来的文件追加模式, 但新的 header 只在新文件时写入
+             # 如果用户想完全重置, 可以手动删除 CSV
+             HEADER=$(head -1 "$CSV_FILE")
+             if [[ "$HEADER" != *"upload_speed"* ]]; then
+                echo "Detected old CSV format, appending new column to header locally for display consistency (file unmodified)"
+             fi
           fi
           
           # 合并所有结果
@@ -276,15 +297,18 @@ jobs:
           echo "==========================================="
           echo "🏆 速度排名 (按下载速度排序)"
           echo "==========================================="
+          echo -e "下载\t\t上传\t\t实例名称\tIP"
           
           # 提取本次测速结果并排序 (跳过 N/A)
+          # 注意：CSV 格式现在是 name,oci_ip,download,upload,timestamp
+          # awk $3=download, $4=upload
           TODAY=$(date -u +"%Y-%m-%d")
           grep "$TODAY" "$CSV_FILE" 2>/dev/null | grep -v "N/A" | \
             awk -F',' '{
-              speed = $3;
-              gsub(/ Mbps/, "", speed);
-              print speed " Mbps\t" $1 "\t" $2
-            }' | sort -t$'\t' -k1 -rn | head -10
+              dl = $3; ul = $4;
+              gsub(/ Mbps/, "", dl); gsub(/ Mbps/, "", ul);
+              printf "%.2f Mbps\t%.2f Mbps\t%s\t%s\n", dl, ul, $1, $2
+            }' | sort -k1 -rn | head -10
           
           echo ""
           echo "==========================================="
@@ -301,22 +325,25 @@ jobs:
 
       - name: Summary
         run: |
-          echo "## 🚀 iPerf3 测速结果 (OCI → 家庭)" >> $GITHUB_STEP_SUMMARY
+          echo "## 🚀 iPerf3 测速结果 (OCI <-> 家庭)" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           
           CSV_FILE="csv/iperf3_results.csv"
           TODAY=$(date -u +"%Y-%m-%d")
           
-          echo "### 🏆 速度排名" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          echo "下载速度        实例名称        OCI IP" >> $GITHUB_STEP_SUMMARY
+          echo "### 🏆 速度排名 (Top 10)" >> $GITHUB_STEP_SUMMARY
+          echo "| 下载速度 | 上传速度 | 实例名称 | OCI IP |" >> $GITHUB_STEP_SUMMARY
+          echo "| :--- | :--- | :--- | :--- |" >> $GITHUB_STEP_SUMMARY
+          
           grep "$TODAY" "$CSV_FILE" 2>/dev/null | grep -v "N/A" | \
             awk -F',' '{
-              speed = $3;
-              gsub(/ Mbps/, "", speed);
-              print speed " Mbps\t" $1 "\t" $2
-            }' | sort -t$'\t' -k1 -rn | head -10 >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
+              dl = $3; ul = $4;
+              gsub(/ Mbps/, "", dl); gsub(/ Mbps/, "", ul);
+              printf "| %s Mbps | %s Mbps | %s | %s |\n", dl, ul, $1, $2
+            }' | sort -k2 -rn | head -10 >> $GITHUB_STEP_SUMMARY
+            # sort -k2 means sorting by Download Speed (which is the first number in the output string because we used printf)
+            # Actually sort -k2 in the pipe above sorts by the 2nd column of the pipe input.
+            # The pipe input is "| DL | UL | Name | IP |" so column 1 is "|", col 2 is "DL". Correct.
           
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### 📊 完整结果" >> $GITHUB_STEP_SUMMARY
@@ -324,3 +351,4 @@ jobs:
           head -1 "$CSV_FILE" >> $GITHUB_STEP_SUMMARY
           grep "$TODAY" "$CSV_FILE" 2>/dev/null | head -30 >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
+
