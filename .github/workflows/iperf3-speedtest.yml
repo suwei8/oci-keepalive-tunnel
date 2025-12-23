@@ -97,8 +97,8 @@ jobs:
           # 2. 在 OCI 实例上安装 iperf3 并获取公网 IP
           echo ">>> 配置 OCI 实例..."
           OCI_PUBLIC_IP=$(sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -p 2222 "${SSH_USERNAME}@127.0.0.1" '
-            # 安装 iperf3
-            which iperf3 > /dev/null 2>&1 || (apt-get update -qq && apt-get install -y -qq iperf3)
+            # 安装 iperf3 (使用 sudo)
+            which iperf3 > /dev/null 2>&1 || (sudo apt-get update -qq && sudo apt-get install -y -qq iperf3)
             
             # 获取公网 IPv4
             curl -4 -s ip.sb
@@ -115,10 +115,10 @@ jobs:
           echo ">>> 启动 iperf3 服务端..."
           sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -p 2222 "${SSH_USERNAME}@127.0.0.1" '
             # 杀死旧的 iperf3 进程
-            pkill -9 iperf3 2>/dev/null || true
+            sudo pkill -9 iperf3 2>/dev/null || true
             sleep 1
-            # 启动服务端 (监听默认端口 5201)
-            nohup iperf3 -s -D > /dev/null 2>&1
+            # 启动服务端 (监听默认端口 5201, 使用 sudo)
+            sudo nohup iperf3 -s -D > /dev/null 2>&1
             sleep 2
             # 验证服务端启动
             if pgrep -x iperf3 > /dev/null; then
@@ -158,7 +158,7 @@ jobs:
           
           # 6. 清理
           echo ">>> 清理..."
-          sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -p 2222 "${SSH_USERNAME}@127.0.0.1" 'pkill -9 iperf3 2>/dev/null || true'
+          sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -p 2222 "${SSH_USERNAME}@127.0.0.1" 'sudo pkill -9 iperf3 2>/dev/null || true'
           kill $TUNNEL_OCI_PID 2>/dev/null || true
           kill $TUNNEL_HOME_PID 2>/dev/null || true
           
