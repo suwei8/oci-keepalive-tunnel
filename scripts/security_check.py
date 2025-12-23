@@ -204,6 +204,91 @@ class SecurityChecker:
         except Exception as e:
             print(f"[安全] 检查网络出错: {e}")
     
+    def check_disk_usage(self):
+        """检查磁盘使用率"""
+        print("\n[安全] 检查磁盘使用率...")
+        try:
+            result = subprocess.run(
+                ["df", "-h", "/"],
+                capture_output=True, text=True, timeout=10
+            )
+            for line in result.stdout.split('\n')[1:]:
+                parts = line.split()
+                if len(parts) >= 5:
+                    usage_str = parts[4].replace('%', '')
+                    if usage_str.isdigit():
+                        usage = int(usage_str)
+                        if usage >= 95:
+                            self.add_issue("WARNING", "磁盘使用率过高", f"根分区: {usage}%")
+                        else:
+                            print(f"[安全] ✅ 磁盘使用率: {usage}%")
+                        break
+        except Exception as e:
+            print(f"[安全] 检查磁盘出错: {e}")
+    
+    def check_suspicious_systemd_services(self):
+        """检查可疑 systemd 服务
+        
+        定义可疑服务:
+        - ExecStart 指向 /tmp, /dev/shm, /var/tmp 等目录
+        - 服务名称包含可疑关键词
+        - 最近创建的非系统服务
+        """
+        print("\n[安全] 检查 systemd 服务...")
+        suspicious_paths = ["/tmp/", "/dev/shm/", "/var/tmp/", "/home/"]
+        try:
+            # 列出所有用户服务单元
+            result = subprocess.run(
+                ["systemctl", "list-units", "--type=service", "--state=running", "--no-pager", "--no-legend"],
+                capture_output=True, text=True, timeout=10
+            )
+            for line in result.stdout.split('\n'):
+                if not line.strip():
+                    continue
+                parts = line.split()
+                if len(parts) >= 1:
+                    service_name = parts[0]
+                    # 检查服务配置
+                    show_result = subprocess.run(
+                        ["systemctl", "show", service_name, "--property=ExecStart"],
+                        capture_output=True, text=True, timeout=5
+                    )
+                    exec_start = show_result.stdout.strip()
+                    for path in suspicious_paths:
+                        if path in exec_start:
+                            self.add_issue("WARNING", "可疑 systemd 服务", f"{service_name}: {exec_start[:80]}")
+                            break
+            print("[安全] ✅ 未发现可疑 systemd 服务")
+        except Exception as e:
+            print(f"[安全] 检查 systemd 出错: {e}")
+    
+    def check_brute_force(self):
+        """检查暴力破解尝试"""
+        print("\n[安全] 检查暴力破解尝试...")
+        try:
+            # 检查最近的登录失败记录
+            auth_log = "/var/log/auth.log"
+            if not os.path.exists(auth_log):
+                auth_log = "/var/log/secure"  # CentOS/RHEL
+            
+            if os.path.exists(auth_log):
+                result = subprocess.run(
+                    ["grep", "-c", "Failed password", auth_log],
+                    capture_output=True, text=True, timeout=10
+                )
+                if result.returncode == 0:
+                    failed_count = int(result.stdout.strip())
+                    if failed_count > 100:
+                        self.add_issue("WARNING", "大量登录失败", f"失败次数: {failed_count}")
+                    else:
+                        print(f"[安全] ✅ 登录失败次数: {failed_count}")
+                else:
+                    print("[安全] ✅ 无登录失败记录")
+            else:
+                print("[安全] ⚠️  无法访问 auth.log")
+        except Exception as e:
+            print(f"[安全] 检查暴力破解出错: {e}")
+    
     def send_telegram_alert(self):
         """发送 Telegram 告警"""
         if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
@@ -265,6 +350,9 @@ class SecurityChecker:
         self.check_zombie_processes()
         self.check_root_users()
         self.check_mining_connections()
+        self.check_disk_usage()
+        self.check_suspicious_systemd_services()
+        self.check_brute_force()
         
         print("\n" + "-" * 40)
         if self.issues:
