@@ -109,7 +109,10 @@ jobs:
             kill $TUNNEL_OCI_PID 2>/dev/null || true
             exit 1
           fi
-          echo "✅ OCI 公网 IP: $OCI_PUBLIC_IP"
+          
+          # 掩码 IP 用于日志显示
+          MASKED_IP=$(echo "$OCI_PUBLIC_IP" | awk -F. '{print $1"."$2"."$3".*"}')
+          echo "✅ OCI 公网 IP: $MASKED_IP"
           
           # 3. 在 OCI 实例上启动 iperf3 服务端 (后台运行)
           echo ">>> 启动 iperf3 服务端..."
@@ -117,6 +120,11 @@ jobs:
             # 杀死旧的 iperf3 进程
             sudo pkill -9 iperf3 2>/dev/null || true
             sleep 1
+            
+            # 开放防火墙端口 5201 (iptables)
+            sudo iptables -I INPUT -p tcp --dport 5201 -j ACCEPT 2>/dev/null || true
+            sudo netfilter-persistent save 2>/dev/null || true
+
             # 启动服务端 (监听默认端口 5201, 使用 sudo)
             sudo nohup iperf3 -s -D > /dev/null 2>&1
             sleep 2
@@ -154,7 +162,8 @@ jobs:
             
             # 执行测速 (默认是从服务端下载到客户端)
             # 执行测速 (添加 -R 参数: Reverse mode, Server sends, Client receives = 下载)
-            iperf3 -c $OCI_PUBLIC_IP -R -t ${TEST_DURATION:-10} -J 2>/dev/null || echo '{\"error\": \"connection failed\"}'
+            # 移除 2>/dev/null 以显示详细错误信息
+            iperf3 -c $OCI_PUBLIC_IP -R -t ${TEST_DURATION:-10} -J || echo '{\"error\": \"connection failed\"}'
           ")
           
           # 6. 清理
@@ -186,10 +195,12 @@ jobs:
           
           echo "download_speed=$DOWNLOAD_SPEED" >> $GITHUB_OUTPUT
           echo "oci_ip=$OCI_PUBLIC_IP" >> $GITHUB_OUTPUT
+          
+          MASKED_IP=$(echo "$OCI_PUBLIC_IP" | awk -F. '{print $1"."$2"."$3".*"}')
           echo ""
           echo "==========================================="
           echo "✅ 测速结果: $HOST_NAME"
-          echo "   OCI IP: $OCI_PUBLIC_IP"
+          echo "   OCI IP: $MASKED_IP"
           echo "   下载速度: $DOWNLOAD_SPEED"
           echo "==========================================="
 
