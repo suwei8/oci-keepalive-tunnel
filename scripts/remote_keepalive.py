@@ -575,6 +575,20 @@ def main(hostname: str = None):
     os.system("uptime")
     get_system_stats()  # 任务开始前的资源状态
     
+    # 0. 安全检测 (必须在保活任务之前执行)
+    try:
+        from security_check import run_security_checks
+        issues, has_critical = run_security_checks(hostname)
+        if has_critical:
+            print("\n" + "!" * 60)
+            print("⛔ 发现严重安全问题，中止保活任务！")
+            print("请先清理恶意软件后再运行保活。")
+            print("!" * 60)
+            return
+    except Exception as e:
+        print(f"\n[安全] ⚠️ 安全检测出错: {e}")
+        # 安全检测失败不阻止保活，仅警告
+    
     # 1. 自适应资源检测
     cpu_count = os.cpu_count() or 1
     
@@ -687,13 +701,6 @@ def main(hostname: str = None):
     
     # 最终资源状态
     get_system_stats()
-    
-    # 安全检测
-    try:
-        from security_check import run_security_checks
-        run_security_checks(hostname)
-    except Exception as e:
-        print(f"\n[安全] ⚠️ 安全检测出错: {e}")
     
     # 完成
     print("\n" + "=" * 60)

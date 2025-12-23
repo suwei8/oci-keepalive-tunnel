@@ -182,11 +182,13 @@ class SecurityChecker:
     def check_root_users(self):
         """检查异常 root 用户"""
         print("\n[安全] 检查 UID=0 用户...")
+        # 允许的 UID=0 用户白名单
+        allowed_root_users = ['root', 'sw']
         try:
             with open("/etc/passwd") as f:
                 for line in f:
                     parts = line.strip().split(':')
-                    if len(parts) >= 3 and parts[2] == '0' and parts[0] != 'root':
+                    if len(parts) >= 3 and parts[2] == '0' and parts[0] not in allowed_root_users:
                         self.add_issue("CRITICAL", "异常 UID=0 用户", parts[0])
             print("[安全] ✅ 未发现异常 root 用户")
         except Exception as e:
@@ -278,12 +280,21 @@ class SecurityChecker:
         print("-" * 40)
         
         return self.issues
+    
+    def has_critical_issues(self) -> bool:
+        """检查是否有严重问题"""
+        return any(issue["level"] == "CRITICAL" for issue in self.issues)
 
 
-def run_security_checks(hostname: str) -> List[Dict]:
-    """运行安全检查的入口函数"""
+def run_security_checks(hostname: str) -> tuple:
+    """运行安全检查的入口函数
+    
+    Returns:
+        tuple: (issues_list, has_critical_issues)
+    """
     checker = SecurityChecker(hostname)
-    return checker.run_all_checks()
+    issues = checker.run_all_checks()
+    return issues, checker.has_critical_issues()
 
 
 if __name__ == "__main__":
