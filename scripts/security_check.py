@@ -221,10 +221,19 @@ class SecurityChecker:
                 ["ss", "-tnp"],
                 capture_output=True, text=True, timeout=10
             )
+            found = False
             for line in result.stdout.split('\n'):
+                # 跳过本地连接
+                if '127.0.0.1' in line or '::1' in line:
+                    continue
+                # 只检查外网连接
                 for port in MINING_PORTS:
                     if f":{port}" in line and "ESTAB" in line:
                         self.add_issue("WARNING", "疑似矿池连接", line.strip()[:100])
+                        found = True
+                        break
+            if not found:
+                print("[安全] ✅ 未发现可疑矿池连接")
         except Exception as e:
             print(f"[安全] 检查网络出错: {e}")
     
