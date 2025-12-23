@@ -91,56 +91,81 @@ jobs:
           echo "Starting keepalive for: $HOST_NAME"
           echo "=========================================="
           
-          # 启动 Cloudflare Tunnel
-          cloudflared access ssh --hostname "$SSH_HOST" --url "ssh://127.0.0.1:2222" &
-          TUNNEL_PID=$!
-          sleep 5
+          SSH_OPTS="-o ConnectTimeout=30 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ServerAliveInterval=60 -o ServerAliveCountMax=3"
+          MAX_RETRIES=3
           
-          if ! kill -0 $TUNNEL_PID 2>/dev/null; then
-            echo "❌ Tunnel failed to start"
-            exit 1
-          fi
-          echo "✅ Tunnel established"
-          
-          SSH_OPTS="-o ConnectTimeout=30 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR"
-          
-          # 同步仓库
-          if sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -p 2222 "${SSH_USERNAME}@127.0.0.1" '
-            REPO_DIR="$HOME/oci-keepalive"
-            REPO_URL="https://github.com/suwei8/oci-keepalive-tunnel.git"
-            if [ -d "$REPO_DIR/.git" ]; then
-              cd "$REPO_DIR" && git pull --quiet 2>/dev/null || (git fetch --all && git reset --hard origin/main)
-            else
-              rm -rf "$REPO_DIR"
-              git clone --depth 1 "$REPO_URL" "$REPO_DIR"
-            fi
-          '; then
-            echo "✅ Repository synced"
-          else
-            echo "❌ Failed to sync repository"
-            kill $TUNNEL_PID 2>/dev/null || true
-            exit 1
-          fi
-          
-          # 执行保活脚本
-          if timeout 720 sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -p 2222 "${SSH_USERNAME}@127.0.0.1" \
-            "cd \$HOME/oci-keepalive && python3 scripts/remote_keepalive.py --hostname '$HOST_NAME'"; then
-            echo "✅ Keepalive completed successfully"
+          for attempt in $(seq 1 $MAX_RETRIES); do
+            echo ""
+            echo ">>> 尝试 $attempt / $MAX_RETRIES"
             
-            # 回传预测结果
-            mkdir -p predictions
-            SAFE_NAME=$(echo "$HOST_NAME" | tr ' ' '_')
-            sshpass -p "$SSH_PASSWORD" scp $SSH_OPTS -P 2222 \
-              "${SSH_USERNAME}@127.0.0.1:/tmp/prediction_result.json" \
-              "predictions/${SAFE_NAME}.json" 2>/dev/null || echo "No prediction file"
-          else
-            echo "❌ Keepalive script failed"
-            kill $TUNNEL_PID 2>/dev/null || true
-            exit 1
-          fi
-          
-          kill $TUNNEL_PID 2>/dev/null || true
-          echo "✅ Done"
+            # 清理之前的隧道
+            pkill -f "cloudflared access ssh" 2>/dev/null || true
+            sleep 1
+            
+            # 启动 Cloudflare Tunnel
+            cloudflared access ssh --hostname "$SSH_HOST" --url "ssh://127.0.0.1:2222" &
+            TUNNEL_PID=$!
+            sleep 5
+            
+            if ! kill -0 $TUNNEL_PID 2>/dev/null; then
+              echo "❌ Tunnel failed to start (attempt $attempt)"
+              if [ $attempt -eq $MAX_RETRIES ]; then
+                echo "❌ All retries failed - Tunnel"
+                exit 1
+              fi
+              sleep 5
+              continue
+            fi
+            echo "✅ Tunnel established"
+            
+            # 同步仓库
+            if ! sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -p 2222 "${SSH_USERNAME}@127.0.0.1" '
+              REPO_DIR="$HOME/oci-keepalive"
+              REPO_URL="https://github.com/suwei8/oci-keepalive-tunnel.git"
+              if [ -d "$REPO_DIR/.git" ]; then
+                cd "$REPO_DIR" && git pull --quiet 2>/dev/null || (git fetch --all && git reset --hard origin/main)
+              else
+                rm -rf "$REPO_DIR"
+                git clone --depth 1 "$REPO_URL" "$REPO_DIR"
+              fi
+            '; then
+              echo "❌ Failed to sync repository (attempt $attempt)"
+              kill $TUNNEL_PID 2>/dev/null || true
+              if [ $attempt -eq $MAX_RETRIES ]; then
+                echo "❌ All retries failed - Sync"
+                exit 1
+              fi
+              sleep 5
+              continue
+            fi
+            echo "✅ Repository synced"
+            
+            # 执行保活脚本
+            if timeout 720 sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -p 2222 "${SSH_USERNAME}@127.0.0.1" \
+              "cd \$HOME/oci-keepalive && python3 scripts/remote_keepalive.py --hostname '$HOST_NAME'"; then
+              echo "✅ Keepalive completed successfully"
+              
+              # 回传预测结果
+              mkdir -p predictions
+              SAFE_NAME=$(echo "$HOST_NAME" | tr ' ' '_')
+              sshpass -p "$SSH_PASSWORD" scp $SSH_OPTS -P 2222 \
+                "${SSH_USERNAME}@127.0.0.1:/tmp/prediction_result.json" \
+                "predictions/${SAFE_NAME}.json" 2>/dev/null || echo "No prediction file"
+              
+              kill $TUNNEL_PID 2>/dev/null || true
+              echo "✅ Done"
+              exit 0
+            else
+              echo "❌ Keepalive script failed (attempt $attempt)"
+              kill $TUNNEL_PID 2>/dev/null || true
+              if [ $attempt -eq $MAX_RETRIES ]; then
+                echo "❌ All retries failed - Keepalive"
+                exit 1
+              fi
+              sleep 10
+              continue
+            fi
+          done
 
       - name: Upload prediction artifact
         if: success() && steps.host.outputs.skip != 'true'
