@@ -658,12 +658,15 @@ def main(hostname: str = None):
     # 训练后的资源状态
     get_system_stats()
     
+    # 预测目标是下一期 (当前最新期 + 1)
+    next_issue = str(int(latest_issue) + 1)
+    
     print("\n" + "=" * 60)
-    print(f"🎯 预测结果 (第 {latest_issue} 期之后)")
+    print(f"🎯 预测结果 (第 {next_issue} 期)")
     print(f"   预测号码: {d1}  {d2}  {d3}")
     print("=" * 60)
     
-    save_prediction(latest_issue, d1, d2, d3, hostname=hostname)
+    save_prediction(next_issue, d1, d2, d3, hostname=hostname)
     
     # 4. 内存活动 (自适应)
     print("\n" + "-" * 40)
