@@ -542,9 +542,9 @@ def main(hostname: str = None):
     print("[启动] 检查是否存在重复的保活进程...")
     
     try:
-        # 查找所有 remote_keepalive.py 进程
+        # 查找本项目的保活进程 (使用完整路径匹配)
         result = subprocess.run(
-            ["pgrep", "-f", "remote_keepalive.py"],
+            ["pgrep", "-f", "oci-keepalive/scripts/remote_keepalive.py"],
             capture_output=True, text=True
         )
         if result.returncode == 0:
