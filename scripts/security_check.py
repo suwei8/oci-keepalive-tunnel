@@ -78,6 +78,7 @@ class SecurityChecker:
                 ["ps", "aux"],
                 capture_output=True, text=True, timeout=10
             )
+            found_suspicious = False
             for line in result.stdout.split('\n'):
                 lower_line = line.lower()
                 for keyword in MINER_KEYWORDS:
@@ -87,8 +88,21 @@ class SecurityChecker:
                         if len(parts) >= 11:
                             pid = parts[1]
                             cmd = ' '.join(parts[10:])[:80]
+                            
+                            # 跳过内核进程 (命令在方括号中，如 [kswapd0])
+                            if cmd.startswith('[') and cmd.endswith(']'):
+                                continue
+                            
+                            # 跳过系统合法进程
+                            if '/usr/bin/python3' in cmd and 'networkd-dispatcher' in line:
+                                continue
+                            
                             self.add_issue("CRITICAL", f"疑似挖矿进程 (PID: {pid})", cmd)
+                            found_suspicious = True
                         break
+            
+            if not found_suspicious:
+                print("[安全] ✅ 未发现可疑挖矿进程")
         except Exception as e:
             print(f"[安全] 检查进程出错: {e}")
     
