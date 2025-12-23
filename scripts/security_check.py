@@ -103,6 +103,10 @@ class SecurityChecker:
                             if '/proc/self/exe' in cmd and '--type=' in line:
                                 continue
                             
+                            # 跳过用户白名单应用
+                            if 'com.fluxpay.monitor' in cmd:
+                                continue
+                            
                             self.add_issue("CRITICAL", f"疑似挖矿进程 (PID: {pid})", cmd)
                             found_suspicious = True
                         break
