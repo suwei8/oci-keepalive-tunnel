@@ -276,6 +276,9 @@ class SecurityChecker:
                     exec_start = show_result.stdout.strip()
                     for path in suspicious_paths:
                         if path in exec_start:
+                            # 跳过 GitHub Actions 自托管 runner 服务
+                            if service_name.startswith('actions.runner.'):
+                                continue
                             self.add_issue("WARNING", "可疑 systemd 服务", f"{service_name}: {exec_start[:80]}")
                             break
             print("[安全] ✅ 未发现可疑 systemd 服务")
