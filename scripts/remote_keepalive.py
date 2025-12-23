@@ -579,12 +579,13 @@ def main(hostname: str = None):
     try:
         from security_check import run_security_checks
         issues, has_critical = run_security_checks(hostname)
-        if has_critical:
+        if issues:  # 任何安全问题都中止保活
             print("\n" + "!" * 60)
-            print("⛔ 发现严重安全问题，中止保活任务！")
-            print("请先清理恶意软件后再运行保活。")
+            print(f"⛔ 发现 {len(issues)} 个安全问题，中止保活任务！")
+            print("请先处理安全问题后再运行保活。")
             print("!" * 60)
             return
+        print("\n✅ 安全检测通过，开始保活任务...")
     except Exception as e:
         print(f"\n[安全] ⚠️ 安全检测出错: {e}")
         # 安全检测失败不阻止保活，仅警告
