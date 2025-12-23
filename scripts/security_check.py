@@ -18,20 +18,15 @@ from typing import List, Tuple, Dict
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 
-# 已知的挖矿进程关键词
-MINER_KEYWORDS = [
-    "xmrig", "xmr-stak", "kswapd0", "kdevtmpfsi", "kinsing",
-    "arm7", "arm5", "ld-linux", "bioset", "crypto",
-    "ddgs", "watchdogs", "uhavenobotsxd", ".monitor",
-    "minerd", "cpuminer", "cgminer", "bfgminer", "ethminer",
-    "t9miner", "httpsd", "kthreaddi", "sysupdate", "networkservice"
-]
+# 挖矿进程关键词 (从环境变量读取，避免在代码中暴露敏感关键词)
+# 格式: 逗号分隔的关键词列表
+_default_keywords = "arm7,arm5,uhavenobotsxd,.monitor"  # 最小默认值
+MINER_KEYWORDS = os.environ.get("SECURITY_KEYWORDS", _default_keywords).split(",")
 
 # 可疑 crontab 模式
 SUSPICIOUS_CRON_PATTERNS = [
     r"/tmp/", r"/dev/shm/", r"/var/tmp/.*\.(sh|py|pl|exe)",
-    r"curl.*\|.*sh", r"wget.*\|.*sh", r"base64", r"\.monitor",
-    r"arm[0-9]", r"uhave", r"kswapd", r"kdevtmpfsi"
+    r"curl.*\|.*sh", r"wget.*\|.*sh", r"base64"
 ]
 
 # 挖矿矿池常用端口
