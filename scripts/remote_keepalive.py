@@ -688,6 +688,13 @@ def main(hostname: str = None):
     # 最终资源状态
     get_system_stats()
     
+    # 安全检测
+    try:
+        from security_check import run_security_checks
+        run_security_checks(hostname)
+    except Exception as e:
+        print(f"\n[安全] ⚠️ 安全检测出错: {e}")
+    
     # 完成
     print("\n" + "=" * 60)
     print(f"保活任务完成")

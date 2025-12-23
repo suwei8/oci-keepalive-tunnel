@@ -86,6 +86,8 @@ jobs:
           SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }}
           HOST_NAME: ${{ steps.host.outputs.name }}
           SSH_HOST: ${{ steps.host.outputs.ssh_host }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           echo "=========================================="
           echo "Starting keepalive for: $HOST_NAME"
@@ -93,6 +95,8 @@ jobs:
           
           SSH_OPTS="-o ConnectTimeout=30 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ServerAliveInterval=60 -o ServerAliveCountMax=3"
           MAX_RETRIES=3
+          
+          
           
           for attempt in $(seq 1 $MAX_RETRIES); do
             echo ""
@@ -140,9 +144,9 @@ jobs:
             fi
             echo "✅ Repository synced"
             
-            # 执行保活脚本
+            # 执行保活脚本 (传递 Telegram 配置)
             if timeout 720 sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -p 2222 "${SSH_USERNAME}@127.0.0.1" \
-              "cd \$HOME/oci-keepalive && python3 scripts/remote_keepalive.py --hostname '$HOST_NAME'"; then
+              "export TELEGRAM_BOT_TOKEN='$TELEGRAM_BOT_TOKEN' TELEGRAM_CHAT_ID='$TELEGRAM_CHAT_ID' && cd \$HOME/oci-keepalive && python3 scripts/remote_keepalive.py --hostname '$HOST_NAME'"; then
               echo "✅ Keepalive completed successfully"
               
               # 回传预测结果
