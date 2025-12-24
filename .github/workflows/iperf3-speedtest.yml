@@ -232,14 +232,13 @@ jobs:
         if: steps.host.outputs.skip != 'true'
         env:
           HOST_NAME: ${{ steps.host.outputs.name }}
-          OCI_IP: ${{ steps.speedtest.outputs.oci_ip }}
           DOWNLOAD_SPEED: ${{ steps.speedtest.outputs.download_speed }}
           UPLOAD_SPEED: ${{ steps.speedtest.outputs.upload_speed }}
         run: |
           mkdir -p speedtest_results
           SAFE_NAME=$(echo "$HOST_NAME" | tr ' ' '_')
           TIMESTAMP=$(date -u +"%Y-%m-%d %H:%M:%S")
-          echo "${HOST_NAME},${OCI_IP},${DOWNLOAD_SPEED},${UPLOAD_SPEED},${TIMESTAMP}" > "speedtest_results/${SAFE_NAME}.txt"
+          echo "${HOST_NAME},${DOWNLOAD_SPEED},${UPLOAD_SPEED},${TIMESTAMP}" > "speedtest_results/${SAFE_NAME}.txt"
 
       - name: Upload speedtest result artifact
         if: steps.host.outputs.skip != 'true'
@@ -278,9 +277,9 @@ jobs:
           CSV_FILE="csv/iperf3_results.csv"
           mkdir -p csv
           
-          # 创建 CSV 头 (如果不存在或为空) - 更新为包含 upload_speed
+          # 创建 CSV 头 (如果不存在或为空)
           if [ ! -f "$CSV_FILE" ] || [ ! -s "$CSV_FILE" ]; then
-            echo "name,oci_ip,download_speed,upload_speed,timestamp" > "$CSV_FILE"
+            echo "name,download_speed,upload_speed,timestamp" > "$CSV_FILE"
           else
              # 如果文件存在但没有 upload_speed 列 (旧格式), 简单的处理方式是重置 header 或者追加空列
              # 为了简单起见, 我们保持原来的文件追加模式, 但新的 header 只在新文件时写入
@@ -313,17 +312,17 @@ jobs:
           echo "==========================================="
           echo "🏆 速度排名 (按下载速度排序)"
           echo "==========================================="
-          echo -e "下载\t\t上传\t\t实例名称\tIP"
+          echo -e "下载\t\t上传\t\t实例名称"
           
           # 提取本次测速结果并排序 (跳过 N/A)
-          # 注意：CSV 格式现在是 name,oci_ip,download,upload,timestamp
-          # awk $3=download, $4=upload
+          # 注意：CSV 格式现在是 name,download,upload,timestamp
+          # awk $2=download, $3=upload
           TODAY=$(date -u +"%Y-%m-%d")
           grep "$TODAY" "$CSV_FILE" 2>/dev/null | grep -v "N/A" | \
             awk -F',' '{
-              dl = $3; ul = $4;
+              dl = $2; ul = $3;
               gsub(/ Mbps/, "", dl); gsub(/ Mbps/, "", ul);
-              printf "%.2f Mbps\t%.2f Mbps\t%s\t%s\n", dl, ul, $1, $2
+              printf "%.2f Mbps\t%.2f Mbps\t%s\n", dl, ul, $1
             }' | sort -k1 -rn | head -10
           
           echo ""
@@ -352,14 +351,14 @@ jobs:
           TODAY=$(date -u +"%Y-%m-%d")
           
           echo "### 🏆 速度排名 (Top 10)" >> $GITHUB_STEP_SUMMARY
-          echo "| 下载速度 | 上传速度 | 实例名称 | OCI IP |" >> $GITHUB_STEP_SUMMARY
-          echo "| :--- | :--- | :--- | :--- |" >> $GITHUB_STEP_SUMMARY
+          echo "| 下载速度 | 上传速度 | 实例名称 |" >> $GITHUB_STEP_SUMMARY
+          echo "| :--- | :--- | :--- |" >> $GITHUB_STEP_SUMMARY
           
           grep "$TODAY" "$CSV_FILE" 2>/dev/null | grep -v "N/A" | \
             awk -F',' '{
-              dl = $3; ul = $4;
+              dl = $2; ul = $3;
               gsub(/ Mbps/, "", dl); gsub(/ Mbps/, "", ul);
-              printf "| %s Mbps | %s Mbps | %s | %s |\n", dl, ul, $1, $2
+              printf "| %s Mbps | %s Mbps | %s |\n", dl, ul, $1
             }' | sort -k2 -rn | head -10 >> $GITHUB_STEP_SUMMARY
             # sort -k2 means sorting by Download Speed (which is the first number in the output string because we used printf)
             # Actually sort -k2 in the pipe above sorts by the 2nd column of the pipe input.
