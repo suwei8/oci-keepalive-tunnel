@@ -163,27 +163,53 @@ cat > config.json <<EOF
 }
 EOF
 
-# Start Xray in background (nohup)
-# Use sudo if port 443 requires it (usually yes)
+# Test config validity first
+echo "Testing Xray config..."
 if [ -n "$SUDO" ]; then
-  touch run.log
+  if ! $SUDO ./xray run -test -c config.json 2>&1 | tee config_test.log; then
+    echo "Config test failed:"
+    cat config_test.log
+    exit 1
+  fi
+else
+  if ! ./xray run -test -c config.json 2>&1 | tee config_test.log; then
+    echo "Config test failed:"
+    cat config_test.log
+    exit 1
+  fi
+fi
+
+# Start Xray in background
+echo "Starting Xray..."
+if [ -n "$SUDO" ]; then
   nohup $SUDO ./xray run -c config.json > run.log 2>&1 &
+  XRAY_PID=$!
 else
   nohup ./xray run -c config.json > run.log 2>&1 &
+  XRAY_PID=$!
 fi
 
-# Wait longer to ensure start and  capture any immediate errors
-sleep 5
-
-# Check if running
-if ! pgrep -f "$WORK_DIR/xray" > /dev/null; then
-  echo "Failed to start Xray"
-  echo "=== Full run.log output ==="
-  cat run.log
-  echo "=== Config file ==="
-  cat config.json
-  exit 1
+# Wait and verify it's actually listening on port 443
+sleep 3
+if [ -n "$SUDO" ]; then
+  if ! $SUDO ss -tulpn | grep -q ":443.*xray"; then
+    echo "Xray not listening on port 443"
+    echo "=== run.log ==="
+    cat run.log
+    echo "=== Xray process status ==="
+    ps aux | grep xray || echo "No xray process found"
+    exit 1
+  fi
+else
+  if ! ss -tulpn | grep -q ":443.*xray"; then
+    echo "Xray not listening on port 443"
+    echo "=== run.log ==="
+    cat run.log
+    exit 1
+  fi
 fi
+
+echo "Xray started successfully on port 443"
 
 # Get IP
 PUBLIC_IP=$(curl -s -4 ip.sb)
