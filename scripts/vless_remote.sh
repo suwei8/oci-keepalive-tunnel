@@ -14,9 +14,14 @@ else
   SUDO=""
 fi
 
-# Install basic tools
-$SUDO apt-get update -qq
-$SUDO apt-get install -y -qq curl openssl uuid-runtime
+# Install dependencies
+if [ -n "$SUDO" ]; then
+    $SUDO apt-get update -qq
+    $SUDO apt-get install -y -qq curl openssl uuid-runtime unzip psmisc
+else
+    apt-get update -qq
+    apt-get install -y -qq curl openssl uuid-runtime unzip psmisc
+fi
 
 # Detect Architecture
 ARCH=$(uname -m)
@@ -42,24 +47,29 @@ if command -v systemctl >/dev/null 2>&1; then
     if [ -n "$SUDO" ]; then
        $SUDO systemctl stop xray || true
        $SUDO systemctl disable xray || true
+       $SUDO systemctl stop nginx || true
+       $SUDO systemctl stop apache2 || true
     else
        systemctl stop xray || true
        systemctl disable xray || true
+       systemctl stop nginx || true
+       systemctl stop apache2 || true
     fi
 fi
 
-# Kill any existing xray process
+# Force kill port 443
 if [ -n "$SUDO" ]; then
+   $SUDO fuser -k 443/tcp || true
    $SUDO pkill -f xray || true
 else
+   fuser -k 443/tcp || true
    pkill -f xray || true
 fi
+sleep 2
 
 # Download and Unzip
 curl -L -s "$DOWNLOAD_URL" -o xray.zip
 # Install unzip if missing
-if ! command -v unzip >/dev/null 2>&1; then
-    if [ -n "$SUDO" ]; then
         $SUDO apt-get update -qq && $SUDO apt-get install -y -qq unzip
     fi
 fi
