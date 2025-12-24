@@ -69,10 +69,6 @@ sleep 2
 
 # Download and Unzip
 curl -L -s "$DOWNLOAD_URL" -o xray.zip
-# Install unzip if missing
-        $SUDO apt-get update -qq && $SUDO apt-get install -y -qq unzip
-    fi
-fi
 unzip -o -q xray.zip
 rm xray.zip
 chmod +x xray
