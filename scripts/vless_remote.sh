@@ -21,7 +21,10 @@ $SUDO apt-get install -y -qq curl openssl uuid-runtime
 
 # Install Xray (official script)
 echo ">>> Installing Xray..."
-bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install
+curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh -o install-release.sh
+chmod +x install-release.sh
+./install-release.sh install
+rm install-release.sh
 
 # Generate Config
 UUID=$(uuidgen)
