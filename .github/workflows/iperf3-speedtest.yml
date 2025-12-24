@@ -7,6 +7,10 @@ on:
         description: '测速时长 (秒)'
         required: false
         default: '10'
+      target_index:
+        description: '指定主机索引 (0-29, 留空=全部)'
+        required: false
+        default: ''
 
 jobs:
   speedtest:
@@ -25,7 +29,15 @@ jobs:
         env:
           HOSTS_CONFIG: ${{ secrets.HOSTS_CONFIG }}
           HOST_INDEX: ${{ matrix.index }}
+          TARGET_INDEX: ${{ github.event.inputs.target_index }}
         run: |
+          # 如果指定了目标索引且不匹配，跳过
+          if [ -n "$TARGET_INDEX" ] && [ "$TARGET_INDEX" != "$HOST_INDEX" ]; then
+            echo "skip=true" >> $GITHUB_OUTPUT
+            echo "Skipping index $HOST_INDEX (target: $TARGET_INDEX)"
+            exit 0
+          fi
+          
           HOST_NAME=$(echo "$HOSTS_CONFIG" | jq -r ".[$HOST_INDEX].name")
           SSH_HOST=$(echo "$HOSTS_CONFIG" | jq -r ".[$HOST_INDEX].ssh_host")
           
@@ -318,6 +330,10 @@ jobs:
           if [ -f csv/iperf3_results.csv ]; then
             git config user.name "github-actions[bot]"
             git config user.email "github-actions[bot]@users.noreply.github.com"
+            
+            # 使用 rebase 模式拉取最新代码，防止冲突
+            git pull --rebase origin main || echo "Git pull failed, pushing anyway might fail"
+            
             git add csv/iperf3_results.csv
             git diff --staged --quiet || git commit -m "Update iPerf3 speedtest results $(date -u +%Y-%m-%d)"
             git push || echo "Nothing to push"
