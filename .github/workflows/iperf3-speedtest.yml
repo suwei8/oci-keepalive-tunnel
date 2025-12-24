@@ -194,13 +194,37 @@ jobs:
             
             # --- 单个主机流程开始 ---
             
-            # 3.1 建立 OCI 临时隧道 (Port 2222)
-            cloudflared access ssh --hostname "$SSH_HOST" --url "ssh://127.0.0.1:2222" &
-            TUNNEL_OCI_PID=$!
-            sleep 5
+            # 3.1 建立 OCI 临时隧道 (Port 2222) - 带重试机制
+            TUNNEL_SUCCESS=0
+            MAX_RETRIES=3
             
-            if ! kill -0 $TUNNEL_OCI_PID 2>/dev/null; then
-              echo "❌ OCI Tunnel 失败: $HOST_NAME"
+            for RETRY in $(seq 1 $MAX_RETRIES); do
+              echo ">>> 尝试连接 OCI Tunnel ($RETRY/$MAX_RETRIES)..."
+              
+              # 清理可能残留的旧隧道
+              pkill -f "cloudflared.*2222" 2>/dev/null || true
+              sleep 2
+              
+              cloudflared access ssh --hostname "$SSH_HOST" --url "ssh://127.0.0.1:2222" &
+              TUNNEL_OCI_PID=$!
+              sleep 5
+              
+              if kill -0 $TUNNEL_OCI_PID 2>/dev/null; then
+                TUNNEL_SUCCESS=1
+                echo "✅ OCI Tunnel 连接成功 (第 $RETRY 次尝试)"
+                break
+              else
+                echo "⚠️ OCI Tunnel 连接失败 (第 $RETRY 次尝试)"
+                if [ $RETRY -lt $MAX_RETRIES ]; then
+                  echo "   等待 10 秒后重试..."
+                  sleep 10
+                fi
+              fi
+            done
+            
+            if [ $TUNNEL_SUCCESS -eq 0 ]; then
+              echo "❌ OCI Tunnel 失败 (已重试 $MAX_RETRIES 次): $HOST_NAME"
+              echo "   跳过此主机，继续处理下一个..."
               continue
             fi
             
