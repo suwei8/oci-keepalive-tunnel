@@ -80,6 +80,13 @@ jobs:
           echo ">>> Configure Remote Host..."
           
           # We will generate a script locally and execute it remotely to avoid escaping hell
+          # NOTE: We use indenting heredoc but standard YAML block scalar handling applies.
+          # The content inside 'cat ...' must be correct.
+          # We indent EOS to align with the script, forcing us to use `-` in `<<-EOS` if we want to strip tabs,
+          # BUT valid YAML just needs spaces.
+          # To be safe, we will just echo line by line or use a carefully indented block.
+          # Let's try indented EOS with `<< 'EOS'` but placed correctly in YAML.
+          
           cat > deploy_script.sh << 'EOS'
           #!/bin/bash
           set -e
@@ -108,7 +115,6 @@ jobs:
           UUID=$(uuidgen)
           
           # Generate KeyPair (using xray binary)
-          # Xray x25519 outputs: "Private Key: xxx", "Public Key: yyy"
           KEYS=$(/usr/local/bin/xray x25519)
           PRIVATE_KEY=$(echo "$KEYS" | grep "Private Key" | awk '{print $3}')
           PUBLIC_KEY=$(echo "$KEYS" | grep "Public Key" | awk '{print $3}')
@@ -160,7 +166,7 @@ jobs:
               }
             ]
           }
-EOF
+          EOF
           
           # Restart Xray
           $SUDO systemctl restart xray
@@ -187,9 +193,6 @@ EOF
           echo "Remote execution finished."
           
           # Parse Output
-          # Since existing ssh session output might be mixed, we might need a better way to capture. 
-          # Actually the command above captures stdout of the ssh command.
-          
           IP=$(echo "$REMOTE_OUTPUT" | grep "IP=" | cut -d= -f2 | tr -d '\r')
           PORT=$(echo "$REMOTE_OUTPUT" | grep "PORT=" | cut -d= -f2 | tr -d '\r')
           UUID=$(echo "$REMOTE_OUTPUT" | grep "UUID=" | cut -d= -f2 | tr -d '\r')
@@ -204,7 +207,6 @@ EOF
           fi
           
           # Construct Link
-          # vless://UUID@IP:PORT?security=reality&encryption=none&pbk=PBK&headerType=none&fp=chrome&type=tcp&flow=xtls-rprx-vision&sni=SNI#NAME
           LINK="vless://${UUID}@${IP}:${PORT}?security=reality&encryption=none&pbk=${PBK}&headerType=none&fp=chrome&type=tcp&flow=xtls-rprx-vision&sni=${SNI}#${HOST_NAME}"
           
           echo "✅ VLESS Deployed!"
