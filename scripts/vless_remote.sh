@@ -41,37 +41,33 @@ WORK_DIR="$HOME/vless_tmp"
 mkdir -p "$WORK_DIR"
 cd "$WORK_DIR"
 
-# Cleanup old process if running
-# Stop systemd service if exists (cleanup previous installs)
-if command -v systemctl >/dev/null 2>&1; then
+# Destroy persistent service if exists
+if [ -f "/etc/systemd/system/xray.service" ] || [ -f "/lib/systemd/system/xray.service" ]; then
+    echo "removing persistent xray service..."
     if [ -n "$SUDO" ]; then
-       $SUDO systemctl stop xray || true
-       $SUDO systemctl disable xray || true
-       $SUDO systemctl mask xray || true
-       $SUDO systemctl stop nginx || true
-       $SUDO systemctl stop apache2 || true
+        $SUDO systemctl stop xray || true
+        $SUDO systemctl disable xray || true
+        $SUDO rm -f /etc/systemd/system/xray.service
+        $SUDO rm -f /lib/systemd/system/xray.service
+        $SUDO systemctl daemon-reload
     else
-       systemctl stop xray || true
-       systemctl disable xray || true
-       systemctl mask xray || true
-       systemctl stop nginx || true
-       systemctl stop apache2 || true
+        systemctl stop xray || true
+        systemctl disable xray || true
+        rm -f /etc/systemd/system/xray.service
+        rm -f /lib/systemd/system/xray.service
+        systemctl daemon-reload
     fi
 fi
 
 # Force kill port 443 (Loop until free)
+# ... (existing loop logic is fine, let's keep it but simplified since service is gone)
 echo "Debug: Processes on port 443:"
 if [ -n "$SUDO" ]; then
    $SUDO ss -tulpn | grep :443 || echo "No process found on 443 via ss"
    
-   echo "Killing port 443..."
-   # Loop to ensure it dies
    MAX_RETRIES=10
    while $SUDO ss -tulpn | grep -q :443; do
-       echo "Port 443 still in use. Killing..."
-       $SUDO systemctl stop xray || true
-       $SUDO systemctl stop nginx || true
-       $SUDO systemctl stop apache2 || true
+       echo "Port 443 still in use. Killing processes..."
        $SUDO fuser -k -9 443/tcp || true
        $SUDO pkill -9 -x xray || true
        sleep 1
@@ -84,13 +80,9 @@ if [ -n "$SUDO" ]; then
 else
    ss -tulpn | grep :443 || echo "No process found on 443 via ss"
    
-   echo "Killing port 443..."
    MAX_RETRIES=10
    while ss -tulpn | grep -q :443; do
-       echo "Port 443 still in use. Killing..."
-       systemctl stop xray || true
-       systemctl stop nginx || true
-       systemctl stop apache2 || true
+       echo "Port 443 still in use. Killing processes..."
        fuser -k -9 443/tcp || true
        pkill -9 -x xray || true
        sleep 1
@@ -115,6 +107,12 @@ KEYS=$(./xray x25519)
 PRIVATE_KEY=$(echo "$KEYS" | grep -i "Private" | head -n1 | awk -F: '{print $2}' | xargs)
 PUBLIC_KEY=$(echo "$KEYS" | grep -i "Public" | head -n1 | awk -F: '{print $2}' | xargs)
 UUID=$(uuidgen)
+
+if [ -z "$PRIVATE_KEY" ] || [ -z "$PUBLIC_KEY" ] || [ -z "$UUID" ]; then
+    echo "Error: Failed to generate keys or UUID"
+    echo "KEYS raw output: $KEYS"
+    exit 1
+fi
 
 PORT=443
 SNI="www.apple.com"
