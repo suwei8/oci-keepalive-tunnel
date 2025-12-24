@@ -36,6 +36,9 @@ jobs:
           echo "ssh_host=$SSH_HOST" >> $GITHUB_OUTPUT
           echo "Deploying to: $HOST_NAME ($SSH_HOST)"
 
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
       - name: Install cloudflared
         run: |
           curl -sL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o /tmp/cloudflared
@@ -79,116 +82,15 @@ jobs:
           # 2. Deploy on Remote
           echo ">>> Configure Remote Host..."
           
-          # We will generate a script locally and execute it remotely to avoid escaping hell
-          # NOTE: We use indenting heredoc but standard YAML block scalar handling applies.
-          # The content inside 'cat ...' must be correct.
-          # We indent EOS to align with the script, forcing us to use `-` in `<<-EOS` if we want to strip tabs,
-          # BUT valid YAML just needs spaces.
-          # To be safe, we will just echo line by line or use a carefully indented block.
-          # Let's try indented EOS with `<< 'EOS'` but placed correctly in YAML.
-          
-          cat > deploy_script.sh << 'EOS'
-          #!/bin/bash
-          set -e
-          
-          # Check root
-          if [ "$EUID" -ne 0 ]; then
-            if command -v sudo >/dev/null 2>&1; then
-              SUDO="sudo"
-            else
-              echo "Error: Need root or sudo"
-              exit 1
-            fi
-          else
-            SUDO=""
+          if [ ! -f scripts/vless_remote.sh ]; then
+             echo "❌ Script scripts/vless_remote.sh not found!"
+             kill $TUNNEL_PID
+             exit 1
           fi
           
-          # Install basic tools
-          $SUDO apt-get update -qq
-          $SUDO apt-get install -y -qq curl openssl uuid-runtime
-          
-          # Install Xray (official script)
-          echo ">>> Installing Xray..."
-          bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install
-          
-          # Generate Config
-          UUID=$(uuidgen)
-          
-          # Generate KeyPair (using xray binary)
-          KEYS=$(/usr/local/bin/xray x25519)
-          PRIVATE_KEY=$(echo "$KEYS" | grep "Private Key" | awk '{print $3}')
-          PUBLIC_KEY=$(echo "$KEYS" | grep "Public Key" | awk '{print $3}')
-          
-          PORT=443
-          SNI="www.apple.com"
-          
-          # Config JSON
-          cat > /usr/local/etc/xray/config.json <<EOF
-          {
-            "log": {
-              "loglevel": "warning"
-            },
-            "inbounds": [
-              {
-                "port": $PORT,
-                "protocol": "vless",
-                "settings": {
-                  "clients": [
-                    {
-                      "id": "$UUID",
-                      "flow": "xtls-rprx-vision"
-                    }
-                  ],
-                  "decryption": "none"
-                },
-                "streamSettings": {
-                  "network": "tcp",
-                  "security": "reality",
-                  "realitySettings": {
-                    "show": false,
-                    "dest": "$SNI:443",
-                    "xver": 0,
-                    "serverNames": [
-                      "$SNI"
-                    ],
-                    "privateKey": "$PRIVATE_KEY",
-                    "shortIds": [
-                      ""
-                    ]
-                  }
-                }
-              }
-            ],
-            "outbounds": [
-              {
-                "protocol": "freedom",
-                "tag": "direct"
-              }
-            ]
-          }
-          EOF
-          
-          # Restart Xray
-          $SUDO systemctl restart xray
-          $SUDO systemctl enable xray
-          
-          # Get IP
-          PUBLIC_IP=$(curl -s -4 ip.sb)
-          
-          # Output info for client
-          echo "---VLESS_INFO_START---"
-          echo "IP=$PUBLIC_IP"
-          echo "PORT=$PORT"
-          echo "UUID=$UUID"
-          echo "PUBLIC_KEY=$PUBLIC_KEY"
-          echo "SNI=$SNI"
-          echo "---VLESS_INFO_END---"
-          EOS
-          
           echo ">>> Executing script on remote..."
-          # Execute the script remotely
-          # Using sshpass to feed script through stdin
-          REMOTE_OUTPUT=$(sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -p 2222 "${SSH_USERNAME}@127.0.0.1" "cat > /tmp/vless_install.sh && chmod +x /tmp/vless_install.sh && timeout 300 /tmp/vless_install.sh" < deploy_script.sh)
+          # Execute the script remotely by piping the local file to ssh
+          REMOTE_OUTPUT=$(sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -p 2222 "${SSH_USERNAME}@127.0.0.1" "cat > /tmp/vless_install.sh && chmod +x /tmp/vless_install.sh && timeout 300 /tmp/vless_install.sh" < scripts/vless_remote.sh)
           
           echo "Remote execution finished."
           
