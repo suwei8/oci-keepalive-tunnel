@@ -228,29 +228,48 @@ jobs:
               continue
             fi
             
-            # 3.2 配置 OCI (安装 iperf3 + 获取 IP + 启动 Server)
+            # 3.2 配置 OCI (安装 iperf3 + 获取 IP + 启动 Server) - 带重试机制
             echo ">>> 配置 OCI..."
             
-            # 尝试连接并执行命令
-            # 注意: 使用 -n 或 < /dev/null 防止 ssh 读取 stdin (虽然改用了 for 循环已经避免了这个问题，但为了保险)
-            PREPARE_OUTPUT=$(sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" '
-              which iperf3 > /dev/null 2>&1 || (sudo apt-get update -qq && sudo apt-get install -y -qq iperf3)
-              IP=$(curl -4 -s ip.sb)
-              echo "PUBLIC_IP::$IP"
-              sudo pkill -9 iperf3 2>/dev/null || true
-              sudo iptables -I INPUT -p tcp --dport 5201 -j ACCEPT 2>/dev/null || true
-              sudo netfilter-persistent save 2>/dev/null || true
-              sudo nohup iperf3 -s -D > /dev/null 2>&1
-              sleep 2
-              pgrep -x iperf3 > /dev/null && echo "SERVER_STARTED" || echo "SERVER_FAILED"
-            ' 2>&1)
+            OCI_CONFIG_SUCCESS=0
+            OCI_PUBLIC_IP=""
+            SERVER_STATUS=""
             
-            # 解析输出
-            OCI_PUBLIC_IP=$(echo "$PREPARE_OUTPUT" | grep "PUBLIC_IP::" | cut -d':' -f3 | tr -d '\r')
-            SERVER_STATUS=$(echo "$PREPARE_OUTPUT" | grep "SERVER_STARTED")
+            for SSH_RETRY in $(seq 1 3); do
+              echo "    尝试 SSH 连接 ($SSH_RETRY/3)..."
+              
+              # 尝试连接并执行命令 (使用 || true 防止失败退出)
+              PREPARE_OUTPUT=$(sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" '
+                which iperf3 > /dev/null 2>&1 || (sudo apt-get update -qq && sudo apt-get install -y -qq iperf3)
+                IP=$(curl -4 -s ip.sb)
+                echo "PUBLIC_IP::$IP"
+                sudo pkill -9 iperf3 2>/dev/null || true
+                sudo iptables -I INPUT -p tcp --dport 5201 -j ACCEPT 2>/dev/null || true
+                sudo netfilter-persistent save 2>/dev/null || true
+                sudo nohup iperf3 -s -D > /dev/null 2>&1
+                sleep 2
+                pgrep -x iperf3 > /dev/null && echo "SERVER_STARTED" || echo "SERVER_FAILED"
+              ' 2>&1) || true
+              
+              # 解析输出
+              OCI_PUBLIC_IP=$(echo "$PREPARE_OUTPUT" | grep "PUBLIC_IP::" | cut -d':' -f3 | tr -d '\r')
+              SERVER_STATUS=$(echo "$PREPARE_OUTPUT" | grep "SERVER_STARTED")
+              
+              if [ -n "$OCI_PUBLIC_IP" ] && [ -n "$SERVER_STATUS" ]; then
+                OCI_CONFIG_SUCCESS=1
+                break
+              else
+                echo "    ⚠️ SSH 配置失败 (第 $SSH_RETRY 次)"
+                if [ $SSH_RETRY -lt 3 ]; then
+                  echo "    等待 5 秒后重试..."
+                  sleep 5
+                fi
+              fi
+            done
             
-            if [ -z "$OCI_PUBLIC_IP" ] || [ -z "$SERVER_STATUS" ]; then
-               echo "❌ OCI 配置失败 (IP: $OCI_PUBLIC_IP, Server: $SERVER_STATUS)"
+            if [ $OCI_CONFIG_SUCCESS -eq 0 ]; then
+               echo "❌ OCI 配置失败 (已重试 3 次): $HOST_NAME"
+               echo "   跳过此主机，继续处理下一个..."
                kill $TUNNEL_OCI_PID 2>/dev/null || true
                continue
             fi
