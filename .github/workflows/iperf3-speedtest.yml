@@ -67,18 +67,10 @@ jobs:
           fi
           echo "✅ 家庭客户机连接成功"
           
-          # 2. 准备 CSV 文件
+          # 2. 准备 CSV 文件 (每次覆盖)
           CSV_FILE="csv/iperf3_results.csv"
           mkdir -p csv
-          if [ ! -f "$CSV_FILE" ] || [ ! -s "$CSV_FILE" ]; then
-            echo "name,download_speed,upload_speed,timestamp" > "$CSV_FILE"
-          else
-            # 简单检查表头
-            HEADER=$(head -1 "$CSV_FILE")
-            if [[ "$HEADER" != *"upload_speed"* ]]; then
-               echo "Detected old CSV format"
-            fi
-          fi
+          echo "name,download_speed,upload_speed,timestamp" > "$CSV_FILE"
           
           # 3. 循环遍历主机
           # 将 JSON 数组读入并逐行处理
