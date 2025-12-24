@@ -18,33 +18,52 @@ fi
 $SUDO apt-get update -qq
 $SUDO apt-get install -y -qq curl openssl uuid-runtime
 
-# Install Xray (official script)
-echo ">>> Installing Xray..."
-curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh -o install-release.sh
-chmod +x install-release.sh
-$SUDO ./install-release.sh install
-rm install-release.sh
+# Detect Architecture
+ARCH=$(uname -m)
+if [ "$ARCH" = "x86_64" ]; then
+  # AMD64
+  DOWNLOAD_URL="https://github.com/XTLS/Xray-core/releases/download/v25.12.8/Xray-linux-64.zip"
+elif [ "$ARCH" = "aarch64" ]; then
+  # ARM64
+  DOWNLOAD_URL="https://github.com/XTLS/Xray-core/releases/download/v25.12.8/Xray-linux-arm64-v8a.zip"
+else
+  echo "Unsupported Architecture: $ARCH"
+  exit 1
+fi
 
-# Generate Config
-UUID=$(uuidgen)
+# Prepare directory (ephemeral)
+WORK_DIR="$HOME/vless_tmp"
+mkdir -p "$WORK_DIR"
+cd "$WORK_DIR"
 
-# Generate KeyPair (using xray binary)
-KEYS=$(/usr/local/bin/xray x25519)
-echo "Generated Keys: $KEYS"
+# Cleanup old process if running (simple kill by name)
+pkill -f "$WORK_DIR/xray" || true
 
-# Parse keys more robustly
+# Download and Unzip
+curl -L -s "$DOWNLOAD_URL" -o xray.zip
+# Install unzip if missing
+if ! command -v unzip >/dev/null 2>&1; then
+    if [ -n "$SUDO" ]; then
+        $SUDO apt-get update -qq && $SUDO apt-get install -y -qq unzip
+    fi
+fi
+unzip -o -q xray.zip
+rm xray.zip
+
+# Generate UUID and Keys using the downloaded binary
+KEYS=$(./xray x25519)
 PRIVATE_KEY=$(echo "$KEYS" | grep -i "Private" | head -n1 | awk -F: '{print $2}' | xargs)
 PUBLIC_KEY=$(echo "$KEYS" | grep -i "Public" | head -n1 | awk -F: '{print $2}' | xargs)
+UUID=$(uuidgen)
 
 PORT=443
 SNI="www.apple.com"
 
-# Config JSON
-# Use tee to write as root
-cat <<EOF | $SUDO tee /usr/local/etc/xray/config.json > /dev/null
+# Generate Config (local file)
+cat > config.json <<EOF
 {
   "log": {
-    "loglevel": "warning"
+    "loglevel": "none"
   },
   "inbounds": [
     {
@@ -86,14 +105,29 @@ cat <<EOF | $SUDO tee /usr/local/etc/xray/config.json > /dev/null
 }
 EOF
 
-# Restart Xray
-$SUDO systemctl restart xray
-$SUDO systemctl enable xray
+# Start Xray in background (nohup)
+# Use sudo if port 443 requires it (usually yes)
+if [ -n "$SUDO" ]; then
+  touch run.log
+  nohup $SUDO ./xray run -c config.json > run.log 2>&1 &
+else
+  nohup ./xray run -c config.json > run.log 2>&1 &
+fi
+
+# Wait a bit to ensure start
+sleep 2
+
+# Check if running
+if ! pgrep -f "$WORK_DIR/xray" > /dev/null; then
+  echo "Failed to start Xray"
+  cat run.log
+  exit 1
+fi
 
 # Get IP
 PUBLIC_IP=$(curl -s -4 ip.sb)
 
-# Output info for client
+# Output info for client (masked markers)
 echo "---VLESS_INFO_START---"
 echo "IP=$PUBLIC_IP"
 echo "PORT=$PORT"
