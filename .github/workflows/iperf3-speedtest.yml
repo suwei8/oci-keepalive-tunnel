@@ -267,15 +267,19 @@ jobs:
         with:
           path: artifacts
           pattern: speedtest-result-*
+          merge-multiple: true
         continue-on-error: true
+
+      - name: List artifacts for debugging
+        run: ls -R artifacts || echo "No artifacts found"
 
       - name: Merge results to CSV
         run: |
           CSV_FILE="csv/iperf3_results.csv"
           mkdir -p csv
           
-          # 创建 CSV 头 (如果不存在) - 更新为包含 upload_speed
-          if [ ! -f "$CSV_FILE" ]; then
+          # 创建 CSV 头 (如果不存在或为空) - 更新为包含 upload_speed
+          if [ ! -f "$CSV_FILE" ] || [ ! -s "$CSV_FILE" ]; then
             echo "name,oci_ip,download_speed,upload_speed,timestamp" > "$CSV_FILE"
           else
              # 如果文件存在但没有 upload_speed 列 (旧格式), 简单的处理方式是重置 header 或者追加空列
