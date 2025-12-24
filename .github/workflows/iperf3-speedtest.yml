@@ -1,4 +1,4 @@
-name: iPerf3 Speedtest All Instances
+name: iPerf3 Speedtest All Instances (Loop)
 
 on:
   workflow_dispatch:
@@ -13,57 +13,23 @@ on:
         default: ''
 
 jobs:
-  speedtest:
-    name: "Host ${{ matrix.index }}"
+  speedtest-loop:
+    name: "Speedtest Loop"
     runs-on: ubuntu-latest
-    timeout-minutes: 10
-    strategy:
-      fail-fast: false
-      max-parallel: 1  # 串行执行，避免测速客户机并发冲突
-      matrix:
-        index: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29]
+    timeout-minutes: 60  # 增加超时时间，因为是串行跑所有
+    permissions:
+      contents: write
 
     steps:
-      - name: Get host info from secrets
-        id: host
-        env:
-          HOSTS_CONFIG: ${{ secrets.HOSTS_CONFIG }}
-          HOST_INDEX: ${{ matrix.index }}
-          TARGET_INDEX: ${{ github.event.inputs.target_index }}
-        run: |
-          # 如果指定了目标索引且不匹配，跳过
-          if [ -n "$TARGET_INDEX" ] && [ "$TARGET_INDEX" != "$HOST_INDEX" ]; then
-            echo "skip=true" >> $GITHUB_OUTPUT
-            echo "Skipping index $HOST_INDEX (target: $TARGET_INDEX)"
-            exit 0
-          fi
-          
-          HOST_NAME=$(echo "$HOSTS_CONFIG" | jq -r ".[$HOST_INDEX].name")
-          SSH_HOST=$(echo "$HOSTS_CONFIG" | jq -r ".[$HOST_INDEX].ssh_host")
-          
-          if [ "$HOST_NAME" = "null" ] || [ -z "$HOST_NAME" ]; then
-            echo "skip=true" >> $GITHUB_OUTPUT
-            echo "No host at index $HOST_INDEX"
-            exit 0
-          fi
-          
-          echo "skip=false" >> $GITHUB_OUTPUT
-          echo "name=$HOST_NAME" >> $GITHUB_OUTPUT
-          echo "ssh_host=$SSH_HOST" >> $GITHUB_OUTPUT
-          echo "Host: $HOST_NAME ($SSH_HOST)"
-
       - name: Checkout repository
-        if: steps.host.outputs.skip != 'true'
         uses: actions/checkout@v4
 
       - name: Install cloudflared
-        if: steps.host.outputs.skip != 'true'
         run: |
           sudo cp bin/cloudflared /usr/local/bin/cloudflared
           cloudflared --version
 
       - name: Setup SSH
-        if: steps.host.outputs.skip != 'true'
         run: |
           mkdir -p ~/.ssh
           cat >> ~/.ssh/config << 'EOF'
@@ -72,301 +38,212 @@ jobs:
             UserKnownHostsFile /dev/null
             LogLevel ERROR
           EOF
-          sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+          sudo apt-get update -qq && sudo apt-get install -y -qq sshpass jq
 
-      - name: Run iPerf3 speedtest
-        if: steps.host.outputs.skip != 'true'
+      - name: Run Speedtest Loop
         id: speedtest
         env:
+          HOSTS_CONFIG: ${{ secrets.HOSTS_CONFIG }}
           SSH_USERNAME: ${{ secrets.SSH_USERNAME }}
           SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }}
-          HOST_NAME: ${{ steps.host.outputs.name }}
-          SSH_HOST: ${{ steps.host.outputs.ssh_host }}
-          TEST_DURATION: ${{ github.event.inputs.test_duration }}
           IPERF_CLIENT_HOST: ${{ secrets.IPERF_CLIENT_HOST }}
           IPERF_CLIENT_USER: ${{ secrets.IPERF_CLIENT_USER }}
           IPERF_CLIENT_PASS: ${{ secrets.IPERF_CLIENT_PASS }}
+          TEST_DURATION: ${{ github.event.inputs.test_duration }}
+          TARGET_INDEX: ${{ github.event.inputs.target_index }}
         run: |
-          echo "==========================================="
-          echo "iPerf3 测速: $HOST_NAME <-> 家庭客户机"
-          echo "==========================================="
-          
+          # SSH 参数
           SSH_OPTS="-o ConnectTimeout=30 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ServerAliveInterval=30"
           
-          # 1. 建立到 OCI 实例的 Tunnel (端口 2222)
-          echo ">>> 连接 OCI 实例..."
-          cloudflared access ssh --hostname "$SSH_HOST" --url "ssh://127.0.0.1:2222" &
-          TUNNEL_OCI_PID=$!
-          sleep 5
-          
-          if ! kill -0 $TUNNEL_OCI_PID 2>/dev/null; then
-            echo "❌ OCI Tunnel 失败"
-            exit 1
-          fi
-          echo "✅ OCI Tunnel 已建立"
-          
-          # 2. 在 OCI 实例上安装 iperf3 并获取公网 IP
-          echo ">>> 配置 OCI 实例..."
-          # 先安装 iperf3 (单独执行，避免输出混入变量)
-          sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -p 2222 "${SSH_USERNAME}@127.0.0.1" '
-            which iperf3 > /dev/null 2>&1 || (sudo apt-get update -qq && sudo apt-get install -y -qq iperf3)
-          '
-          
-          # 再获取公网 IPv4 (只获取 IP)
-          OCI_PUBLIC_IP=$(sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -p 2222 "${SSH_USERNAME}@127.0.0.1" 'curl -4 -s ip.sb')
-          
-          if [ -z "$OCI_PUBLIC_IP" ]; then
-            echo "❌ 无法获取 OCI 公网 IP"
-            kill $TUNNEL_OCI_PID 2>/dev/null || true
-            exit 1
-          fi
-          
-          # 掩码 IP 用于日志显示
-          MASKED_IP=$(echo "$OCI_PUBLIC_IP" | awk -F. '{print $1"."$2"."$3".*"}')
-          echo "✅ OCI 公网 IP: $MASKED_IP"
-          
-          # 3. 在 OCI 实例上启动 iperf3 服务端 (后台运行)
-          echo ">>> 启动 iperf3 服务端..."
-          sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -p 2222 "${SSH_USERNAME}@127.0.0.1" '
-            # 杀死旧的 iperf3 进程
-            sudo pkill -9 iperf3 2>/dev/null || true
-            sleep 1
-            
-            # 开放防火墙端口 5201 (iptables)
-            sudo iptables -I INPUT -p tcp --dport 5201 -j ACCEPT 2>/dev/null || true
-            sudo netfilter-persistent save 2>/dev/null || true
-
-            # 启动服务端 (监听默认端口 5201, 使用 sudo)
-            sudo nohup iperf3 -s -D > /dev/null 2>&1
-            sleep 2
-            # 验证服务端启动
-            if pgrep -x iperf3 > /dev/null; then
-              echo "iperf3 server started"
-            else
-              echo "iperf3 server failed to start"
-              exit 1
-            fi
-          '
-          echo "✅ iperf3 服务端已启动"
-          
-          # 4. 建立到家庭测速客户机的 Tunnel (端口 2202)
-          echo ">>> 连接家庭测速客户机..."
+          # 1. 建立到家庭客户机的 Tunnel (全局持久连接, Port 2202)
+          echo ">>> 正在连接家庭测速客户机 ($IPERF_CLIENT_HOST)..."
           cloudflared access ssh --hostname "$IPERF_CLIENT_HOST" --url "ssh://127.0.0.1:2202" &
           TUNNEL_HOME_PID=$!
           sleep 5
           
           if ! kill -0 $TUNNEL_HOME_PID 2>/dev/null; then
-            echo "❌ 家庭客户机 Tunnel 失败"
-            kill $TUNNEL_OCI_PID 2>/dev/null || true
+            echo "❌ 无法连接家庭客户机，任务终止"
             exit 1
           fi
-          echo "✅ 家庭客户机 Tunnel 已建立"
+          echo "✅ 家庭客户机连接成功"
           
-          # 5. 在家庭客户机上执行 iperf3 测速
-          
-          # 清除代理环境
-          UNSET_PROXY="unset http_proxy https_proxy ftp_proxy all_proxy HTTP_PROXY HTTPS_PROXY FTP_PROXY ALL_PROXY"
-          
-          # 5.1 测速: 下载 (OCI -> 家庭)
-          echo ">>> 执行下载测速 (OCI -> 家庭)..."
-          IPERF_DL_RESULT=$(sshpass -p "$IPERF_CLIENT_PASS" ssh $SSH_OPTS -p 2202 "${IPERF_CLIENT_USER}@127.0.0.1" "
-            $UNSET_PROXY
-            which iperf3 > /dev/null 2>&1 || (apt-get update -qq && apt-get install -y -qq iperf3)
-            # -R: Reverse mode (Server sends, Client receives = Download)
-            iperf3 -c $OCI_PUBLIC_IP -R -t ${TEST_DURATION:-10} -J || echo '{\"error\": \"connection failed\"}'
-          ")
-          
-          sleep 2
-          
-          # 5.2 测速: 上传 (家庭 -> OCI)
-          echo ">>> 执行上传测速 (家庭 -> OCI)..."
-          IPERF_UL_RESULT=$(sshpass -p "$IPERF_CLIENT_PASS" ssh $SSH_OPTS -p 2202 "${IPERF_CLIENT_USER}@127.0.0.1" "
-            $UNSET_PROXY
-            # Default mode (Client sends, Server receives = Upload)
-            iperf3 -c $OCI_PUBLIC_IP -t ${TEST_DURATION:-10} -J || echo '{\"error\": \"connection failed\"}'
-          ")
-          
-          # 6. 清理
-          echo ">>> 清理..."
-          sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -p 2222 "${SSH_USERNAME}@127.0.0.1" 'sudo pkill -9 iperf3 2>/dev/null || true'
-          kill $TUNNEL_OCI_PID 2>/dev/null || true
-          kill $TUNNEL_HOME_PID 2>/dev/null || true
-          
-          # 7. 解析结果函数
-          get_speed_mbps() {
-              local json=$1
-              if echo "$json" | grep -q '"error"'; then
-                  echo "N/A"
-              else
-                  local bits=$(echo "$json" | jq -r '.end.sum_received.bits_per_second // 0' 2>/dev/null)
-                  if [ -z "$bits" ] || [ "$bits" = "0" ] || [ "$bits" = "null" ]; then
-                      echo "N/A"
-                  else
-                      echo "scale=2; $bits / 1000000" | bc
-                  fi
-              fi
-          }
-
-          echo ">>> 解析结果..."
-          DL_SPEED_VAL=$(get_speed_mbps "$IPERF_DL_RESULT")
-          UL_SPEED_VAL=$(get_speed_mbps "$IPERF_UL_RESULT")
-          
-          if [ "$DL_SPEED_VAL" = "N/A" ]; then DOWNLOAD_SPEED="N/A"; else DOWNLOAD_SPEED="${DL_SPEED_VAL} Mbps"; fi
-          if [ "$UL_SPEED_VAL" = "N/A" ]; then UPLOAD_SPEED="N/A"; else UPLOAD_SPEED="${UL_SPEED_VAL} Mbps"; fi
-          
-          echo "download_speed=$DOWNLOAD_SPEED" >> $GITHUB_OUTPUT
-          echo "upload_speed=$UPLOAD_SPEED" >> $GITHUB_OUTPUT
-          echo "oci_ip=$OCI_PUBLIC_IP" >> $GITHUB_OUTPUT
-          
-          MASKED_IP=$(echo "$OCI_PUBLIC_IP" | awk -F. '{print $1"."$2"."$3".*"}')
-          echo ""
-          echo "==========================================="
-          echo "✅ 测速结果: $HOST_NAME"
-          echo "   OCI IP: $MASKED_IP"
-          echo "   下载速度: $DOWNLOAD_SPEED"
-          echo "   上传速度: $UPLOAD_SPEED"
-          echo "==========================================="
-
-      - name: Save result to file
-        if: steps.host.outputs.skip != 'true'
-        env:
-          HOST_NAME: ${{ steps.host.outputs.name }}
-          DOWNLOAD_SPEED: ${{ steps.speedtest.outputs.download_speed }}
-          UPLOAD_SPEED: ${{ steps.speedtest.outputs.upload_speed }}
-        run: |
-          mkdir -p speedtest_results
-          SAFE_NAME=$(echo "$HOST_NAME" | tr ' ' '_')
-          TIMESTAMP=$(date -u +"%Y-%m-%d %H:%M:%S")
-          echo "${HOST_NAME},${DOWNLOAD_SPEED},${UPLOAD_SPEED},${TIMESTAMP}" > "speedtest_results/${SAFE_NAME}.txt"
-
-      - name: Upload speedtest result artifact
-        if: steps.host.outputs.skip != 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: speedtest-result-${{ matrix.index }}
-          path: speedtest_results/*.txt
-          if-no-files-found: ignore
-          retention-days: 1
-
-  # 收集所有测速结果
-  collect:
-    name: Collect Speedtest Results
-    needs: speedtest
-    if: always()
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Download all speedtest result artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-          pattern: speedtest-result-*
-          merge-multiple: true
-        continue-on-error: true
-
-      - name: List artifacts for debugging
-        run: ls -R artifacts || echo "No artifacts found"
-
-      - name: Merge results to CSV
-        run: |
+          # 2. 准备 CSV 文件
           CSV_FILE="csv/iperf3_results.csv"
           mkdir -p csv
-          
-          # 创建 CSV 头 (如果不存在或为空)
           if [ ! -f "$CSV_FILE" ] || [ ! -s "$CSV_FILE" ]; then
             echo "name,download_speed,upload_speed,timestamp" > "$CSV_FILE"
           else
-             # 如果文件存在但没有 upload_speed 列 (旧格式), 简单的处理方式是重置 header 或者追加空列
-             # 为了简单起见, 我们保持原来的文件追加模式, 但新的 header 只在新文件时写入
-             # 如果用户想完全重置, 可以手动删除 CSV
-             HEADER=$(head -1 "$CSV_FILE")
-             if [[ "$HEADER" != *"upload_speed"* ]]; then
-                echo "Detected old CSV format, appending new column to header locally for display consistency (file unmodified)"
-             fi
+            # 简单检查表头
+            HEADER=$(head -1 "$CSV_FILE")
+            if [[ "$HEADER" != *"upload_speed"* ]]; then
+               echo "Detected old CSV format"
+            fi
           fi
           
-          # 合并所有结果
-          if [ -d artifacts ]; then
-            find artifacts -name "*.txt" -type f | while read result_file; do
-              if [ -f "$result_file" ]; then
-                cat "$result_file" >> "$CSV_FILE"
-                echo "Added: $(cat "$result_file")"
-              fi
-            done
-          fi
+          # 3. 循环遍历主机
+          # 将 JSON 数组读入并逐行处理
+          # 增加 index 计数器
+          INDEX=0
           
-          echo ""
-          echo "=== 本次测速结果 ==="
-          tail -30 "$CSV_FILE"
-
-      - name: Find fastest instance
-        run: |
-          CSV_FILE="csv/iperf3_results.csv"
+          echo "$HOSTS_CONFIG" | jq -c '.[]' | while read -r host_item; do
+            # 如果指定了 TARGET_INDEX，则跳过不匹配的
+            if [ -n "$TARGET_INDEX" ] && [ "$INDEX" -ne "$TARGET_INDEX" ]; then
+              echo "跳过 Index $INDEX (Target: $TARGET_INDEX)"
+              INDEX=$((INDEX+1))
+              continue
+            fi
+            
+            HOST_NAME=$(echo "$host_item" | jq -r '.name')
+            SSH_HOST=$(echo "$host_item" | jq -r '.ssh_host')
+            
+            if [ "$HOST_NAME" = "null" ] || [ -z "$HOST_NAME" ]; then
+               INDEX=$((INDEX+1))
+               continue
+            fi
+            
+            echo ""
+            echo "---------------------------------------------------"
+            echo "Processing Host [$INDEX]: $HOST_NAME"
+            echo "---------------------------------------------------"
+            
+            # --- 单个主机流程开始 ---
+            
+            # 3.1 建立 OCI 临时隧道 (Port 2222)
+            cloudflared access ssh --hostname "$SSH_HOST" --url "ssh://127.0.0.1:2222" &
+            TUNNEL_OCI_PID=$!
+            sleep 5
+            
+            if ! kill -0 $TUNNEL_OCI_PID 2>/dev/null; then
+              echo "❌ OCI Tunnel 失败: $HOST_NAME"
+              INDEX=$((INDEX+1))
+              continue
+            fi
+            
+            # 3.2 配置 OCI (安装 iperf3 + 获取 IP + 启动 Server)
+            echo ">>> 配置 OCI..."
+            
+            # 尝试连接并执行命令
+            PREPARE_OUTPUT=$(sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -p 2222 "${SSH_USERNAME}@127.0.0.1" '
+              which iperf3 > /dev/null 2>&1 || (sudo apt-get update -qq && sudo apt-get install -y -qq iperf3)
+              IP=$(curl -4 -s ip.sb)
+              echo "PUBLIC_IP::$IP"
+              sudo pkill -9 iperf3 2>/dev/null || true
+              sudo iptables -I INPUT -p tcp --dport 5201 -j ACCEPT 2>/dev/null || true
+              sudo netfilter-persistent save 2>/dev/null || true
+              sudo nohup iperf3 -s -D > /dev/null 2>&1
+              sleep 2
+              pgrep -x iperf3 > /dev/null && echo "SERVER_STARTED" || echo "SERVER_FAILED"
+            ' 2>&1)
+            
+            # 解析输出
+            OCI_PUBLIC_IP=$(echo "$PREPARE_OUTPUT" | grep "PUBLIC_IP::" | cut -d':' -f3 | tr -d '\r')
+            SERVER_STATUS=$(echo "$PREPARE_OUTPUT" | grep "SERVER_STARTED")
+            
+            if [ -z "$OCI_PUBLIC_IP" ] || [ -z "$SERVER_STATUS" ]; then
+               echo "❌ OCI 配置失败 (IP: $OCI_PUBLIC_IP, Server: $SERVER_STATUS)"
+               kill $TUNNEL_OCI_PID 2>/dev/null || true
+               INDEX=$((INDEX+1))
+               continue
+            fi
+            
+            MASKED_IP=$(echo "$OCI_PUBLIC_IP" | awk -F. '{print $1"."$2"."$3".*"}')
+            echo "✅ OCI 就绪: $MASKED_IP"
+            
+            # 3.3 客户机测速 (Home -> OCI)
+            echo ">>> 开始测速..."
+            
+            UNSET_PROXY="unset http_proxy https_proxy ftp_proxy all_proxy HTTP_PROXY HTTPS_PROXY FTP_PROXY ALL_PROXY"
+            
+            # 下载 (Server sends to Client)
+            IPERF_DL_RESULT=$(sshpass -p "$IPERF_CLIENT_PASS" ssh $SSH_OPTS -p 2202 "${IPERF_CLIENT_USER}@127.0.0.1" "
+              $UNSET_PROXY
+              which iperf3 > /dev/null 2>&1 || (apt-get update -qq && apt-get install -y -qq iperf3)
+              iperf3 -c $OCI_PUBLIC_IP -R -t ${TEST_DURATION:-10} -J || echo '{\"error\": \"connection failed\"}'
+            ")
+            
+            sleep 1
+            
+            # 上传 (Client sends to Server)
+            IPERF_UL_RESULT=$(sshpass -p "$IPERF_CLIENT_PASS" ssh $SSH_OPTS -p 2202 "${IPERF_CLIENT_USER}@127.0.0.1" "
+              $UNSET_PROXY
+              iperf3 -c $OCI_PUBLIC_IP -t ${TEST_DURATION:-10} -J || echo '{\"error\": \"connection failed\"}'
+            ")
+            
+            # 3.4 清理 OCI
+            sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -p 2222 "${SSH_USERNAME}@127.0.0.1" 'sudo pkill -9 iperf3 2>/dev/null || true'
+            kill $TUNNEL_OCI_PID 2>/dev/null || true
+            
+            # 3.5 解析结果 & 写入 CSV
+            get_speed_mbps() {
+                local json=$1
+                if echo "$json" | grep -q '"error"'; then
+                    echo "N/A"
+                else
+                    local bits=$(echo "$json" | jq -r '.end.sum_received.bits_per_second // 0' 2>/dev/null)
+                    if [ -z "$bits" ] || [ "$bits" = "0" ] || [ "$bits" = "null" ]; then
+                        echo "N/A"
+                    else
+                        echo "scale=2; $bits / 1000000" | bc
+                    fi
+                fi
+            }
+            
+            DL_VAL=$(get_speed_mbps "$IPERF_DL_RESULT")
+            UL_VAL=$(get_speed_mbps "$IPERF_UL_RESULT")
+            
+            if [ "$DL_VAL" != "N/A" ]; then DL_STR="${DL_VAL} Mbps"; else DL_STR="N/A"; fi
+            if [ "$UL_VAL" != "N/A" ]; then UL_STR="${UL_VAL} Mbps"; else UL_STR="N/A"; fi
+            
+            TIMESTAMP=$(date -u +"%Y-%m-%d %H:%M:%S")
+            
+            # 写入文件
+            echo "${HOST_NAME},${DL_STR},${UL_STR},${TIMESTAMP}" >> "$CSV_FILE"
+            echo "✅ 结果: 下载 $DL_STR | 上传 $UL_STR"
+            
+            # --- 单个主机流程结束 ---
+            
+            INDEX=$((INDEX+1))
+          done
           
-          echo ""
-          echo "==========================================="
-          echo "🏆 速度排名 (按下载速度排序)"
-          echo "==========================================="
-          echo -e "下载\t\t上传\t\t实例名称"
+          # 结束后清理家庭隧道
+          kill $TUNNEL_HOME_PID 2>/dev/null || true
+          echo "✅ 所有任务完成"
           
-          # 提取本次测速结果并排序 (跳过 N/A)
-          # 注意：CSV 格式现在是 name,download,upload,timestamp
-          # awk $2=download, $3=upload
-          TODAY=$(date -u +"%Y-%m-%d")
-          grep "$TODAY" "$CSV_FILE" 2>/dev/null | grep -v "N/A" | \
-            awk -F',' '{
-              dl = $2; ul = $3;
-              gsub(/ Mbps/, "", dl); gsub(/ Mbps/, "", ul);
-              printf "%.2f Mbps\t%.2f Mbps\t%s\n", dl, ul, $1
-            }' | sort -k1 -rn | head -10
-          
-          echo ""
-          echo "==========================================="
+          # 显示当前文件内容用于调试
+          echo "=== Final CSV Content ==="
+          tail -20 "$CSV_FILE"
 
       - name: Commit results
         run: |
-          if [ -f csv/iperf3_results.csv ]; then
+          CSV_FILE="csv/iperf3_results.csv"
+          if [ -f "$CSV_FILE" ]; then
             git config user.name "github-actions[bot]"
             git config user.email "github-actions[bot]@users.noreply.github.com"
-            
-            # 使用 rebase 模式拉取最新代码，防止冲突
-            git pull --rebase origin main || echo "Git pull failed, pushing anyway might fail"
-            
-            git add csv/iperf3_results.csv
-            git diff --staged --quiet || git commit -m "Update iPerf3 speedtest results $(date -u +%Y-%m-%d)"
+            git pull --rebase origin main || echo "Git pull failed"
+            git add "$CSV_FILE"
+            git diff --staged --quiet || git commit -m "Update iPerf3 speedtest results (Loop) $(date -u +%Y-%m-%d)"
             git push || echo "Nothing to push"
           fi
 
       - name: Summary
         run: |
-          echo "## 🚀 iPerf3 测速结果 (OCI <-> 家庭)" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          
           CSV_FILE="csv/iperf3_results.csv"
           TODAY=$(date -u +"%Y-%m-%d")
+          
+          echo "## 🚀 iPerf3 测速结果 (Single Loop)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
           
           echo "### 🏆 速度排名 (Top 10)" >> $GITHUB_STEP_SUMMARY
           echo "| 下载速度 | 上传速度 | 实例名称 |" >> $GITHUB_STEP_SUMMARY
           echo "| :--- | :--- | :--- |" >> $GITHUB_STEP_SUMMARY
           
-          grep "$TODAY" "$CSV_FILE" 2>/dev/null | grep -v "N/A" | \
-            awk -F',' '{
-              dl = $2; ul = $3;
-              gsub(/ Mbps/, "", dl); gsub(/ Mbps/, "", ul);
-              printf "| %s Mbps | %s Mbps | %s |\n", dl, ul, $1
-            }' | sort -k2 -rn | head -10 >> $GITHUB_STEP_SUMMARY
-            # sort -k2 means sorting by Download Speed (which is the first number in the output string because we used printf)
-            # Actually sort -k2 in the pipe above sorts by the 2nd column of the pipe input.
-            # The pipe input is "| DL | UL | Name | IP |" so column 1 is "|", col 2 is "DL". Correct.
-          
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### 📊 完整结果" >> $GITHUB_STEP_SUMMARY
-          echo '```csv' >> $GITHUB_STEP_SUMMARY
-          head -1 "$CSV_FILE" >> $GITHUB_STEP_SUMMARY
-          grep "$TODAY" "$CSV_FILE" 2>/dev/null | head -30 >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-
+          if [ -f "$CSV_FILE" ]; then
+            grep "$TODAY" "$CSV_FILE" 2>/dev/null | grep -v "N/A" | \
+              awk -F',' '{
+                dl = $2; ul = $3;
+                gsub(/ Mbps/, "", dl); gsub(/ Mbps/, "", ul);
+                printf "| %s Mbps | %s Mbps | %s |\n", dl, ul, $1
+              }' | sort -k2 -rn | head -10 >> $GITHUB_STEP_SUMMARY
+          else
+            echo "No results found." >> $GITHUB_STEP_SUMMARY
+          fi
