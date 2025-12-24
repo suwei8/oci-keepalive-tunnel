@@ -47,11 +47,13 @@ if command -v systemctl >/dev/null 2>&1; then
     if [ -n "$SUDO" ]; then
        $SUDO systemctl stop xray || true
        $SUDO systemctl disable xray || true
+       $SUDO systemctl mask xray || true
        $SUDO systemctl stop nginx || true
        $SUDO systemctl stop apache2 || true
     else
        systemctl stop xray || true
        systemctl disable xray || true
+       systemctl mask xray || true
        systemctl stop nginx || true
        systemctl stop apache2 || true
     fi
