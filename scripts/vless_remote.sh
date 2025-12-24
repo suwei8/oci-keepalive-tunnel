@@ -104,8 +104,8 @@ chmod +x xray
 
 # Generate UUID and Keys using the downloaded binary
 KEYS=$(./xray x25519)
-PRIVATE_KEY=$(echo "$KEYS" | grep -i "Private" | head -n1 | awk -F: '{print $2}' | xargs)
-PUBLIC_KEY=$(echo "$KEYS" | grep -i "Public" | head -n1 | awk -F: '{print $2}' | xargs)
+PRIVATE_KEY=$(echo "$KEYS" | grep -i "PrivateKey" | head -n1 | awk -F: '{print $2}' | xargs)
+PUBLIC_KEY=$(echo "$KEYS" | grep -i "Password" | head -n1 | awk -F: '{print $2}' | xargs)
 UUID=$(uuidgen)
 
 if [ -z "$PRIVATE_KEY" ] || [ -z "$PUBLIC_KEY" ] || [ -z "$UUID" ]; then
