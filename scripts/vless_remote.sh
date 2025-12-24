@@ -31,14 +31,18 @@ UUID=$(uuidgen)
 
 # Generate KeyPair (using xray binary)
 KEYS=$(/usr/local/bin/xray x25519)
-PRIVATE_KEY=$(echo "$KEYS" | grep "Private Key" | awk '{print $3}')
-PUBLIC_KEY=$(echo "$KEYS" | grep "Public Key" | awk '{print $3}')
+echo "Generated Keys: $KEYS"
+
+# Parse keys more robustly
+PRIVATE_KEY=$(echo "$KEYS" | grep -i "Private" | head -n1 | awk -F: '{print $2}' | xargs)
+PUBLIC_KEY=$(echo "$KEYS" | grep -i "Public" | head -n1 | awk -F: '{print $2}' | xargs)
 
 PORT=443
 SNI="www.apple.com"
 
 # Config JSON
-cat > /usr/local/etc/xray/config.json <<EOF
+# Use tee to write as root
+cat <<EOF | $SUDO tee /usr/local/etc/xray/config.json > /dev/null
 {
   "log": {
     "loglevel": "warning"
