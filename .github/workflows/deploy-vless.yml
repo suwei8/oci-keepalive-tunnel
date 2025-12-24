@@ -1,0 +1,231 @@
+name: Deploy VLESS + Reality
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_index:
+        description: 'Target Host Index (0-29)'
+        required: true
+        type: string
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Get host info
+        id: host
+        env:
+          HOSTS_CONFIG: ${{ secrets.HOSTS_CONFIG }}
+          TARGET_INDEX: ${{ inputs.target_index }}
+        run: |
+          if [ -z "$TARGET_INDEX" ]; then
+            echo "Error: Target Index is required"
+            exit 1
+          fi
+          
+          HOST_NAME=$(echo "$HOSTS_CONFIG" | jq -r ".[$TARGET_INDEX].name")
+          SSH_HOST=$(echo "$HOSTS_CONFIG" | jq -r ".[$TARGET_INDEX].ssh_host")
+          
+          if [ "$HOST_NAME" = "null" ] || [ -z "$HOST_NAME" ]; then
+            echo "Error: No host found at index $TARGET_INDEX"
+            exit 1
+          fi
+          
+          echo "name=$HOST_NAME" >> $GITHUB_OUTPUT
+          echo "ssh_host=$SSH_HOST" >> $GITHUB_OUTPUT
+          echo "Deploying to: $HOST_NAME ($SSH_HOST)"
+
+      - name: Install cloudflared
+        run: |
+          curl -sL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o /tmp/cloudflared
+          chmod +x /tmp/cloudflared
+          sudo mv /tmp/cloudflared /usr/local/bin/cloudflared
+
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          cat >> ~/.ssh/config << 'EOF'
+          Host *
+            StrictHostKeyChecking no
+            UserKnownHostsFile /dev/null
+            LogLevel ERROR
+          EOF
+          sudo apt-get update -qq && sudo apt-get install -y -qq sshpass jq
+
+      - name: Deploy VLESS + Reality
+        id: vless
+        env:
+          SSH_USERNAME: ${{ secrets.SSH_USERNAME }}
+          SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }}
+          SSH_HOST: ${{ steps.host.outputs.ssh_host }}
+          HOST_NAME: ${{ steps.host.outputs.name }}
+          # Using provided telegram secrets directly in env for now as requested
+          TG_BOT_TOKEN: "8309646340:AAG8djSCzjB_VTbgLOco1SosjhjWnfhsA0U"
+          TG_CHAT_ID: "1118793113"
+        run: |
+          SSH_OPTS="-o ConnectTimeout=30 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ServerAliveInterval=30"
+          
+          # 1. Start Tunnel
+          echo ">>> Establishing Tunnel..."
+          cloudflared access ssh --hostname "$SSH_HOST" --url "ssh://127.0.0.1:2222" &
+          TUNNEL_PID=$!
+          sleep 10
+          
+          if ! kill -0 $TUNNEL_PID 2>/dev/null; then
+            echo "❌ Tunnel failed"
+            exit 1
+          fi
+          
+          # 2. Deploy on Remote
+          echo ">>> Configure Remote Host..."
+          
+          # We will generate a script locally and execute it remotely to avoid escaping hell
+          cat > deploy_script.sh << 'EOS'
+          #!/bin/bash
+          set -e
+          
+          # Check root
+          if [ "$EUID" -ne 0 ]; then
+            if command -v sudo >/dev/null 2>&1; then
+              SUDO="sudo"
+            else
+              echo "Error: Need root or sudo"
+              exit 1
+            fi
+          else
+            SUDO=""
+          fi
+          
+          # Install basic tools
+          $SUDO apt-get update -qq
+          $SUDO apt-get install -y -qq curl openssl uuid-runtime
+          
+          # Install Xray (official script)
+          echo ">>> Installing Xray..."
+          bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install
+          
+          # Generate Config
+          UUID=$(uuidgen)
+          
+          # Generate KeyPair (using xray binary)
+          # Xray x25519 outputs: "Private Key: xxx", "Public Key: yyy"
+          KEYS=$(/usr/local/bin/xray x25519)
+          PRIVATE_KEY=$(echo "$KEYS" | grep "Private Key" | awk '{print $3}')
+          PUBLIC_KEY=$(echo "$KEYS" | grep "Public Key" | awk '{print $3}')
+          
+          PORT=443
+          SNI="www.apple.com"
+          
+          # Config JSON
+          cat > /usr/local/etc/xray/config.json <<EOF
+          {
+            "log": {
+              "loglevel": "warning"
+            },
+            "inbounds": [
+              {
+                "port": $PORT,
+                "protocol": "vless",
+                "settings": {
+                  "clients": [
+                    {
+                      "id": "$UUID",
+                      "flow": "xtls-rprx-vision"
+                    }
+                  ],
+                  "decryption": "none"
+                },
+                "streamSettings": {
+                  "network": "tcp",
+                  "security": "reality",
+                  "realitySettings": {
+                    "show": false,
+                    "dest": "$SNI:443",
+                    "xver": 0,
+                    "serverNames": [
+                      "$SNI"
+                    ],
+                    "privateKey": "$PRIVATE_KEY",
+                    "shortIds": [
+                      ""
+                    ]
+                  }
+                }
+              }
+            ],
+            "outbounds": [
+              {
+                "protocol": "freedom",
+                "tag": "direct"
+              }
+            ]
+          }
+EOF
+          
+          # Restart Xray
+          $SUDO systemctl restart xray
+          $SUDO systemctl enable xray
+          
+          # Get IP
+          PUBLIC_IP=$(curl -s -4 ip.sb)
+          
+          # Output info for client
+          echo "---VLESS_INFO_START---"
+          echo "IP=$PUBLIC_IP"
+          echo "PORT=$PORT"
+          echo "UUID=$UUID"
+          echo "PUBLIC_KEY=$PUBLIC_KEY"
+          echo "SNI=$SNI"
+          echo "---VLESS_INFO_END---"
+          EOS
+          
+          echo ">>> Executing script on remote..."
+          # Execute the script remotely
+          # Using sshpass to feed script through stdin
+          REMOTE_OUTPUT=$(sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -p 2222 "${SSH_USERNAME}@127.0.0.1" "cat > /tmp/vless_install.sh && chmod +x /tmp/vless_install.sh && timeout 300 /tmp/vless_install.sh" < deploy_script.sh)
+          
+          echo "Remote execution finished."
+          
+          # Parse Output
+          # Since existing ssh session output might be mixed, we might need a better way to capture. 
+          # Actually the command above captures stdout of the ssh command.
+          
+          IP=$(echo "$REMOTE_OUTPUT" | grep "IP=" | cut -d= -f2 | tr -d '\r')
+          PORT=$(echo "$REMOTE_OUTPUT" | grep "PORT=" | cut -d= -f2 | tr -d '\r')
+          UUID=$(echo "$REMOTE_OUTPUT" | grep "UUID=" | cut -d= -f2 | tr -d '\r')
+          PBK=$(echo "$REMOTE_OUTPUT" | grep "PUBLIC_KEY=" | cut -d= -f2 | tr -d '\r')
+          SNI=$(echo "$REMOTE_OUTPUT" | grep "SNI=" | cut -d= -f2 | tr -d '\r')
+          
+          if [ -z "$UUID" ]; then
+            echo "❌ Failed to retrieve VLESS config"
+            echo "Debug Output: $REMOTE_OUTPUT"
+            kill $TUNNEL_PID
+            exit 1
+          fi
+          
+          # Construct Link
+          # vless://UUID@IP:PORT?security=reality&encryption=none&pbk=PBK&headerType=none&fp=chrome&type=tcp&flow=xtls-rprx-vision&sni=SNI#NAME
+          LINK="vless://${UUID}@${IP}:${PORT}?security=reality&encryption=none&pbk=${PBK}&headerType=none&fp=chrome&type=tcp&flow=xtls-rprx-vision&sni=${SNI}#${HOST_NAME}"
+          
+          echo "✅ VLESS Deployed!"
+          echo "Link: $LINK"
+          
+          # Send Telegram Notification
+          echo ">>> Sending Telegram Notification..."
+          MSG_TEXT="🚀 *VLESS + Reality Deployed*
+          
+          *Host:* ${HOST_NAME}
+          *IP:* \`${IP}\`
+          *Port:* ${PORT}
+          
+          \`\`\`
+          ${LINK}
+          \`\`\`"
+          
+          curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
+            -d "chat_id=${TG_CHAT_ID}" \
+            -d "parse_mode=Markdown" \
+            -d "text=$MSG_TEXT"
+            
+          kill $TUNNEL_PID
