@@ -36,8 +36,24 @@ WORK_DIR="$HOME/vless_tmp"
 mkdir -p "$WORK_DIR"
 cd "$WORK_DIR"
 
-# Cleanup old process if running (simple kill by name)
-pkill -f "$WORK_DIR/xray" || true
+# Cleanup old process if running
+# Stop systemd service if exists (cleanup previous installs)
+if command -v systemctl >/dev/null 2>&1; then
+    if [ -n "$SUDO" ]; then
+       $SUDO systemctl stop xray || true
+       $SUDO systemctl disable xray || true
+    else
+       systemctl stop xray || true
+       systemctl disable xray || true
+    fi
+fi
+
+# Kill any existing xray process
+if [ -n "$SUDO" ]; then
+   $SUDO pkill -f xray || true
+else
+   pkill -f xray || true
+fi
 
 # Download and Unzip
 curl -L -s "$DOWNLOAD_URL" -o xray.zip
