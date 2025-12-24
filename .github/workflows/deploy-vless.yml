@@ -67,6 +67,9 @@ jobs:
           TG_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
+          echo "Current Dir: $(pwd)"
+          ls -la
+          ls -R scripts || echo "scripts dir not found"
           SSH_OPTS="-v -o ConnectTimeout=30 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ServerAliveInterval=30"
           
           # 1. Start Tunnel
