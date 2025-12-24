@@ -1,5 +1,7 @@
 #!/bin/bash
+#!/bin/bash
 set -e
+set -x
 
 # Check root
 if [ "$EUID" -ne 0 ]; then

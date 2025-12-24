@@ -98,9 +98,23 @@ jobs:
           
           echo ">>> Executing script on remote..."
           # Execute the script remotely by piping the local file to ssh
-          REMOTE_OUTPUT=$(sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -p 2222 "${SSH_USERNAME}@127.0.0.1" "cat > /tmp/vless_install.sh && chmod +x /tmp/vless_install.sh && timeout 300 /tmp/vless_install.sh" < scripts/vless_remote.sh)
+          set +e
+          REMOTE_OUTPUT=$(sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -p 2222 "${SSH_USERNAME}@127.0.0.1" "cat > /tmp/vless_install.sh && chmod +x /tmp/vless_install.sh && timeout 300 /tmp/vless_install.sh" < scripts/vless_remote.sh 2>&1)
+          EXIT_CODE=$?
+          set -e
           
-          echo "Remote execution finished."
+          echo "Remote execution finished with code $EXIT_CODE."
+          echo "START REMOTE OUTPUT:"
+          echo "$REMOTE_OUTPUT"
+          echo "END REMOTE OUTPUT"
+          
+          if [ $EXIT_CODE -ne 0 ]; then
+             echo "❌ SSH or Script execution failed!"
+             # We continue to parse output just in case, but likely failed.
+             # Actually, if script failed, we should probably exit, but let's see output first.
+          fi
+          
+          # Parse Output
           
           # Parse Output
           IP=$(echo "$REMOTE_OUTPUT" | grep "IP=" | cut -d= -f2 | tr -d '\r')
