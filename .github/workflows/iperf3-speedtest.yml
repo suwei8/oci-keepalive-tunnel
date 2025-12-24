@@ -38,6 +38,15 @@ on:
           - '新加坡西6-arm1'
           - '新加坡西6-arm2'
           - '新加坡西7'
+      speed_rank:
+        description: '上期测速排名 (仅当 Target Hosts 为 ALL 时生效)'
+        required: false
+        default: 'ALL'
+        type: choice
+        options:
+          - 'ALL'
+          - 'TOP5'
+          - 'TOP10'
 
 jobs:
   speedtest-loop:
@@ -78,6 +87,7 @@ jobs:
           IPERF_CLIENT_PASS: ${{ secrets.IPERF_CLIENT_PASS }}
           TEST_DURATION: ${{ github.event.inputs.test_duration }}
           TARGET_HOSTS: ${{ github.event.inputs.target_hosts }}
+          SPEED_RANK: ${{ github.event.inputs.speed_rank }}
         run: |
           # SSH 参数
           SSH_OPTS="-o ConnectTimeout=30 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ServerAliveInterval=30"
@@ -94,12 +104,44 @@ jobs:
           fi
           echo "✅ 家庭客户机连接成功"
           
-          # 2. 准备 CSV 文件 (每次覆盖)
+          # 2. 确定目标主机列表 (Target Selection Logic)
           CSV_FILE="csv/iperf3_results.csv"
+          TARGET_LIST=""
+          
+          if [ "$TARGET_HOSTS" != "ALL" ] && [ -n "$TARGET_HOSTS" ]; then
+              # 用户明确指定了主机 (Priority 1)
+              echo "🎯 Mode: Single Host Selection"
+              TARGET_LIST="$TARGET_HOSTS"
+          elif [ "$SPEED_RANK" != "ALL" ] && [ -n "$SPEED_RANK" ]; then
+              # 用户选择了排名筛选 (Priority 2)
+              echo "📊 Mode: Speed Rank Filter ($SPEED_RANK)"
+              if [ -f "$CSV_FILE" ]; then
+                  # 解析 CSV 取出 Top N 的名字
+                  RANK_NUM=30
+                  if [ "$SPEED_RANK" == "TOP5" ]; then RANK_NUM=5; fi
+                  if [ "$SPEED_RANK" == "TOP10" ]; then RANK_NUM=10; fi
+                  
+                  # 逻辑: 跳过表头 -> 按第2列数值降序 -> 取前N行 -> 提取第1列名字 -> 替换换行为逗号
+                  # 注意: download_speed 格式如 "12 Mbps", sort -n 可以正确处理开头的数字
+                  LOG_LIST=$(tail -n +2 "$CSV_FILE" | sort -t',' -k2 -nr | head -n "$RANK_NUM")
+                  TARGET_LIST=$(echo "$LOG_LIST" | cut -d',' -f1 | tr '\n' ',' | sed 's/,$//')
+                  
+                  echo "Found Top Hosts: $TARGET_LIST"
+                  
+                  if [ -z "$TARGET_LIST" ]; then
+                     echo "⚠️ Warning: Could not find ranking data, falling back to ALL."
+                  fi
+              else
+                  echo "⚠️ Warning: CSV file not found (first run?), falling back to ALL."
+              fi
+          fi
+          
+          # 3. 准备 CSV 文件 (每次覆盖)
+          # 注意：必须在读取完排名后才清空文件
           mkdir -p csv
           echo "name,download_speed,upload_speed,timestamp" > "$CSV_FILE"
           
-          # 3. 循环遍历主机
+          # 4. 循环遍历主机
           # 先获取主机总数
           HOST_COUNT=$(echo "$HOSTS_CONFIG" | jq '. | length')
           MAX_INDEX=$((HOST_COUNT - 1))
@@ -116,27 +158,31 @@ jobs:
                continue
             fi
 
-            # 检查是否匹配 TARGET_HOSTS
-            if [ -n "$TARGET_HOSTS" ] && [ "$TARGET_HOSTS" != "ALL" ]; then
+            # 过滤逻辑
+            if [ -n "$TARGET_LIST" ]; then
                 SHOULD_RUN=0
                 # 替换中文逗号
-                SANITIZED_TARGETS=$(echo "$TARGET_HOSTS" | tr '，' ',')
+                SANITIZED_TARGETS=$(echo "$TARGET_LIST" | tr '，' ',')
                 # 逗号分隔循环
                 OLD_IFS="$IFS"
                 IFS=','
                 for KEYWORD in $SANITIZED_TARGETS; do
-                    # 去除前后空格 (简单处理)
                     KEYWORD=$(echo "$KEYWORD" | xargs)
+                    # 精确匹配名字，避免部分匹配 (因为是从 CSV 读取的完整名字)
+                    if [ "$HOST_NAME" == "$KEYWORD" ]; then
+                        SHOULD_RUN=1
+                        echo "Target match: '$HOST_NAME'"
+                        break
+                    fi
+                    # 兼容之前的手动输入模糊匹配
                     if [[ "$HOST_NAME" == *"$KEYWORD"* ]]; then
                         SHOULD_RUN=1
-                        echo "Target match: '$HOST_NAME' contains '$KEYWORD'"
                         break
                     fi
                 done
                 IFS="$OLD_IFS"
                 
                 if [ "$SHOULD_RUN" -eq 0 ]; then
-                    # echo "Skipping $HOST_NAME (Not in target list)"
                     continue
                 fi
             fi
