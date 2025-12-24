@@ -60,9 +60,8 @@ jobs:
           SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }}
           SSH_HOST: ${{ steps.host.outputs.ssh_host }}
           HOST_NAME: ${{ steps.host.outputs.name }}
-          # Using provided telegram secrets directly in env for now as requested
-          TG_BOT_TOKEN: "8309646340:AAG8djSCzjB_VTbgLOco1SosjhjWnfhsA0U"
-          TG_CHAT_ID: "1118793113"
+          TG_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           SSH_OPTS="-o ConnectTimeout=30 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ServerAliveInterval=30"
           
