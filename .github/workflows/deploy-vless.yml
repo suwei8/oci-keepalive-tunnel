@@ -41,9 +41,10 @@ jobs:
 
       - name: Install cloudflared
         run: |
-          curl -sL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o /tmp/cloudflared
+          wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -O /tmp/cloudflared
           chmod +x /tmp/cloudflared
           sudo mv /tmp/cloudflared /usr/local/bin/cloudflared
+          cloudflared --version
 
       - name: Setup SSH
         run: |
