@@ -67,6 +67,9 @@ if [ -n "$SUDO" ]; then
    MAX_RETRIES=10
    while $SUDO ss -tulpn | grep -q :443; do
        echo "Port 443 still in use. Killing..."
+       $SUDO systemctl stop xray || true
+       $SUDO systemctl stop nginx || true
+       $SUDO systemctl stop apache2 || true
        $SUDO fuser -k -9 443/tcp || true
        $SUDO pkill -9 -x xray || true
        sleep 1
@@ -83,6 +86,9 @@ else
    MAX_RETRIES=10
    while ss -tulpn | grep -q :443; do
        echo "Port 443 still in use. Killing..."
+       systemctl stop xray || true
+       systemctl stop nginx || true
+       systemctl stop apache2 || true
        fuser -k -9 443/tcp || true
        pkill -9 -x xray || true
        sleep 1
