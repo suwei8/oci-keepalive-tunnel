@@ -67,25 +67,18 @@ jobs:
           TG_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          echo "Current Dir: $(pwd)"
-          ls -la
-          ls -R scripts || echo "scripts dir not found"
-          SSH_OPTS="-v -o ConnectTimeout=30 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ServerAliveInterval=30"
+          SSH_OPTS="-o ConnectTimeout=30 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ServerAliveInterval=30"
           
           # 1. Start Tunnel
           echo ">>> Establishing Tunnel..."
-          cloudflared access ssh --hostname "$SSH_HOST" --url "ssh://127.0.0.1:2222" > /tmp/cloudflared.log 2>&1 &
+          cloudflared access ssh --hostname "$SSH_HOST" --url "ssh://127.0.0.1:2222" &
           TUNNEL_PID=$!
-          sleep 15
+          sleep 10
           
           if ! kill -0 $TUNNEL_PID 2>/dev/null; then
             echo "❌ Tunnel failed"
-            cat /tmp/cloudflared.log
             exit 1
           fi
-          
-          # Check connectivity
-          nc -z -v -w 5 127.0.0.1 2222 || (echo "❌ Port 2222 not reachable"; cat /tmp/cloudflared.log; exit 1)
           
           # 2. Deploy on Remote
           echo ">>> Configure Remote Host..."
@@ -98,23 +91,9 @@ jobs:
           
           echo ">>> Executing script on remote..."
           # Execute the script remotely by piping the local file to ssh
-          set +e
-          REMOTE_OUTPUT=$(sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -p 2222 "${SSH_USERNAME}@127.0.0.1" "cat > /tmp/vless_install.sh && chmod +x /tmp/vless_install.sh && timeout 300 /tmp/vless_install.sh" < scripts/vless_remote.sh 2>&1)
-          EXIT_CODE=$?
-          set -e
+          REMOTE_OUTPUT=$(sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -p 2222 "${SSH_USERNAME}@127.0.0.1" "cat > /tmp/vless_install.sh && chmod +x /tmp/vless_install.sh && timeout 300 /tmp/vless_install.sh" < scripts/vless_remote.sh)
           
-          echo "Remote execution finished with code $EXIT_CODE."
-          echo "START REMOTE OUTPUT:"
-          echo "$REMOTE_OUTPUT"
-          echo "END REMOTE OUTPUT"
-          
-          if [ $EXIT_CODE -ne 0 ]; then
-             echo "❌ SSH or Script execution failed!"
-             # We continue to parse output just in case, but likely failed.
-             # Actually, if script failed, we should probably exit, but let's see output first.
-          fi
-          
-          # Parse Output
+          echo "Remote execution finished."
           
           # Parse Output
           IP=$(echo "$REMOTE_OUTPUT" | grep "IP=" | cut -d= -f2 | tr -d '\r')
