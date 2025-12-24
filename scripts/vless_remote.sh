@@ -58,12 +58,21 @@ if command -v systemctl >/dev/null 2>&1; then
 fi
 
 # Force kill port 443
+echo "Debug: Processes on port 443:"
 if [ -n "$SUDO" ]; then
-   $SUDO fuser -k 443/tcp || true
-   $SUDO pkill -f xray || true
+   $SUDO ss -tulpn | grep :443 || echo "No process found on 443 via ss"
+   $SUDO fuser -v 443/tcp || echo "No process found on 443 via fuser"
+   
+   echo "Killing port 443..."
+   $SUDO fuser -k -9 443/tcp || true
+   $SUDO pkill -9 -f xray || true
 else
-   fuser -k 443/tcp || true
-   pkill -f xray || true
+   ss -tulpn | grep :443 || echo "No process found on 443 via ss"
+   fuser -v 443/tcp || echo "No process found on 443 via fuser"
+   
+   echo "Killing port 443..."
+   fuser -k -9 443/tcp || true
+   pkill -9 -f xray || true
 fi
 sleep 2
 
