@@ -73,23 +73,25 @@ jobs:
           echo "name,download_speed,upload_speed,timestamp" > "$CSV_FILE"
           
           # 3. 循环遍历主机
-          # 将 JSON 数组读入并逐行处理
-          # 增加 index 计数器
-          INDEX=0
+          # 先获取主机总数
+          HOST_COUNT=$(echo "$HOSTS_CONFIG" | jq '. | length')
+          MAX_INDEX=$((HOST_COUNT - 1))
           
-          echo "$HOSTS_CONFIG" | jq -c '.[]' | while read -r host_item; do
+          echo "Total hosts: $HOST_COUNT (Indices 0 to $MAX_INDEX)"
+          
+          for INDEX in $(seq 0 $MAX_INDEX); do
             # 如果指定了 TARGET_INDEX，则跳过不匹配的
             if [ -n "$TARGET_INDEX" ] && [ "$INDEX" -ne "$TARGET_INDEX" ]; then
               echo "跳过 Index $INDEX (Target: $TARGET_INDEX)"
-              INDEX=$((INDEX+1))
               continue
             fi
             
+            # 获取当前主机配置
+            host_item=$(echo "$HOSTS_CONFIG" | jq -c ".[$INDEX]")
             HOST_NAME=$(echo "$host_item" | jq -r '.name')
             SSH_HOST=$(echo "$host_item" | jq -r '.ssh_host')
             
             if [ "$HOST_NAME" = "null" ] || [ -z "$HOST_NAME" ]; then
-               INDEX=$((INDEX+1))
                continue
             fi
             
@@ -107,7 +109,6 @@ jobs:
             
             if ! kill -0 $TUNNEL_OCI_PID 2>/dev/null; then
               echo "❌ OCI Tunnel 失败: $HOST_NAME"
-              INDEX=$((INDEX+1))
               continue
             fi
             
@@ -115,7 +116,8 @@ jobs:
             echo ">>> 配置 OCI..."
             
             # 尝试连接并执行命令
-            PREPARE_OUTPUT=$(sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -p 2222 "${SSH_USERNAME}@127.0.0.1" '
+            # 注意: 使用 -n 或 < /dev/null 防止 ssh 读取 stdin (虽然改用了 for 循环已经避免了这个问题，但为了保险)
+            PREPARE_OUTPUT=$(sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" '
               which iperf3 > /dev/null 2>&1 || (sudo apt-get update -qq && sudo apt-get install -y -qq iperf3)
               IP=$(curl -4 -s ip.sb)
               echo "PUBLIC_IP::$IP"
@@ -134,7 +136,6 @@ jobs:
             if [ -z "$OCI_PUBLIC_IP" ] || [ -z "$SERVER_STATUS" ]; then
                echo "❌ OCI 配置失败 (IP: $OCI_PUBLIC_IP, Server: $SERVER_STATUS)"
                kill $TUNNEL_OCI_PID 2>/dev/null || true
-               INDEX=$((INDEX+1))
                continue
             fi
             
@@ -147,7 +148,7 @@ jobs:
             UNSET_PROXY="unset http_proxy https_proxy ftp_proxy all_proxy HTTP_PROXY HTTPS_PROXY FTP_PROXY ALL_PROXY"
             
             # 下载 (Server sends to Client)
-            IPERF_DL_RESULT=$(sshpass -p "$IPERF_CLIENT_PASS" ssh $SSH_OPTS -p 2202 "${IPERF_CLIENT_USER}@127.0.0.1" "
+            IPERF_DL_RESULT=$(sshpass -p "$IPERF_CLIENT_PASS" ssh $SSH_OPTS -n -p 2202 "${IPERF_CLIENT_USER}@127.0.0.1" "
               $UNSET_PROXY
               which iperf3 > /dev/null 2>&1 || (apt-get update -qq && apt-get install -y -qq iperf3)
               iperf3 -c $OCI_PUBLIC_IP -R -t ${TEST_DURATION:-10} -J || echo '{\"error\": \"connection failed\"}'
@@ -156,13 +157,13 @@ jobs:
             sleep 1
             
             # 上传 (Client sends to Server)
-            IPERF_UL_RESULT=$(sshpass -p "$IPERF_CLIENT_PASS" ssh $SSH_OPTS -p 2202 "${IPERF_CLIENT_USER}@127.0.0.1" "
+            IPERF_UL_RESULT=$(sshpass -p "$IPERF_CLIENT_PASS" ssh $SSH_OPTS -n -p 2202 "${IPERF_CLIENT_USER}@127.0.0.1" "
               $UNSET_PROXY
               iperf3 -c $OCI_PUBLIC_IP -t ${TEST_DURATION:-10} -J || echo '{\"error\": \"connection failed\"}'
             ")
             
             # 3.4 清理 OCI
-            sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -p 2222 "${SSH_USERNAME}@127.0.0.1" 'sudo pkill -9 iperf3 2>/dev/null || true'
+            sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" 'sudo pkill -9 iperf3 2>/dev/null || true'
             kill $TUNNEL_OCI_PID 2>/dev/null || true
             
             # 3.5 解析结果 & 写入 CSV
@@ -194,7 +195,6 @@ jobs:
             
             # --- 单个主机流程结束 ---
             
-            INDEX=$((INDEX+1))
           done
           
           # 结束后清理家庭隧道
