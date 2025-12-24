@@ -49,6 +49,7 @@ if ! command -v unzip >/dev/null 2>&1; then
 fi
 unzip -o -q xray.zip
 rm xray.zip
+chmod +x xray
 
 # Generate UUID and Keys using the downloaded binary
 KEYS=$(./xray x25519)
