@@ -172,13 +172,16 @@ else
   nohup ./xray run -c config.json > run.log 2>&1 &
 fi
 
-# Wait a bit to ensure start
-sleep 2
+# Wait longer to ensure start and  capture any immediate errors
+sleep 5
 
 # Check if running
 if ! pgrep -f "$WORK_DIR/xray" > /dev/null; then
   echo "Failed to start Xray"
+  echo "=== Full run.log output ==="
   cat run.log
+  echo "=== Config file ==="
+  cat config.json
   exit 1
 fi
 
