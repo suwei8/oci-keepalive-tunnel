@@ -85,9 +85,9 @@ jobs:
           HOST_NAME: ${{ steps.host.outputs.name }}
           SSH_HOST: ${{ steps.host.outputs.ssh_host }}
           TEST_DURATION: ${{ github.event.inputs.test_duration }}
-          IPERF_CLIENT_HOST: wky-ssh.555606.xyz
-          IPERF_CLIENT_USER: root
-          IPERF_CLIENT_PASS: sw63828
+          IPERF_CLIENT_HOST: ${{ secrets.IPERF_CLIENT_HOST }}
+          IPERF_CLIENT_USER: ${{ secrets.IPERF_CLIENT_USER }}
+          IPERF_CLIENT_PASS: ${{ secrets.IPERF_CLIENT_PASS }}
         run: |
           echo "==========================================="
           echo "iPerf3 测速: $HOST_NAME <-> 家庭客户机"
