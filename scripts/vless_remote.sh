@@ -57,24 +57,44 @@ if command -v systemctl >/dev/null 2>&1; then
     fi
 fi
 
-# Force kill port 443
+# Force kill port 443 (Loop until free)
 echo "Debug: Processes on port 443:"
 if [ -n "$SUDO" ]; then
    $SUDO ss -tulpn | grep :443 || echo "No process found on 443 via ss"
-   $SUDO fuser -v 443/tcp || echo "No process found on 443 via fuser"
    
    echo "Killing port 443..."
-   $SUDO fuser -k -9 443/tcp || true
-   $SUDO pkill -9 -f xray || true
+   # Loop to ensure it dies
+   MAX_RETRIES=10
+   while $SUDO ss -tulpn | grep -q :443; do
+       echo "Port 443 still in use. Killing..."
+       $SUDO fuser -k -9 443/tcp || true
+       $SUDO pkill -9 -x xray || true
+       sleep 1
+       MAX_RETRIES=$((MAX_RETRIES-1))
+       if [ $MAX_RETRIES -le 0 ]; then
+           echo "Failed to free port 443."
+           exit 1
+       fi
+   done
 else
    ss -tulpn | grep :443 || echo "No process found on 443 via ss"
-   fuser -v 443/tcp || echo "No process found on 443 via fuser"
    
    echo "Killing port 443..."
-   fuser -k -9 443/tcp || true
-   pkill -9 -f xray || true
+   MAX_RETRIES=10
+   while ss -tulpn | grep -q :443; do
+       echo "Port 443 still in use. Killing..."
+       fuser -k -9 443/tcp || true
+       pkill -9 -x xray || true
+       sleep 1
+       MAX_RETRIES=$((MAX_RETRIES-1))
+       if [ $MAX_RETRIES -le 0 ]; then
+           echo "Failed to free port 443."
+           exit 1
+       fi
+   done
 fi
-sleep 2
+echo "Port 443 is free."
+sleep 1
 
 # Download and Unzip
 curl -L -s "$DOWNLOAD_URL" -o xray.zip
