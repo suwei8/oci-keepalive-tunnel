@@ -63,9 +63,10 @@ jobs:
       - name: Install cloudflared
         if: steps.host.outputs.skip != 'true'
         run: |
-          curl -sL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o /tmp/cloudflared
+          curl -fL --retry 5 --retry-delay 10 https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o /tmp/cloudflared
           chmod +x /tmp/cloudflared
           sudo mv /tmp/cloudflared /usr/local/bin/cloudflared
+          cloudflared --version
 
       - name: Setup SSH
         if: steps.host.outputs.skip != 'true'
