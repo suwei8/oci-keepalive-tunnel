@@ -182,34 +182,61 @@ fi
 # Start Xray in background
 echo "Starting Xray..."
 if [ -n "$SUDO" ]; then
-  nohup $SUDO ./xray run -c config.json > run.log 2>&1 &
+  nohup $SUDO ./xray run -c config.json > run.log 2> error.log &
   XRAY_PID=$!
 else
-  nohup ./xray run -c config.json > run.log 2>&1 &
+  nohup ./xray run -c config.json > run.log 2> error.log &
   XRAY_PID=$!
 fi
 
-# Wait and verify it's actually listening on port 443
-sleep 3
+# Wait for Xray to bind to port 443 (retry for up to 10 seconds)
+echo "Waiting for Xray to listen on port 443..."
+MAX_WAIT=10
+COUNTER=0
+while [ $COUNTER -lt $MAX_WAIT ]; do
+  if [ -n "$SUDO" ]; then
+    if $SUDO ss -tulpn | grep -q ":443.*xray"; then
+      echo "✓ Xray listening on port 443"
+      break
+    fi
+  else
+    if ss -tulpn | grep -q ":443.*xray"; then
+      echo "✓ Xray listening on port 443"
+      break
+    fi
+  fi
+  
+  sleep 1
+  COUNTER=$((COUNTER+1))
+  echo "Still waiting... ($COUNTER/$MAX_WAIT)"
+done
+
+# Final verification
 if [ -n "$SUDO" ]; then
   if ! $SUDO ss -tulpn | grep -q ":443.*xray"; then
-    echo "Xray not listening on port 443"
+    echo "✗ Xray failed to bind to port 443 after ${MAX_WAIT}s"
     echo "=== run.log ==="
     cat run.log
-    echo "=== Xray process status ==="
-    ps aux | grep xray || echo "No xray process found"
+    echo "=== error.log ==="
+    cat error.log
+    echo "=== Process check ==="
+    ps aux | grep [x]ray || echo "No xray process"
+    echo "=== Port status ==="
+    $SUDO ss -tulpn | grep :443 || echo "Nothing on port 443"
     exit 1
   fi
 else
   if ! ss -tulpn | grep -q ":443.*xray"; then
-    echo "Xray not listening on port 443"
+    echo "✗ Xray failed to bind to port 443 after ${MAX_WAIT}s"
     echo "=== run.log ==="
     cat run.log
+    echo "=== error.log ==="
+    cat error.log
     exit 1
   fi
 fi
 
-echo "Xray started successfully on port 443"
+echo "✓ Xray started successfully"
 
 # Get IP
 PUBLIC_IP=$(curl -s -4 ip.sb)
