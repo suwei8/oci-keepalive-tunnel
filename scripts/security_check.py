@@ -216,6 +216,19 @@ class SecurityChecker:
     def check_mining_connections(self):
         """检查到矿池的网络连接"""
         print("\n[安全] 检查可疑网络连接...")
+        
+        # 合法进程白名单 (这些进程连接矿池端口通常是误报)
+        SAFE_PROCESSES = [
+            "chrome", "chromium", "firefox", "brave",  # 浏览器
+            "antigravity", "language_server",           # 开发工具
+            "Runner.Listener", "Runner.Worker",         # GitHub Actions
+            "cloudflared", "gomon",                     # 系统服务
+            "node", "npm", "yarn", "pnpm",              # Node.js
+            "python", "python3", "pip",                 # Python
+            "docker", "containerd",                     # 容器
+            "curl", "wget",                             # 下载工具
+        ]
+        
         try:
             result = subprocess.run(
                 ["ss", "-tnp"],
@@ -223,15 +236,59 @@ class SecurityChecker:
             )
             found = False
             for line in result.stdout.split('\n'):
+                # 跳过表头
+                if line.startswith("State") or not line.strip():
+                    continue
+                    
                 # 跳过本地连接
                 if '127.0.0.1' in line or '::1' in line:
                     continue
-                # 只检查外网连接
+                
+                # 只检查已建立的连接
+                if "ESTAB" not in line:
+                    continue
+                
+                # 解析 ss 输出格式:
+                # State  Recv-Q  Send-Q  Local Address:Port  Peer Address:Port  Process
+                parts = line.split()
+                if len(parts) < 5:
+                    continue
+                
+                # 获取远程地址 (第5列, 索引4)
+                peer_addr = parts[4] if len(parts) > 4 else ""
+                
+                # 获取进程信息 (最后一列)
+                process_info = parts[-1] if parts else ""
+                
+                # 检查是否连接到矿池端口 (只检查远程端口)
+                is_mining_port = False
                 for port in MINING_PORTS:
-                    if f":{port}" in line and "ESTAB" in line:
-                        self.add_issue("WARNING", "疑似矿池连接", line.strip()[:100])
-                        found = True
+                    # 确保是远程端口，格式如 ip:port 或 [ipv6]:port
+                    if peer_addr.endswith(f":{port}"):
+                        is_mining_port = True
                         break
+                
+                if not is_mining_port:
+                    continue
+                
+                # 检查是否为白名单进程
+                is_safe = False
+                for safe_proc in SAFE_PROCESSES:
+                    if safe_proc.lower() in process_info.lower():
+                        is_safe = True
+                        break
+                
+                if is_safe:
+                    continue
+                
+                # 提取进程名用于告警
+                proc_match = re.search(r'users:\(\("([^"]+)"', process_info)
+                proc_name = proc_match.group(1) if proc_match else "unknown"
+                
+                self.add_issue("WARNING", "疑似矿池连接", 
+                              f"进程: {proc_name}, 远程: {peer_addr}")
+                found = True
+                
             if not found:
                 print("[安全] ✅ 未发现可疑矿池连接")
         except Exception as e:
