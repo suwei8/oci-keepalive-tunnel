@@ -217,18 +217,6 @@ class SecurityChecker:
         """检查到矿池的网络连接"""
         print("\n[安全] 检查可疑网络连接...")
         
-        # 合法进程白名单 (这些进程连接矿池端口通常是误报)
-        SAFE_PROCESSES = [
-            "chrome", "chromium", "firefox", "brave",  # 浏览器
-            "antigravity", "language_server",           # 开发工具
-            "Runner.Listener", "Runner.Worker",         # GitHub Actions
-            "cloudflared", "gomon",                     # 系统服务
-            "node", "npm", "yarn", "pnpm",              # Node.js
-            "python", "python3", "pip",                 # Python
-            "docker", "containerd",                     # 容器
-            "curl", "wget",                             # 下载工具
-        ]
-        
         try:
             result = subprocess.run(
                 ["ss", "-tnp"],
@@ -262,23 +250,15 @@ class SecurityChecker:
                 
                 # 检查是否连接到矿池端口 (只检查远程端口)
                 is_mining_port = False
+                matched_port = 0
                 for port in MINING_PORTS:
                     # 确保是远程端口，格式如 ip:port 或 [ipv6]:port
                     if peer_addr.endswith(f":{port}"):
                         is_mining_port = True
+                        matched_port = port
                         break
                 
                 if not is_mining_port:
-                    continue
-                
-                # 检查是否为白名单进程
-                is_safe = False
-                for safe_proc in SAFE_PROCESSES:
-                    if safe_proc.lower() in process_info.lower():
-                        is_safe = True
-                        break
-                
-                if is_safe:
                     continue
                 
                 # 提取进程名用于告警
@@ -286,7 +266,7 @@ class SecurityChecker:
                 proc_name = proc_match.group(1) if proc_match else "unknown"
                 
                 self.add_issue("WARNING", "疑似矿池连接", 
-                              f"进程: {proc_name}, 远程: {peer_addr}")
+                              f"进程: {proc_name}, 远程: {peer_addr}, 端口: {matched_port}")
                 found = True
                 
             if not found:
