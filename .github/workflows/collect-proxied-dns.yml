@@ -1,0 +1,114 @@
+name: Collect Cloudflare Proxied DNS
+
+on:
+  schedule:
+    - cron: "0 0 * * 1"  # 每周一 UTC 00:00 运行
+  workflow_dispatch:
+
+jobs:
+  collect-proxied-dns:
+    name: "Collect Proxied DNS Records"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Collect proxied DNS records
+        env:
+          # ynshanghui.com
+          CF_API_EMAIL: ${{ secrets.CF_API_EMAIL }}
+          CF_API_KEY: ${{ secrets.CF_API_KEY }}
+          CF_ZONE_ID: ${{ secrets.CF_ZONE_ID }}
+          # 555606.xyz
+          CF_API_EMAIL_555606: ${{ secrets.CF_API_EMAIL_555606 }}
+          CF_API_KEY_555606: ${{ secrets.CF_API_KEY_555606 }}
+          CF_ZONE_ID_555606: ${{ secrets.CF_ZONE_ID_555606 }}
+        run: |
+          # 创建临时文件
+          > /tmp/proxied_domains.txt
+          
+          echo ">>> 收集第一个账户的 proxied DNS 记录..."
+          # ynshanghui.com
+          RECORDS=$(curl -s "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records?per_page=500" \
+            -H "X-Auth-Email: ${CF_API_EMAIL}" \
+            -H "X-Auth-Key: ${CF_API_KEY}")
+          
+          echo "$RECORDS" | jq -r '.result[] | select(.proxied == true) | .name' >> /tmp/proxied_domains.txt
+          COUNT1=$(echo "$RECORDS" | jq '[.result[] | select(.proxied == true)] | length')
+          echo "::add-mask::$(echo "$RECORDS" | jq -r '.result[0].zone_name // empty')"
+          echo "✅ 账户1: 收集到 $COUNT1 条 proxied 记录"
+          
+          echo ""
+          echo ">>> 收集第二个账户的 proxied DNS 记录..."
+          # 555606.xyz
+          RECORDS2=$(curl -s "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID_555606}/dns_records?per_page=500" \
+            -H "X-Auth-Email: ${CF_API_EMAIL_555606}" \
+            -H "X-Auth-Key: ${CF_API_KEY_555606}")
+          
+          echo "$RECORDS2" | jq -r '.result[] | select(.proxied == true) | .name' >> /tmp/proxied_domains.txt
+          COUNT2=$(echo "$RECORDS2" | jq '[.result[] | select(.proxied == true)] | length')
+          echo "::add-mask::$(echo "$RECORDS2" | jq -r '.result[0].zone_name // empty')"
+          echo "✅ 账户2: 收集到 $COUNT2 条 proxied 记录"
+          
+          # 隐藏所有域名
+          while IFS= read -r domain; do
+            [ -n "$domain" ] && echo "::add-mask::$domain"
+          done < /tmp/proxied_domains.txt
+          
+          # 排序去重
+          sort -u /tmp/proxied_domains.txt > /tmp/cf-host-domain.txt
+          
+          TOTAL=$(wc -l < /tmp/cf-host-domain.txt)
+          echo ""
+          echo "===========================================" 
+          echo "✅ 总计收集到 $TOTAL 条 proxied DNS 记录"
+          echo "==========================================="
+
+      - name: Push to CFST-HostsServer repository
+        env:
+          BLOG_GITHUB_TOKEN: ${{ secrets.BLOG_GITHUB_TOKEN }}
+        run: |
+          if [ -z "$BLOG_GITHUB_TOKEN" ]; then
+            echo "❌ BLOG_GITHUB_TOKEN 未配置"
+            exit 1
+          fi
+          
+          if [ ! -s /tmp/cf-host-domain.txt ]; then
+            echo "⚠️ 无 proxied DNS 记录"
+            exit 0
+          fi
+          
+          # Clone 目标仓库
+          git clone "https://${BLOG_GITHUB_TOKEN}@github.com/suwei8/CFST-HostsServer.git" /tmp/cfst-repo
+          cd /tmp/cfst-repo
+          
+          # 复制文件
+          cp /tmp/cf-host-domain.txt ./cf-host-domain.txt
+          
+          # 配置 git
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          
+          # 提交
+          git add cf-host-domain.txt
+          if git diff --staged --quiet; then
+            echo "⚠️ 无变化，跳过提交"
+          else
+            TIMESTAMP=$(date -u +'%Y-%m-%d %H:%M UTC')
+            git commit -m "Update proxied DNS records - $TIMESTAMP"
+            git push
+            echo "✅ 已推送到 CFST-HostsServer 仓库"
+          fi
+
+      - name: Summary
+        run: |
+          echo "## 📋 Cloudflare Proxied DNS 收集结果" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ -s /tmp/cf-host-domain.txt ]; then
+            TOTAL=$(wc -l < /tmp/cf-host-domain.txt)
+            echo "✅ 成功收集 **$TOTAL** 条 proxied DNS 记录并推送到仓库" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "⚠️ 未收集到任何 proxied DNS 记录" >> $GITHUB_STEP_SUMMARY
+          fi
