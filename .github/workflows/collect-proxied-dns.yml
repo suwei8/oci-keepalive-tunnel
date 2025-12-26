@@ -80,10 +80,10 @@ jobs:
           echo "==========================================="
           while IFS= read -r domain; do
             if [ -n "$domain" ]; then
-              # 获取子域名部分和主域名后7个字符
-              subdomain=$(echo "$domain" | rev | cut -d. -f3- | rev)
+              # 获取子域名前2个字符和主域名后7个字符
+              prefix=$(echo "$domain" | cut -c1-2)
               suffix=$(echo "$domain" | grep -oE '[^.]+\.[^.]+$' | tail -c 8)
-              echo "  ${subdomain}.**${suffix}"
+              echo "  ${prefix}**.**${suffix}"
             fi
           done < /tmp/cf-host-domain.txt
           
