@@ -166,14 +166,45 @@ jobs:
             echo "✅ DNS 配置完成"
             sleep 5
             
+            # 检查并开放 iptables 端口
+            echo ">>> 检查 iptables 端口..."
+            sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" "
+              # 检查并开放 80 端口 (SSL 证书验证)
+              if ! sudo iptables -C INPUT -p tcp --dport 80 -j ACCEPT 2>/dev/null; then
+                sudo iptables -I INPUT -p tcp --dport 80 -j ACCEPT
+                echo '已开放 80 端口'
+              fi
+              # 检查并开放 2443 端口 (Hysteria)
+              if ! sudo iptables -C INPUT -p tcp --dport 2443 -j ACCEPT 2>/dev/null; then
+                sudo iptables -I INPUT -p tcp --dport 2443 -j ACCEPT
+                echo '已开放 2443 端口'
+              fi
+              if ! sudo iptables -C INPUT -p udp --dport 2443 -j ACCEPT 2>/dev/null; then
+                sudo iptables -I INPUT -p udp --dport 2443 -j ACCEPT
+                echo '已开放 2443 UDP 端口'
+              fi
+              # 保存规则
+              sudo netfilter-persistent save 2>/dev/null || true
+            " 2>&1 || true
+            echo "✅ iptables 端口检查完成"
+            
             # SSL 证书
             echo ">>> 检查 SSL..."
             CERT_EXISTS=$(sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" "test -f /etc/letsencrypt/live/${PROXY_DOMAIN}/fullchain.pem && echo yes || echo no" 2>&1) || true
             
             if [ "$CERT_EXISTS" != "yes" ]; then
               echo ">>> 申请 SSL 证书..."
-              sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" "which certbot > /dev/null 2>&1 || (sudo apt-get update -qq && sudo apt-get install -y -qq certbot); sudo systemctl stop nginx 2>/dev/null || true; sudo certbot certonly --standalone -d ${PROXY_DOMAIN} --non-interactive --agree-tos --email ${CF_API_EMAIL} --http-01-port 80 || true; sudo systemctl start nginx 2>/dev/null || true" 2>&1 || true
-              echo "✅ SSL 证书申请完成"
+              sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" "which certbot > /dev/null 2>&1 || (sudo apt-get update -qq && sudo apt-get install -y -qq certbot); sudo systemctl stop nginx 2>/dev/null || true; sudo docker stop hysteria-server 2>/dev/null || true; sudo certbot certonly --standalone -d ${PROXY_DOMAIN} --non-interactive --agree-tos --email ${CF_API_EMAIL} --http-01-port 80; sudo systemctl start nginx 2>/dev/null || true" 2>&1
+              
+              # 验证证书是否申请成功
+              CERT_CHECK=$(sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" "test -f /etc/letsencrypt/live/${PROXY_DOMAIN}/fullchain.pem && echo yes || echo no" 2>&1) || true
+              if [ "$CERT_CHECK" = "yes" ]; then
+                echo "✅ SSL 证书申请成功"
+              else
+                echo "❌ SSL 证书申请失败，请检查 80 端口是否可访问"
+                kill $TUNNEL_PID 2>/dev/null || true
+                continue
+              fi
             else
               echo "✅ SSL 证书已存在"
             fi
