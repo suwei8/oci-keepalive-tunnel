@@ -238,7 +238,7 @@ jobs:
             # 步骤2: 部署 Xray 容器
             # ============================================
             echo ">>> 创建 Xray 配置..."
-            XRAY_CONFIG=$(printf '{"log":{"loglevel":"warning"},"inbounds":[{"port":10086,"listen":"127.0.0.1","protocol":"vless","settings":{"clients":[{"id":"%s","level":0}],"decryption":"none"},"streamSettings":{"network":"ws","wsSettings":{"path":"/vless-ws"}}}],"outbounds":[{"protocol":"freedom"}]}' "$VLESS_UUID")
+            XRAY_CONFIG=$(printf '{"log":{"loglevel":"warning"},"inbounds":[{"port":10086,"listen":"0.0.0.0","protocol":"vless","settings":{"clients":[{"id":"%s","level":0}],"decryption":"none"},"streamSettings":{"network":"ws","wsSettings":{"path":"/vless-ws"}}}],"outbounds":[{"protocol":"freedom"}]}' "$VLESS_UUID")
             sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" "mkdir -p /home/sw/docker_root/vless && echo '$XRAY_CONFIG' > /home/sw/docker_root/vless/config.json" 2>&1 || true
             
             echo ">>> 创建 Docker 配置..."
