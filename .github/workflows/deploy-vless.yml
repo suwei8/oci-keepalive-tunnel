@@ -52,7 +52,6 @@ jobs:
           SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }}
           CF_API_EMAIL: ${{ secrets.CF_API_EMAIL }}
           CF_API_KEY: ${{ secrets.CF_API_KEY }}
-          CF_ZONE_ID: ${{ secrets.CF_ZONE_ID }}
           CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
           VLESS_UUID: ${{ secrets.VLESS_UUID }}
           FORCE_REDEPLOY: ${{ github.event.inputs.force_redeploy }}
@@ -80,7 +79,6 @@ jobs:
               continue
             fi
             
-            # 跳过没有 vless_host 配置的主机
             if [ "$VLESS_HOST" = "null" ] || [ -z "$VLESS_HOST" ]; then
               echo ">>> 跳过 $HOST_NAME (无 vless_host 配置)"
               continue
@@ -118,14 +116,80 @@ jobs:
             
             echo ">>> 开始部署..."
             
-            # 1. 创建配置目录和 Xray 配置
+            # ============================================
+            # 步骤1: 通过 ssh_host 查找 Tunnel 并添加 vless_host
+            # ============================================
+            echo ">>> 查找 Tunnel 并添加 Public Hostname..."
+            
+            # 获取所有 Tunnel
+            TUNNELS=$(curl -s "https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/cfd_tunnel?is_deleted=false" \
+              -H "X-Auth-Email: ${CF_API_EMAIL}" \
+              -H "X-Auth-Key: ${CF_API_KEY}")
+            
+            # 遍历查找包含 ssh_host 的 Tunnel
+            TUNNEL_ID=""
+            for tid in $(echo "$TUNNELS" | jq -r '.result[].id'); do
+              # 获取该 Tunnel 的配置
+              CONFIG=$(curl -s "https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/cfd_tunnel/${tid}/configurations" \
+                -H "X-Auth-Email: ${CF_API_EMAIL}" \
+                -H "X-Auth-Key: ${CF_API_KEY}")
+              
+              # 检查是否包含 ssh_host
+              if echo "$CONFIG" | grep -q "$SSH_HOST"; then
+                TUNNEL_ID="$tid"
+                TUNNEL_NAME=$(echo "$TUNNELS" | jq -r ".result[] | select(.id==\"$tid\") | .name")
+                echo ">>> 找到 Tunnel: $TUNNEL_NAME ($TUNNEL_ID)"
+                break
+              fi
+            done
+            
+            if [ -z "$TUNNEL_ID" ]; then
+              echo "⚠️ 未找到包含 $SSH_HOST 的 Tunnel"
+              kill $TUNNEL_PID 2>/dev/null || true
+              continue
+            fi
+            
+            # 获取当前 ingress 配置
+            CURRENT_CONFIG=$(curl -s "https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/cfd_tunnel/${TUNNEL_ID}/configurations" \
+              -H "X-Auth-Email: ${CF_API_EMAIL}" \
+              -H "X-Auth-Key: ${CF_API_KEY}")
+            
+            CURRENT_INGRESS=$(echo "$CURRENT_CONFIG" | jq '.result.config.ingress')
+            
+            # 检查 vless_host 是否已存在
+            if echo "$CURRENT_INGRESS" | grep -q "$VLESS_HOST"; then
+              echo ">>> VLESS hostname 已存在于 Tunnel 配置中"
+            else
+              echo ">>> 添加 VLESS hostname: $VLESS_HOST -> http://127.0.0.1:10086"
+              
+              # 在 catch-all 规则之前插入新的 ingress
+              NEW_INGRESS=$(echo "$CURRENT_INGRESS" | jq --arg host "$VLESS_HOST" \
+                '. | .[:-1] + [{"hostname": $host, "service": "http://127.0.0.1:10086", "originRequest": {}}] + [.[-1]]')
+              
+              # 更新 Tunnel 配置
+              UPDATE_RESULT=$(curl -s -X PUT "https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/cfd_tunnel/${TUNNEL_ID}/configurations" \
+                -H "X-Auth-Email: ${CF_API_EMAIL}" \
+                -H "X-Auth-Key: ${CF_API_KEY}" \
+                -H "Content-Type: application/json" \
+                -d "{\"config\":{\"ingress\":$NEW_INGRESS}}")
+              
+              if echo "$UPDATE_RESULT" | jq -e '.success' > /dev/null; then
+                echo "✅ Tunnel 配置已更新"
+              else
+                echo "❌ Tunnel 配置更新失败"
+                echo "$UPDATE_RESULT" | jq '.errors'
+              fi
+            fi
+            
+            # ============================================
+            # 步骤2: 部署 Xray 容器
+            # ============================================
             echo ">>> 创建 Xray 配置..."
             sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" "
               mkdir -p /home/sw/docker_root/vless
               echo '{\"log\":{\"loglevel\":\"warning\"},\"inbounds\":[{\"port\":10086,\"listen\":\"127.0.0.1\",\"protocol\":\"vless\",\"settings\":{\"clients\":[{\"id\":\"${VLESS_UUID}\",\"level\":0}],\"decryption\":\"none\"},\"streamSettings\":{\"network\":\"ws\",\"wsSettings\":{\"path\":\"/vless-ws\"}}}],\"outbounds\":[{\"protocol\":\"freedom\"}]}' > /home/sw/docker_root/vless/config.json
             " 2>&1 || true
             
-            # 2. 创建 docker-compose.yml
             echo ">>> 创建 Docker 配置..."
             sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" "cat > /home/sw/docker_root/vless/docker-compose.yml << 'COMPOSEEOF'
           services:
@@ -141,74 +205,6 @@ jobs:
                 - TZ=Asia/Jakarta
           COMPOSEEOF" 2>&1 || true
             
-            # 3. 获取现有 Tunnel ID 并添加 VLESS 路由
-            echo ">>> 配置 Cloudflare Tunnel 路由..."
-            
-            # 从 SSH_HOST 提取 Tunnel 域名前缀 (如 batam2-arm-ssh)
-            TUNNEL_PREFIX=$(echo "$SSH_HOST" | cut -d'.' -f1)
-            
-            # 查找现有 Tunnel ID
-            TUNNEL_ID=$(curl -s "https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/cfd_tunnel" \
-              -H "X-Auth-Email: ${CF_API_EMAIL}" \
-              -H "X-Auth-Key: ${CF_API_KEY}" | jq -r ".result[] | select(.name | contains(\"$TUNNEL_PREFIX\") or contains(\"$(echo $HOST_NAME | tr '[:upper:]' '[:lower:]')\")) | .id" | head -1)
-            
-            if [ -n "$TUNNEL_ID" ] && [ "$TUNNEL_ID" != "null" ]; then
-              echo ">>> 找到 Tunnel: $TUNNEL_ID"
-              
-              # 添加 DNS 路由 (CNAME 指向 Tunnel)
-              # 首先检查是否已存在
-              EXISTING_DNS=$(curl -s "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records?name=${VLESS_HOST}" \
-                -H "X-Auth-Email: ${CF_API_EMAIL}" \
-                -H "X-Auth-Key: ${CF_API_KEY}" | jq -r '.result[0].id // empty')
-              
-              TUNNEL_CNAME="${TUNNEL_ID}.cfargotunnel.com"
-              
-              if [ -z "$EXISTING_DNS" ]; then
-                echo ">>> 创建 DNS CNAME: $VLESS_HOST -> Tunnel"
-                curl -s -X POST "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records" \
-                  -H "X-Auth-Email: ${CF_API_EMAIL}" \
-                  -H "X-Auth-Key: ${CF_API_KEY}" \
-                  -H "Content-Type: application/json" \
-                  -d "{\"type\":\"CNAME\",\"name\":\"${VLESS_HOST}\",\"content\":\"${TUNNEL_CNAME}\",\"proxied\":true}" > /dev/null
-              else
-                echo ">>> 更新 DNS CNAME..."
-                curl -s -X PUT "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records/${EXISTING_DNS}" \
-                  -H "X-Auth-Email: ${CF_API_EMAIL}" \
-                  -H "X-Auth-Key: ${CF_API_KEY}" \
-                  -H "Content-Type: application/json" \
-                  -d "{\"type\":\"CNAME\",\"name\":\"${VLESS_HOST}\",\"content\":\"${TUNNEL_CNAME}\",\"proxied\":true}" > /dev/null
-              fi
-              
-              # 更新 Tunnel 配置 (添加 ingress 规则)
-              # 获取当前配置
-              CURRENT_CONFIG=$(curl -s "https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/cfd_tunnel/${TUNNEL_ID}/configurations" \
-                -H "X-Auth-Email: ${CF_API_EMAIL}" \
-                -H "X-Auth-Key: ${CF_API_KEY}")
-              
-              # 检查是否已有 VLESS ingress
-              if echo "$CURRENT_CONFIG" | grep -q "$VLESS_HOST"; then
-                echo ">>> VLESS ingress 已存在"
-              else
-                echo ">>> 添加 VLESS ingress 规则..."
-                # 获取现有 ingress 规则
-                EXISTING_INGRESS=$(echo "$CURRENT_CONFIG" | jq '.result.config.ingress')
-                
-                # 构建新的 ingress 规则 (在 catch-all 之前插入)
-                NEW_INGRESS=$(echo "$EXISTING_INGRESS" | jq --arg host "$VLESS_HOST" '. | .[:-1] + [{"hostname": $host, "service": "http://localhost:10086"}] + [.[-1]]')
-                
-                # 更新配置
-                curl -s -X PUT "https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/cfd_tunnel/${TUNNEL_ID}/configurations" \
-                  -H "X-Auth-Email: ${CF_API_EMAIL}" \
-                  -H "X-Auth-Key: ${CF_API_KEY}" \
-                  -H "Content-Type: application/json" \
-                  -d "{\"config\":{\"ingress\":$NEW_INGRESS}}" > /dev/null
-                echo "✅ Tunnel 配置已更新"
-              fi
-            else
-              echo "⚠️ 未找到对应的 Tunnel，跳过 Tunnel 配置"
-            fi
-            
-            # 4. 启动 Xray 容器
             echo ">>> 启动 Xray 容器..."
             CONTAINER_OK="no"
             for RETRY in 1 2 3; do
