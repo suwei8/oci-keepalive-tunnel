@@ -26,6 +26,17 @@ jobs:
           CF_API_KEY_555606: ${{ secrets.CF_API_KEY_555606 }}
           CF_ZONE_ID_555606: ${{ secrets.CF_ZONE_ID_555606 }}
         run: |
+          # 部分隐藏域名函数 (如: xxx.555606.xyz -> xxx.**606.xyz)
+          mask_domain() {
+            local domain="$1"
+            # 获取子域名和主域名部分
+            local subdomain=$(echo "$domain" | rev | cut -d. -f3- | rev)
+            local main_domain=$(echo "$domain" | rev | cut -d. -f1-2 | rev)
+            # 隐藏主域名的前3个字符
+            local masked_main=$(echo "$main_domain" | sed 's/^\(...\)/\*\*/')
+            echo "${subdomain}.**${main_domain: -7}"
+          }
+          
           # 创建临时文件
           > /tmp/proxied_domains.txt
           
@@ -37,6 +48,7 @@ jobs:
           
           echo "$RECORDS" | jq -r '.result[] | select(.proxied == true) | .name' >> /tmp/proxied_domains.txt
           COUNT1=$(echo "$RECORDS" | jq '[.result[] | select(.proxied == true)] | length')
+          # 隐藏原始域名
           echo "::add-mask::$(echo "$RECORDS" | jq -r '.result[0].zone_name // empty')"
           echo "✅ 账户1: 收集到 $COUNT1 条 proxied 记录"
           
@@ -49,10 +61,11 @@ jobs:
           
           echo "$RECORDS2" | jq -r '.result[] | select(.proxied == true) | .name' >> /tmp/proxied_domains.txt
           COUNT2=$(echo "$RECORDS2" | jq '[.result[] | select(.proxied == true)] | length')
+          # 隐藏原始域名
           echo "::add-mask::$(echo "$RECORDS2" | jq -r '.result[0].zone_name // empty')"
           echo "✅ 账户2: 收集到 $COUNT2 条 proxied 记录"
           
-          # 隐藏所有域名
+          # 隐藏所有完整域名 (add-mask)
           while IFS= read -r domain; do
             [ -n "$domain" ] && echo "::add-mask::$domain"
           done < /tmp/proxied_domains.txt
@@ -60,9 +73,23 @@ jobs:
           # 排序去重
           sort -u /tmp/proxied_domains.txt > /tmp/cf-host-domain.txt
           
+          # 显示部分隐藏的域名列表
+          echo ""
+          echo "==========================================="
+          echo "📋 收集到的 proxied DNS 记录 (部分隐藏):"
+          echo "==========================================="
+          while IFS= read -r domain; do
+            if [ -n "$domain" ]; then
+              # 获取子域名部分和主域名后7个字符
+              subdomain=$(echo "$domain" | rev | cut -d. -f3- | rev)
+              suffix=$(echo "$domain" | grep -oE '[^.]+\.[^.]+$' | tail -c 8)
+              echo "  ${subdomain}.**${suffix}"
+            fi
+          done < /tmp/cf-host-domain.txt
+          
           TOTAL=$(wc -l < /tmp/cf-host-domain.txt)
           echo ""
-          echo "===========================================" 
+          echo "==========================================="
           echo "✅ 总计收集到 $TOTAL 条 proxied DNS 记录"
           echo "==========================================="
 
