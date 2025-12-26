@@ -115,6 +115,39 @@ jobs:
               continue
             fi
             
+            # 获取公网 IP (用于 DNS 配置)
+            PUBLIC_IP=$(sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" 'curl -4 -s ip.sb' 2>&1) || true
+            if [ -z "$PUBLIC_IP" ]; then
+              echo "❌ 无法获取公网 IP"
+              kill $TUNNEL_PID 2>/dev/null || true
+              continue
+            fi
+            echo "::add-mask::$PUBLIC_IP"
+            MASKED_IP=$(echo "$PUBLIC_IP" | awk -F. '{print $1"."$2".*.*"}')
+            echo "✅ 公网 IP: $MASKED_IP"
+            
+            # DNS 配置 (每次都检查，确保 DNS 记录存在)
+            echo ">>> 检查 DNS..."
+            DNS_RECORD=$(curl -s "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records?name=${PROXY_DOMAIN}" -H "X-Auth-Email: ${CF_API_EMAIL}" -H "X-Auth-Key: ${CF_API_KEY}" | jq -r '.result[0].content // empty')
+            
+            if [ -z "$DNS_RECORD" ]; then
+              echo ">>> 创建 DNS A 记录: ${PROXY_DOMAIN} -> ${MASKED_IP}"
+              DNS_RESULT=$(curl -s -X POST "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records" -H "X-Auth-Email: ${CF_API_EMAIL}" -H "X-Auth-Key: ${CF_API_KEY}" -H "Content-Type: application/json" -d "{\"type\":\"A\",\"name\":\"${PROXY_DOMAIN}\",\"content\":\"${PUBLIC_IP}\",\"proxied\":false,\"ttl\":1}")
+              if echo "$DNS_RESULT" | jq -e '.success' > /dev/null; then
+                echo "✅ DNS 记录已创建"
+              else
+                echo "❌ DNS 创建失败"
+                echo "$DNS_RESULT" | jq '.errors'
+              fi
+            elif [ "$DNS_RECORD" != "$PUBLIC_IP" ]; then
+              echo ">>> 更新 DNS A 记录: ${PROXY_DOMAIN} -> ${MASKED_IP}"
+              RECORD_ID=$(curl -s "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records?name=${PROXY_DOMAIN}" -H "X-Auth-Email: ${CF_API_EMAIL}" -H "X-Auth-Key: ${CF_API_KEY}" | jq -r '.result[0].id')
+              curl -s -X PUT "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records/${RECORD_ID}" -H "X-Auth-Email: ${CF_API_EMAIL}" -H "X-Auth-Key: ${CF_API_KEY}" -H "Content-Type: application/json" -d "{\"type\":\"A\",\"name\":\"${PROXY_DOMAIN}\",\"content\":\"${PUBLIC_IP}\",\"proxied\":false,\"ttl\":1}" > /dev/null
+              echo "✅ DNS 记录已更新"
+            else
+              echo "✅ DNS 记录已存在且正确"
+            fi
+            
             # 检查容器状态
             CONTAINER_EXISTS=$(sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" 'docker ps -a --format "{{.Names}}" | grep -q "^hysteria-server$" && echo "yes" || echo "no"' 2>&1) || true
             
@@ -130,7 +163,7 @@ jobs:
             fi
             
             if [ "$CONTAINER_EXISTS" = "yes" ] && [ "$FORCE_REDEPLOY" != "true" ]; then
-              echo "⏭️ 容器已存在，跳过"
+              echo "⏭️ 容器已存在，跳过部署"
               SKIPPED_COUNT=$((SKIPPED_COUNT + 1))
               NODES_INFO="${NODES_INFO}hysteria2://${HYSTERIA_PASSWORD}@${PROXY_DOMAIN}:2443?insecure=0&sni=${PROXY_DOMAIN}#${HOST_NAME}\n"
               kill $TUNNEL_PID 2>/dev/null || true
@@ -139,33 +172,7 @@ jobs:
             
             echo ">>> 开始部署..."
             
-            # 获取公网 IP
-            PUBLIC_IP=$(sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" 'curl -4 -s ip.sb' 2>&1) || true
-            if [ -z "$PUBLIC_IP" ]; then
-              echo "❌ 无法获取公网 IP"
-              kill $TUNNEL_PID 2>/dev/null || true
-              continue
-            fi
-            # 隐藏 IP 地址
-            echo "::add-mask::$PUBLIC_IP"
-            MASKED_IP=$(echo "$PUBLIC_IP" | awk -F. '{print $1"."$2".*.*"}')
-            echo "✅ 公网 IP: $MASKED_IP"
-            
-            # DNS 配置
-            echo ">>> 检查 DNS..."
-            DNS_RECORD=$(curl -s "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records?name=${PROXY_DOMAIN}" -H "X-Auth-Email: ${CF_API_EMAIL}" -H "X-Auth-Key: ${CF_API_KEY}" | jq -r '.result[0].content // empty')
-            
-            if [ -z "$DNS_RECORD" ]; then
-              echo ">>> 创建 DNS 记录..."
-              curl -s -X POST "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records" -H "X-Auth-Email: ${CF_API_EMAIL}" -H "X-Auth-Key: ${CF_API_KEY}" -H "Content-Type: application/json" -d "{\"type\":\"A\",\"name\":\"${PROXY_DOMAIN}\",\"content\":\"${PUBLIC_IP}\",\"proxied\":false,\"ttl\":1}" > /dev/null
-            elif [ "$DNS_RECORD" != "$PUBLIC_IP" ]; then
-              echo ">>> 更新 DNS 记录..."
-              RECORD_ID=$(curl -s "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records?name=${PROXY_DOMAIN}" -H "X-Auth-Email: ${CF_API_EMAIL}" -H "X-Auth-Key: ${CF_API_KEY}" | jq -r '.result[0].id')
-              curl -s -X PUT "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records/${RECORD_ID}" -H "X-Auth-Email: ${CF_API_EMAIL}" -H "X-Auth-Key: ${CF_API_KEY}" -H "Content-Type: application/json" -d "{\"type\":\"A\",\"name\":\"${PROXY_DOMAIN}\",\"content\":\"${PUBLIC_IP}\",\"proxied\":false,\"ttl\":1}" > /dev/null
-            fi
-            echo "✅ DNS 配置完成"
-            sleep 5
-            
+
             # 检查并开放 iptables 端口
             echo ">>> 检查 iptables 端口..."
             sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" "
