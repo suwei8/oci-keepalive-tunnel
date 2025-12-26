@@ -235,41 +235,60 @@ jobs:
             fi
             
             # ============================================
-            # 步骤2: 部署 Xray 容器
+            # 步骤2: 部署 Xray 二进制 (比 Docker 更快)
             # ============================================
+            echo ">>> 检查/安装 Xray..."
+            sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" "
+              # 检查是否已安装
+              if [ ! -f /usr/local/bin/xray ]; then
+                echo '>>> 下载 Xray...'
+                cd /tmp
+                wget -q https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-arm64-v8a.zip -O xray.zip
+                unzip -o xray.zip xray geoip.dat geosite.dat
+                sudo mv xray /usr/local/bin/
+                sudo chmod +x /usr/local/bin/xray
+                sudo mkdir -p /usr/local/share/xray
+                sudo mv geoip.dat geosite.dat /usr/local/share/xray/
+                rm -f xray.zip
+                echo '>>> Xray 安装完成'
+              else
+                echo '>>> Xray 已安装'
+              fi
+            " 2>&1 || true
+            
             echo ">>> 创建 Xray 配置..."
-            XRAY_CONFIG=$(printf '{"log":{"loglevel":"warning"},"inbounds":[{"port":10086,"listen":"0.0.0.0","protocol":"vless","settings":{"clients":[{"id":"%s","level":0}],"decryption":"none"},"streamSettings":{"network":"ws","wsSettings":{"path":"/vless-ws"}}}],"outbounds":[{"protocol":"freedom"}]}' "$VLESS_UUID")
-            sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" "mkdir -p /home/sw/docker_root/vless && echo '$XRAY_CONFIG' > /home/sw/docker_root/vless/config.json" 2>&1 || true
+            XRAY_CONFIG=$(printf '{"log":{"loglevel":"warning"},"inbounds":[{"port":10086,"listen":"127.0.0.1","protocol":"vless","settings":{"clients":[{"id":"%s","level":0}],"decryption":"none"},"streamSettings":{"network":"ws","wsSettings":{"path":"/vless-ws"}}}],"outbounds":[{"protocol":"freedom"}]}' "$VLESS_UUID")
+            sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" "sudo mkdir -p /etc/xray && echo '$XRAY_CONFIG' | sudo tee /etc/xray/config.json > /dev/null" 2>&1 || true
             
-            echo ">>> 创建 Docker 配置..."
-            sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" "cat > /home/sw/docker_root/vless/docker-compose.yml << 'COMPOSEEOF'
-          services:
-            xray:
-              image: teddysun/xray:latest
-              container_name: xray-vless
-              restart: always
-              volumes:
-                - ./config.json:/etc/xray/config.json
-              ports:
-                - 127.0.0.1:10086:10086
-              environment:
-                - TZ=Asia/Jakarta
-          COMPOSEEOF" 2>&1 || true
+            echo ">>> 创建 systemd 服务..."
+            SYSTEMD_SERVICE="W1VuaXRdCkRlc2NyaXB0aW9uPVhyYXkgVkxFU1MgU2VydmljZQpBZnRlcj1uZXR3b3JrLnRhcmdldAoKW1NlcnZpY2VdClR5cGU9c2ltcGxlCkV4ZWNTdGFydD0vdXNyL2xvY2FsL2Jpbi94cmF5IHJ1biAtY29uZmlnIC9ldGMveHJheS9jb25maWcuanNvbgpSZXN0YXJ0PW9uLWZhaWx1cmUKUmVzdGFydFNlYz0zCgpbSW5zdGFsbF0KV2FudGVkQnk9bXVsdGktdXNlci50YXJnZXQK"
+            sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" "echo '$SYSTEMD_SERVICE' | base64 -d | sudo tee /etc/systemd/system/xray-vless.service > /dev/null && sudo systemctl daemon-reload" 2>&1 || true
             
-            echo ">>> 启动 Xray 容器..."
-            CONTAINER_OK="no"
+            echo ">>> 启动 Xray 服务..."
+            SERVICE_OK="no"
             for RETRY in 1 2 3; do
               echo ">>> 尝试启动 (第 $RETRY 次)..."
-              sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" "cd /home/sw/docker_root/vless && docker compose down 2>/dev/null || true && docker compose pull 2>/dev/null || true && docker compose up -d && sleep 3 && docker ps | grep xray-vless && echo CONTAINER_HEALTHY || echo CONTAINER_FAILED" 2>&1 | tee /tmp/container_output.txt
+              sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" "
+                sudo systemctl stop xray-vless 2>/dev/null || true
+                sudo systemctl enable xray-vless
+                sudo systemctl start xray-vless
+                sleep 2
+                if sudo systemctl is-active xray-vless > /dev/null 2>&1; then
+                  echo 'SERVICE_HEALTHY'
+                else
+                  echo 'SERVICE_FAILED'
+                  sudo journalctl -u xray-vless --no-pager | tail -5
+                fi
+              " 2>&1 | tee /tmp/service_output.txt
               
-              if grep -q "CONTAINER_HEALTHY" /tmp/container_output.txt; then
-                CONTAINER_OK="yes"
+              if grep -q "SERVICE_HEALTHY" /tmp/service_output.txt; then
+                SERVICE_OK="yes"
                 break
               fi
               sleep 3
             done
             
-            if [ "$CONTAINER_OK" = "yes" ]; then
+            if [ "$SERVICE_OK" = "yes" ]; then
               echo "✅ 部署成功: $HOST_NAME"
               DEPLOYED_COUNT=$((DEPLOYED_COUNT + 1))
               NODES_INFO="${NODES_INFO}vless://${VLESS_UUID}@${VLESS_HOST}:443?encryption=none&security=tls&sni=${VLESS_HOST}&type=ws&host=${VLESS_HOST}&path=%2Fvless-ws#${HOST_NAME}\n"
