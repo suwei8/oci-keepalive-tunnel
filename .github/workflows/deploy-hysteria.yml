@@ -190,15 +190,15 @@ jobs:
             
             # SSL 证书
             echo ">>> 检查 SSL..."
-            CERT_EXISTS=$(sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" "test -f /etc/letsencrypt/live/${PROXY_DOMAIN}/fullchain.pem && echo yes || echo no" 2>&1) || true
+            CERT_EXISTS=$(sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" "test -f /etc/letsencrypt/live/${PROXY_DOMAIN}/fullchain.pem && echo CERT_OK" 2>&1 | grep -o "CERT_OK") || true
             
-            if [ "$CERT_EXISTS" != "yes" ]; then
+            if [ "$CERT_EXISTS" != "CERT_OK" ]; then
               echo ">>> 申请 SSL 证书..."
               sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" "which certbot > /dev/null 2>&1 || (sudo apt-get update -qq && sudo apt-get install -y -qq certbot); sudo systemctl stop nginx 2>/dev/null || true; sudo docker stop hysteria-server 2>/dev/null || true; sudo certbot certonly --standalone -d ${PROXY_DOMAIN} --non-interactive --agree-tos --email ${CF_API_EMAIL} --http-01-port 80; sudo systemctl start nginx 2>/dev/null || true" 2>&1
               
-              # 验证证书是否申请成功
-              CERT_CHECK=$(sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" "test -f /etc/letsencrypt/live/${PROXY_DOMAIN}/fullchain.pem && echo yes || echo no" 2>&1) || true
-              if [ "$CERT_CHECK" = "yes" ]; then
+              # 验证证书是否申请成功 (用 grep 精确匹配)
+              CERT_CHECK=$(sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" "test -f /etc/letsencrypt/live/${PROXY_DOMAIN}/fullchain.pem && echo CERT_OK" 2>&1 | grep -o "CERT_OK") || true
+              if [ "$CERT_CHECK" = "CERT_OK" ]; then
                 echo "✅ SSL 证书申请成功"
               else
                 echo "❌ SSL 证书申请失败，请检查 80 端口是否可访问"
