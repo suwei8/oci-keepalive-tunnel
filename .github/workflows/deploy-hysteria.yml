@@ -148,6 +148,28 @@ jobs:
               echo "✅ DNS 记录已存在且正确"
             fi
             
+            # 每次连接都检查并开放 iptables 端口
+            echo ">>> 检查 iptables 端口..."
+            sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" "
+              # 检查并开放 80 端口 (SSL 证书验证)
+              if ! sudo iptables -C INPUT -p tcp --dport 80 -j ACCEPT 2>/dev/null; then
+                sudo iptables -I INPUT -p tcp --dport 80 -j ACCEPT
+                echo '已开放 80 端口'
+              fi
+              # 检查并开放 2443 端口 (Hysteria)
+              if ! sudo iptables -C INPUT -p tcp --dport 2443 -j ACCEPT 2>/dev/null; then
+                sudo iptables -I INPUT -p tcp --dport 2443 -j ACCEPT
+                echo '已开放 2443 TCP 端口'
+              fi
+              if ! sudo iptables -C INPUT -p udp --dport 2443 -j ACCEPT 2>/dev/null; then
+                sudo iptables -I INPUT -p udp --dport 2443 -j ACCEPT
+                echo '已开放 2443 UDP 端口'
+              fi
+              # 保存规则
+              sudo netfilter-persistent save 2>/dev/null || true
+            " 2>&1 || true
+            echo "✅ iptables 端口检查完成"
+            
             # 检查容器状态
             CONTAINER_EXISTS=$(sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" 'docker ps -a --format "{{.Names}}" | grep -q "^hysteria-server$" && echo "yes" || echo "no"' 2>&1) || true
             
@@ -218,29 +240,6 @@ jobs:
             fi
             
             echo ">>> 开始部署..."
-            
-
-            # 检查并开放 iptables 端口
-            echo ">>> 检查 iptables 端口..."
-            sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" "
-              # 检查并开放 80 端口 (SSL 证书验证)
-              if ! sudo iptables -C INPUT -p tcp --dport 80 -j ACCEPT 2>/dev/null; then
-                sudo iptables -I INPUT -p tcp --dport 80 -j ACCEPT
-                echo '已开放 80 端口'
-              fi
-              # 检查并开放 2443 端口 (Hysteria)
-              if ! sudo iptables -C INPUT -p tcp --dport 2443 -j ACCEPT 2>/dev/null; then
-                sudo iptables -I INPUT -p tcp --dport 2443 -j ACCEPT
-                echo '已开放 2443 端口'
-              fi
-              if ! sudo iptables -C INPUT -p udp --dport 2443 -j ACCEPT 2>/dev/null; then
-                sudo iptables -I INPUT -p udp --dport 2443 -j ACCEPT
-                echo '已开放 2443 UDP 端口'
-              fi
-              # 保存规则
-              sudo netfilter-persistent save 2>/dev/null || true
-            " 2>&1 || true
-            echo "✅ iptables 端口检查完成"
             
             # SSL 证书检查 (需要 sudo 权限访问 letsencrypt 目录)
             echo ">>> 检查 SSL..."
