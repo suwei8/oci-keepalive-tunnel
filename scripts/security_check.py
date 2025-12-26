@@ -119,9 +119,17 @@ class SecurityChecker:
     def check_suspicious_tmp_files(self):
         """检查 /tmp 中的可疑文件"""
         print("\n[安全] 检查 /tmp 可疑文件...")
+        # 白名单目录 - AppImage 挂载点等正常目录
+        whitelist_dirs = ['.mount_']  # AppImage 运行时挂载点
+        
         try:
             suspicious_files = []
             for root, dirs, files in os.walk("/tmp"):
+                # 跳过白名单目录
+                if any(wl in root for wl in whitelist_dirs):
+                    dirs[:] = []  # 不继续遍历
+                    continue
+                
                 for f in files:
                     filepath = os.path.join(root, f)
                     # 检查隐藏的可执行文件或可疑名称
