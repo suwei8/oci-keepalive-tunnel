@@ -272,10 +272,13 @@ jobs:
             exit 0
           fi
           
-          NODES_LIST=$(cat /tmp/nodes_info.txt | grep -v "^$" | awk -F'#' '{print NR". "$2}' | head -20)
           TIMESTAMP=$(date -u +'%Y-%m-%d %H:%M UTC')
+          NODE_COUNT=$(cat /tmp/nodes_info.txt | grep -v "^$" | wc -l)
           
-          FINAL_MSG=$(printf "🚀 *Hysteria v2 部署完成*\n\n📅 %s\n\n✅ *节点列表:*\n\`\`\`\n%s\n\`\`\`\n\n📋 配置文件:\nhttps://github.com/suwei8/blog/blob/main/hy2.txt" "$TIMESTAMP" "$NODES_LIST")
+          # 节点列表 (完整 URI)
+          NODES_FULL=$(cat /tmp/nodes_info.txt | grep -v "^$" | head -20)
+          
+          FINAL_MSG=$(printf "🚀 *Hysteria v2 部署完成*\n\n📅 %s\n\n✅ *共 %s 个节点*\n\n📋 *客户端连接信息:*\n\`\`\`\n%s\n\`\`\`\n\n💡 复制上方链接导入客户端即可使用" "$TIMESTAMP" "$NODE_COUNT" "$NODES_FULL")
           
           curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
             -d chat_id="${TELEGRAM_CHAT_ID}" \
