@@ -263,19 +263,60 @@ jobs:
             
             echo "✅ 配置文件已创建"
             
-            # 启动容器
+            # 启动容器 (带重试)
             echo ">>> 启动容器..."
-            sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" "cd /home/sw/docker_root/hy && docker compose down 2>/dev/null || true && docker compose pull && docker compose up -d && sleep 3 && docker ps | grep hysteria" 2>&1 || true
+            CONTAINER_OK="no"
+            for RETRY in 1 2 3; do
+              echo ">>> 尝试启动 (第 $RETRY 次)..."
+              
+              sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" "
+                cd /home/sw/docker_root/hy
+                docker compose down 2>/dev/null || true
+                docker compose pull 2>/dev/null || true
+                docker compose up -d
+                
+                # 等待容器启动
+                sleep 5
+                
+                # 检查容器是否健康运行
+                if docker ps | grep -q hysteria-server; then
+                  # 检查日志是否有启动成功标志
+                  if docker logs hysteria-server 2>&1 | grep -q 'server up and running'; then
+                    echo 'CONTAINER_HEALTHY'
+                  else
+                    echo 'CONTAINER_STARTING'
+                    docker logs hysteria-server 2>&1 | tail -3
+                  fi
+                else
+                  echo 'CONTAINER_FAILED'
+                  docker logs hysteria-server 2>&1 | tail -5
+                fi
+              " 2>&1 | tee /tmp/container_output.txt
+              
+              if grep -q "CONTAINER_HEALTHY" /tmp/container_output.txt; then
+                CONTAINER_OK="yes"
+                break
+              elif grep -q "CONTAINER_STARTING" /tmp/container_output.txt; then
+                echo ">>> 容器启动中，等待 5 秒..."
+                sleep 5
+                # 再次检查
+                CHECK=$(sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" "docker logs hysteria-server 2>&1 | grep -q 'server up and running' && echo OK" 2>&1) || true
+                if [ "$CHECK" = "OK" ]; then
+                  CONTAINER_OK="yes"
+                  break
+                fi
+              fi
+              
+              echo ">>> 启动失败，等待重试..."
+              sleep 3
+            done
             
-            # 验证
-            CONTAINER_RUNNING=$(sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" 'docker ps --format "{{.Names}}" | grep -q "^hysteria-server$" && echo "yes" || echo "no"' 2>&1) || true
-            
-            if [ "$CONTAINER_RUNNING" = "yes" ]; then
+            if [ "$CONTAINER_OK" = "yes" ]; then
               echo "✅ 部署成功: $HOST_NAME"
               DEPLOYED_COUNT=$((DEPLOYED_COUNT + 1))
               NODES_INFO="${NODES_INFO}hysteria2://${HYSTERIA_PASSWORD}@${PROXY_DOMAIN}:2443?insecure=0&sni=${PROXY_DOMAIN}#${HOST_NAME}\n"
             else
-              echo "❌ 启动失败: $HOST_NAME"
+              echo "❌ 部署失败: $HOST_NAME (3次重试后仍失败)"
             fi
             
             kill $TUNNEL_PID 2>/dev/null || true
