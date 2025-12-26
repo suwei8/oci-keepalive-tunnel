@@ -120,54 +120,43 @@ jobs:
             echo ">>> 开始部署..."
             
             # ============================================
-            # 步骤1: 通过 ssh_host 查找 Tunnel 并添加 vless_host
+            # 步骤1: 根据 vless_host 域名选择账户并查找 Tunnel
             # ============================================
-            echo ">>> 查找 Tunnel 并添加 Public Hostname..."
+            echo ">>> 配置 Cloudflare 账户..."
             
-            # 尝试两个账户查找 Tunnel
+            # 根据域名选择账户
+            if echo "$VLESS_HOST" | grep -q "555606.xyz"; then
+              ACTIVE_CF_EMAIL="$CF_API_EMAIL_555606"
+              ACTIVE_CF_KEY="$CF_API_KEY_555606"
+              ACTIVE_CF_ACCOUNT="$CF_ACCOUNT_ID_555606"
+              ACCOUNT_NAME="555606.xyz"
+            else
+              ACTIVE_CF_EMAIL="$CF_API_EMAIL"
+              ACTIVE_CF_KEY="$CF_API_KEY"
+              ACTIVE_CF_ACCOUNT="$CF_ACCOUNT_ID"
+              ACCOUNT_NAME="ynshanghui.com"
+            fi
+            
+            echo ">>> 使用账户: $ACCOUNT_NAME"
+            
+            # 查找包含 ssh_host 的 Tunnel
+            echo ">>> 查找 Tunnel..."
+            TUNNELS=$(curl -s "https://api.cloudflare.com/client/v4/accounts/${ACTIVE_CF_ACCOUNT}/cfd_tunnel?is_deleted=false" \
+              -H "X-Auth-Email: ${ACTIVE_CF_EMAIL}" \
+              -H "X-Auth-Key: ${ACTIVE_CF_KEY}")
+            
             TUNNEL_ID=""
-            ACTIVE_CF_EMAIL=""
-            ACTIVE_CF_KEY=""
-            ACTIVE_CF_ACCOUNT=""
-            
-            for ACCOUNT_IDX in 1 2; do
-              if [ "$ACCOUNT_IDX" = "1" ]; then
-                CUR_EMAIL="$CF_API_EMAIL"
-                CUR_KEY="$CF_API_KEY"
-                CUR_ACCOUNT="$CF_ACCOUNT_ID"
-                ACCOUNT_NAME="ynshanghui.com"
-              else
-                CUR_EMAIL="$CF_API_EMAIL_555606"
-                CUR_KEY="$CF_API_KEY_555606"
-                CUR_ACCOUNT="$CF_ACCOUNT_ID_555606"
-                ACCOUNT_NAME="555606.xyz"
+            for tid in $(echo "$TUNNELS" | jq -r '.result[].id // empty' 2>/dev/null); do
+              CONFIG=$(curl -s "https://api.cloudflare.com/client/v4/accounts/${ACTIVE_CF_ACCOUNT}/cfd_tunnel/${tid}/configurations" \
+                -H "X-Auth-Email: ${ACTIVE_CF_EMAIL}" \
+                -H "X-Auth-Key: ${ACTIVE_CF_KEY}")
+              
+              if echo "$CONFIG" | grep -q "$SSH_HOST"; then
+                TUNNEL_ID="$tid"
+                TUNNEL_NAME=$(echo "$TUNNELS" | jq -r ".result[] | select(.id==\"$tid\") | .name")
+                echo ">>> 找到 Tunnel: $TUNNEL_NAME ($TUNNEL_ID)"
+                break
               fi
-              
-              if [ -z "$CUR_ACCOUNT" ]; then
-                continue
-              fi
-              
-              echo ">>> 尝试账户: $ACCOUNT_NAME"
-              
-              TUNNELS=$(curl -s "https://api.cloudflare.com/client/v4/accounts/${CUR_ACCOUNT}/cfd_tunnel?is_deleted=false" \
-                -H "X-Auth-Email: ${CUR_EMAIL}" \
-                -H "X-Auth-Key: ${CUR_KEY}")
-              
-              for tid in $(echo "$TUNNELS" | jq -r '.result[].id // empty' 2>/dev/null); do
-                CONFIG=$(curl -s "https://api.cloudflare.com/client/v4/accounts/${CUR_ACCOUNT}/cfd_tunnel/${tid}/configurations" \
-                  -H "X-Auth-Email: ${CUR_EMAIL}" \
-                  -H "X-Auth-Key: ${CUR_KEY}")
-                
-                if echo "$CONFIG" | grep -q "$SSH_HOST"; then
-                  TUNNEL_ID="$tid"
-                  TUNNEL_NAME=$(echo "$TUNNELS" | jq -r ".result[] | select(.id==\"$tid\") | .name")
-                  ACTIVE_CF_EMAIL="$CUR_EMAIL"
-                  ACTIVE_CF_KEY="$CUR_KEY"
-                  ACTIVE_CF_ACCOUNT="$CUR_ACCOUNT"
-                  echo ">>> 找到 Tunnel: $TUNNEL_NAME ($TUNNEL_ID) [账户: $ACCOUNT_NAME]"
-                  break 2
-                fi
-              done
             done
             
             if [ -z "$TUNNEL_ID" ]; then
