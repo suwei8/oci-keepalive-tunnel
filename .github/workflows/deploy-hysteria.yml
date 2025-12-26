@@ -1,0 +1,378 @@
+name: Deploy Hysteria v2
+
+on:
+  workflow_dispatch:
+    inputs:
+      force_redeploy:
+        description: '强制重新部署 (即使容器已存在)'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+      target_host:
+        description: '指定部署主机 (留空=全部)'
+        required: false
+        default: ''
+
+jobs:
+  deploy:
+    name: "Deploy Hysteria"
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install cloudflared
+        run: |
+          sudo cp bin/cloudflared /usr/local/bin/cloudflared
+          cloudflared --version
+
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          cat >> ~/.ssh/config << 'EOF'
+          Host *
+            StrictHostKeyChecking no
+            UserKnownHostsFile /dev/null
+            LogLevel ERROR
+          EOF
+          sudo apt-get update -qq && sudo apt-get install -y -qq sshpass jq
+
+      - name: Deploy to all hosts
+        id: deploy
+        env:
+          PROXY_HOSTS_CONFIG: ${{ secrets.PROXY_HOSTS_CONFIG }}
+          SSH_USERNAME: ${{ secrets.SSH_USERNAME }}
+          SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }}
+          CF_API_EMAIL: ${{ secrets.CF_API_EMAIL }}
+          CF_API_KEY: ${{ secrets.CF_API_KEY }}
+          CF_ZONE_ID: ${{ secrets.CF_ZONE_ID }}
+          HYSTERIA_PASSWORD: ${{ secrets.HYSTERIA_PASSWORD }}
+          FORCE_REDEPLOY: ${{ github.event.inputs.force_redeploy }}
+          TARGET_HOST: ${{ github.event.inputs.target_host }}
+        run: |
+          SSH_OPTS="-o ConnectTimeout=30 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ServerAliveInterval=30"
+          
+          # 收集所有节点信息
+          NODES_INFO=""
+          DEPLOYED_COUNT=0
+          SKIPPED_COUNT=0
+          
+          # 获取主机总数
+          HOST_COUNT=$(echo "$PROXY_HOSTS_CONFIG" | jq '. | length')
+          echo "Total hosts: $HOST_COUNT"
+          
+          for INDEX in $(seq 0 $((HOST_COUNT - 1))); do
+            # 获取当前主机配置
+            host_item=$(echo "$PROXY_HOSTS_CONFIG" | jq -c ".[$INDEX]")
+            HOST_NAME=$(echo "$host_item" | jq -r '.name')
+            SSH_HOST=$(echo "$host_item" | jq -r '.ssh_host')
+            PROXY_DOMAIN=$(echo "$host_item" | jq -r '.proxy_domains')
+            
+            if [ "$HOST_NAME" = "null" ] || [ -z "$HOST_NAME" ]; then
+              continue
+            fi
+            
+            # 检查是否指定了目标主机
+            if [ -n "$TARGET_HOST" ] && [ "$HOST_NAME" != "$TARGET_HOST" ]; then
+              echo ">>> 跳过 $HOST_NAME (非目标主机)"
+              continue
+            fi
+            
+            echo ""
+            echo "==========================================="
+            echo "Processing: $HOST_NAME"
+            echo "SSH Host: $SSH_HOST"
+            echo "Proxy Domain: $PROXY_DOMAIN"
+            echo "==========================================="
+            
+            # 建立 Cloudflare Tunnel
+            pkill -f "cloudflared.*2222" 2>/dev/null || true
+            sleep 2
+            cloudflared access ssh --hostname "$SSH_HOST" --url "ssh://127.0.0.1:2222" &
+            TUNNEL_PID=$!
+            sleep 5
+            
+            if ! kill -0 $TUNNEL_PID 2>/dev/null; then
+              echo "❌ Tunnel 连接失败: $HOST_NAME"
+              continue
+            fi
+            echo "✅ Tunnel 已建立"
+            
+            # 检查容器是否已存在
+            CONTAINER_EXISTS=$(sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" \
+              'docker ps -a --format "{{.Names}}" | grep -q "^hysteria-server$" && echo "yes" || echo "no"' 2>&1) || true
+            
+            if [ "$CONTAINER_EXISTS" = "yes" ] && [ "$FORCE_REDEPLOY" != "true" ]; then
+              echo "⏭️ 容器已存在，跳过部署: $HOST_NAME"
+              SKIPPED_COUNT=$((SKIPPED_COUNT + 1))
+              # 添加到节点列表
+              NODES_INFO="${NODES_INFO}hysteria2://${HYSTERIA_PASSWORD}@${PROXY_DOMAIN}:2443?insecure=0&sni=${PROXY_DOMAIN}#${HOST_NAME}\n"
+              kill $TUNNEL_PID 2>/dev/null || true
+              continue
+            fi
+            
+            echo ">>> 开始部署..."
+            
+            # 1. 获取实例公网 IP
+            PUBLIC_IP=$(sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" \
+              'curl -4 -s ip.sb' 2>&1) || true
+            
+            if [ -z "$PUBLIC_IP" ]; then
+              echo "❌ 无法获取公网 IP"
+              kill $TUNNEL_PID 2>/dev/null || true
+              continue
+            fi
+            echo "✅ 公网 IP: $PUBLIC_IP"
+            
+            # 2. 检查并配置 DNS
+            echo ">>> 检查 DNS 解析..."
+            DNS_RECORD=$(curl -s "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records?name=${PROXY_DOMAIN}" \
+              -H "X-Auth-Email: ${CF_API_EMAIL}" \
+              -H "X-Auth-Key: ${CF_API_KEY}" | jq -r '.result[0].content // empty')
+            
+            if [ -z "$DNS_RECORD" ]; then
+              echo ">>> 创建 DNS 记录: $PROXY_DOMAIN -> $PUBLIC_IP"
+              curl -s -X POST "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records" \
+                -H "X-Auth-Email: ${CF_API_EMAIL}" \
+                -H "X-Auth-Key: ${CF_API_KEY}" \
+                -H "Content-Type: application/json" \
+                -d "{\"type\":\"A\",\"name\":\"${PROXY_DOMAIN}\",\"content\":\"${PUBLIC_IP}\",\"proxied\":false,\"ttl\":1}" > /dev/null
+              echo "✅ DNS 记录已创建"
+            elif [ "$DNS_RECORD" != "$PUBLIC_IP" ]; then
+              echo ">>> 更新 DNS 记录: $PROXY_DOMAIN -> $PUBLIC_IP (原: $DNS_RECORD)"
+              RECORD_ID=$(curl -s "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records?name=${PROXY_DOMAIN}" \
+                -H "X-Auth-Email: ${CF_API_EMAIL}" \
+                -H "X-Auth-Key: ${CF_API_KEY}" | jq -r '.result[0].id')
+              curl -s -X PUT "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records/${RECORD_ID}" \
+                -H "X-Auth-Email: ${CF_API_EMAIL}" \
+                -H "X-Auth-Key: ${CF_API_KEY}" \
+                -H "Content-Type: application/json" \
+                -d "{\"type\":\"A\",\"name\":\"${PROXY_DOMAIN}\",\"content\":\"${PUBLIC_IP}\",\"proxied\":false,\"ttl\":1}" > /dev/null
+              echo "✅ DNS 记录已更新"
+            else
+              echo "✅ DNS 记录正确: $PROXY_DOMAIN -> $PUBLIC_IP"
+            fi
+            
+            # 等待 DNS 生效
+            sleep 5
+            
+            # 3. 检查并申请 SSL 证书
+            echo ">>> 检查 SSL 证书..."
+            CERT_EXISTS=$(sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" \
+              "test -f /etc/letsencrypt/live/${PROXY_DOMAIN}/fullchain.pem && echo 'yes' || echo 'no'" 2>&1) || true
+            
+            if [ "$CERT_EXISTS" != "yes" ]; then
+              echo ">>> 申请 SSL 证书..."
+              sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" "
+                # 安装 certbot
+                which certbot > /dev/null 2>&1 || (sudo apt-get update -qq && sudo apt-get install -y -qq certbot)
+                
+                # 临时停止占用 80 端口的服务
+                sudo systemctl stop nginx 2>/dev/null || true
+                sudo docker stop hysteria-server 2>/dev/null || true
+                
+                # 申请证书
+                sudo certbot certonly --standalone -d ${PROXY_DOMAIN} \
+                  --non-interactive --agree-tos --email ${CF_API_EMAIL} \
+                  --http-01-port 80 || echo 'Certbot failed'
+                
+                # 重启服务
+                sudo systemctl start nginx 2>/dev/null || true
+              " 2>&1 || true
+              echo "✅ SSL 证书申请完成"
+            else
+              echo "✅ SSL 证书已存在"
+            fi
+            
+            # 4. 创建配置目录和文件
+            echo ">>> 创建配置文件..."
+            sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" "
+              # 创建目录
+              mkdir -p /home/sw/docker_root/hy
+              
+              # 创建 docker-compose.yml
+              cat > /home/sw/docker_root/hy/docker-compose.yml << 'COMPOSE_EOF'
+services:
+  hysteria:
+    image: tobyxdd/hysteria:latest
+    container_name: hysteria-server
+    restart: always
+    network_mode: \"host\"
+    volumes:
+      - ./hy.yaml:/etc/hysteria/hysteria.yaml
+      - /etc/letsencrypt:/etc/letsencrypt
+    environment:
+      - TZ=Asia/Jakarta
+      - HYSTERIA_DISABLE_UPDATE_CHECK=1
+      - HYSTERIA_LOG_LEVEL=info
+    cap_add:
+      - NET_ADMIN
+      - NET_BIND_SERVICE
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    command: [\"server\", \"-c\", \"/etc/hysteria/hysteria.yaml\"]
+COMPOSE_EOF
+              
+              # 创建 hy.yaml
+              cat > /home/sw/docker_root/hy/hy.yaml << HY_EOF
+listen: :2443
+
+tls:
+  cert: /etc/letsencrypt/live/${PROXY_DOMAIN}/fullchain.pem
+  key: /etc/letsencrypt/live/${PROXY_DOMAIN}/privkey.pem
+
+auth:
+  type: password
+  password: \"${HYSTERIA_PASSWORD}\"
+
+disableUDP: false
+
+bandwidth:
+  up: 1000 mbps
+  down: 1000 mbps
+
+masquerade:
+  type: proxy
+  proxy:
+    url: https://www.kernel.org/
+    rewriteHost: true
+
+resolver:
+  type: udp
+  udp:
+    addr: 1.1.1.1:53
+    timeout: 4s
+HY_EOF
+            " 2>&1 || true
+            echo "✅ 配置文件已创建"
+            
+            # 5. 启动 Docker 容器
+            echo ">>> 启动 Hysteria 容器..."
+            sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" "
+              cd /home/sw/docker_root/hy
+              
+              # 停止旧容器
+              docker compose down 2>/dev/null || docker-compose down 2>/dev/null || true
+              
+              # 拉取最新镜像并启动
+              docker compose pull 2>/dev/null || docker-compose pull 2>/dev/null || true
+              docker compose up -d 2>/dev/null || docker-compose up -d 2>/dev/null
+              
+              # 等待启动
+              sleep 3
+              
+              # 检查状态
+              docker ps | grep hysteria-server
+            " 2>&1 || true
+            
+            # 验证容器是否启动成功
+            CONTAINER_RUNNING=$(sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" \
+              'docker ps --format "{{.Names}}" | grep -q "^hysteria-server$" && echo "yes" || echo "no"' 2>&1) || true
+            
+            if [ "$CONTAINER_RUNNING" = "yes" ]; then
+              echo "✅ Hysteria 部署成功: $HOST_NAME"
+              DEPLOYED_COUNT=$((DEPLOYED_COUNT + 1))
+              # 添加到节点列表
+              NODES_INFO="${NODES_INFO}hysteria2://${HYSTERIA_PASSWORD}@${PROXY_DOMAIN}:2443?insecure=0&sni=${PROXY_DOMAIN}#${HOST_NAME}\n"
+            else
+              echo "❌ Hysteria 启动失败: $HOST_NAME"
+            fi
+            
+            # 清理 Tunnel
+            kill $TUNNEL_PID 2>/dev/null || true
+            
+          done
+          
+          echo ""
+          echo "==========================================="
+          echo "部署完成: 成功 $DEPLOYED_COUNT, 跳过 $SKIPPED_COUNT"
+          echo "==========================================="
+          
+          # 保存节点信息到文件
+          echo -e "$NODES_INFO" > /tmp/nodes_info.txt
+          echo "deployed_count=$DEPLOYED_COUNT" >> $GITHUB_OUTPUT
+          echo "skipped_count=$SKIPPED_COUNT" >> $GITHUB_OUTPUT
+
+      - name: Send Telegram notification
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          if [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$TELEGRAM_CHAT_ID" ]; then
+            echo "⚠️ Telegram 未配置，跳过通知"
+            exit 0
+          fi
+          
+          if [ ! -f /tmp/nodes_info.txt ]; then
+            echo "⚠️ 无节点信息"
+            exit 0
+          fi
+          
+          # 构建消息
+          NODES_LIST=$(cat /tmp/nodes_info.txt | grep -v "^$" | awk -F'#' '{print NR". "$2": "$1}' | head -20)
+          TIMESTAMP=$(date -u +'%Y-%m-%d %H:%M UTC')
+          
+          FINAL_MSG=$(printf "🚀 *Hysteria v2 部署完成*\n\n📅 %s\n\n✅ *节点列表:*\n\`\`\`\n%s\n\`\`\`\n\n📋 客户端配置已更新到:\nhttps://github.com/suwei8/blog/blob/main/hy2.txt" "$TIMESTAMP" "$NODES_LIST")
+          
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -d chat_id="${TELEGRAM_CHAT_ID}" \
+            -d parse_mode="Markdown" \
+            --data-urlencode "text=${FINAL_MSG}" > /dev/null
+          
+          echo "✅ Telegram 通知已发送"
+
+      - name: Push to blog repository
+        env:
+          BLOG_GITHUB_TOKEN: ${{ secrets.BLOG_GITHUB_TOKEN }}
+        run: |
+          if [ -z "$BLOG_GITHUB_TOKEN" ]; then
+            echo "⚠️ BLOG_GITHUB_TOKEN 未配置，跳过推送"
+            exit 0
+          fi
+          
+          if [ ! -f /tmp/nodes_info.txt ]; then
+            echo "⚠️ 无节点信息"
+            exit 0
+          fi
+          
+          # 克隆 blog 仓库
+          git clone "https://${BLOG_GITHUB_TOKEN}@github.com/suwei8/blog.git" /tmp/blog
+          cd /tmp/blog
+          
+          # 创建 hy2.txt
+          TIMESTAMP=$(date -u +'%Y-%m-%d %H:%M UTC')
+          cat > hy2.txt << EOF
+# Hysteria v2 节点列表
+# 更新时间: $TIMESTAMP
+# 使用方法: 导入到 Clash/v2rayN/NekoBox 等客户端
+
+EOF
+          cat /tmp/nodes_info.txt | grep -v "^$" >> hy2.txt
+          
+          # 提交并推送
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add hy2.txt
+          git diff --staged --quiet || git commit -m "Update Hysteria v2 nodes $(date -u +%Y-%m-%d)"
+          git push
+          
+          echo "✅ 已推送到 blog 仓库"
+
+      - name: Summary
+        run: |
+          echo "## 🚀 Hysteria v2 部署结果" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [ -f /tmp/nodes_info.txt ]; then
+            echo "### ✅ 节点列表" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            cat /tmp/nodes_info.txt | grep -v "^$" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          else
+            echo "无节点信息" >> $GITHUB_STEP_SUMMARY
+          fi
