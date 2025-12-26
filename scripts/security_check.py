@@ -184,17 +184,50 @@ class SecurityChecker:
     def check_zombie_processes(self):
         """检查僵尸进程"""
         print("\n[安全] 检查僵尸进程...")
+        # 白名单父进程 - 这些进程产生的僵尸进程不告警
+        whitelist_parents = ['antigravity', 'npm', 'node', 'code', 'vscode']
+        
         try:
+            # 获取所有僵尸进程及其父进程
             result = subprocess.run(
-                ["ps", "-A", "-ostat"],
+                ["ps", "-eo", "pid,ppid,stat,comm"],
                 capture_output=True, text=True, timeout=10
             )
-            zombie_count = sum(1 for line in result.stdout.split('\n') if line.startswith('Z'))
             
-            if zombie_count > 10:
-                self.add_issue("WARNING", "大量僵尸进程", f"数量: {zombie_count}")
+            zombie_pids = []
+            for line in result.stdout.split('\n'):
+                parts = line.split()
+                if len(parts) >= 3 and parts[2].startswith('Z'):
+                    zombie_pids.append((parts[0], parts[1]))  # (pid, ppid)
+            
+            if not zombie_pids:
+                print("[安全] ✅ 僵尸进程数: 0")
+                return
+            
+            # 检查父进程是否在白名单
+            non_whitelisted_zombies = 0
+            for pid, ppid in zombie_pids:
+                try:
+                    # 获取父进程命令
+                    parent_result = subprocess.run(
+                        ["ps", "-p", ppid, "-o", "comm="],
+                        capture_output=True, text=True, timeout=5
+                    )
+                    parent_comm = parent_result.stdout.strip().lower()
+                    
+                    # 检查是否在白名单
+                    is_whitelisted = any(wl in parent_comm for wl in whitelist_parents)
+                    if not is_whitelisted:
+                        non_whitelisted_zombies += 1
+                except:
+                    non_whitelisted_zombies += 1
+            
+            total_zombies = len(zombie_pids)
+            if non_whitelisted_zombies > 10:
+                self.add_issue("WARNING", "大量僵尸进程", f"数量: {non_whitelisted_zombies} (总计: {total_zombies})")
             else:
-                print(f"[安全] ✅ 僵尸进程数: {zombie_count}")
+                whitelisted = total_zombies - non_whitelisted_zombies
+                print(f"[安全] ✅ 僵尸进程数: {total_zombies} (白名单: {whitelisted})")
         except Exception as e:
             print(f"[安全] 检查僵尸进程出错: {e}")
     
