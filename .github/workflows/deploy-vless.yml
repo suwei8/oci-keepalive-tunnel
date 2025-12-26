@@ -53,6 +53,9 @@ jobs:
           CF_API_EMAIL: ${{ secrets.CF_API_EMAIL }}
           CF_API_KEY: ${{ secrets.CF_API_KEY }}
           CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          CF_API_EMAIL_555606: ${{ secrets.CF_API_EMAIL_555606 }}
+          CF_API_KEY_555606: ${{ secrets.CF_API_KEY_555606 }}
+          CF_ACCOUNT_ID_555606: ${{ secrets.CF_ACCOUNT_ID_555606 }}
           VLESS_UUID: ${{ secrets.VLESS_UUID }}
           FORCE_REDEPLOY: ${{ github.event.inputs.force_redeploy }}
           TARGET_HOST: ${{ github.event.inputs.target_host }}
@@ -121,38 +124,62 @@ jobs:
             # ============================================
             echo ">>> 查找 Tunnel 并添加 Public Hostname..."
             
-            # 获取所有 Tunnel
-            TUNNELS=$(curl -s "https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/cfd_tunnel?is_deleted=false" \
-              -H "X-Auth-Email: ${CF_API_EMAIL}" \
-              -H "X-Auth-Key: ${CF_API_KEY}")
-            
-            # 遍历查找包含 ssh_host 的 Tunnel
+            # 尝试两个账户查找 Tunnel
             TUNNEL_ID=""
-            for tid in $(echo "$TUNNELS" | jq -r '.result[].id'); do
-              # 获取该 Tunnel 的配置
-              CONFIG=$(curl -s "https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/cfd_tunnel/${tid}/configurations" \
-                -H "X-Auth-Email: ${CF_API_EMAIL}" \
-                -H "X-Auth-Key: ${CF_API_KEY}")
-              
-              # 检查是否包含 ssh_host
-              if echo "$CONFIG" | grep -q "$SSH_HOST"; then
-                TUNNEL_ID="$tid"
-                TUNNEL_NAME=$(echo "$TUNNELS" | jq -r ".result[] | select(.id==\"$tid\") | .name")
-                echo ">>> 找到 Tunnel: $TUNNEL_NAME ($TUNNEL_ID)"
-                break
+            ACTIVE_CF_EMAIL=""
+            ACTIVE_CF_KEY=""
+            ACTIVE_CF_ACCOUNT=""
+            
+            for ACCOUNT_IDX in 1 2; do
+              if [ "$ACCOUNT_IDX" = "1" ]; then
+                CUR_EMAIL="$CF_API_EMAIL"
+                CUR_KEY="$CF_API_KEY"
+                CUR_ACCOUNT="$CF_ACCOUNT_ID"
+                ACCOUNT_NAME="ynshanghui.com"
+              else
+                CUR_EMAIL="$CF_API_EMAIL_555606"
+                CUR_KEY="$CF_API_KEY_555606"
+                CUR_ACCOUNT="$CF_ACCOUNT_ID_555606"
+                ACCOUNT_NAME="555606.xyz"
               fi
+              
+              if [ -z "$CUR_ACCOUNT" ]; then
+                continue
+              fi
+              
+              echo ">>> 尝试账户: $ACCOUNT_NAME"
+              
+              TUNNELS=$(curl -s "https://api.cloudflare.com/client/v4/accounts/${CUR_ACCOUNT}/cfd_tunnel?is_deleted=false" \
+                -H "X-Auth-Email: ${CUR_EMAIL}" \
+                -H "X-Auth-Key: ${CUR_KEY}")
+              
+              for tid in $(echo "$TUNNELS" | jq -r '.result[].id // empty' 2>/dev/null); do
+                CONFIG=$(curl -s "https://api.cloudflare.com/client/v4/accounts/${CUR_ACCOUNT}/cfd_tunnel/${tid}/configurations" \
+                  -H "X-Auth-Email: ${CUR_EMAIL}" \
+                  -H "X-Auth-Key: ${CUR_KEY}")
+                
+                if echo "$CONFIG" | grep -q "$SSH_HOST"; then
+                  TUNNEL_ID="$tid"
+                  TUNNEL_NAME=$(echo "$TUNNELS" | jq -r ".result[] | select(.id==\"$tid\") | .name")
+                  ACTIVE_CF_EMAIL="$CUR_EMAIL"
+                  ACTIVE_CF_KEY="$CUR_KEY"
+                  ACTIVE_CF_ACCOUNT="$CUR_ACCOUNT"
+                  echo ">>> 找到 Tunnel: $TUNNEL_NAME ($TUNNEL_ID) [账户: $ACCOUNT_NAME]"
+                  break 2
+                fi
+              done
             done
             
             if [ -z "$TUNNEL_ID" ]; then
-              echo "⚠️ 未找到包含 $SSH_HOST 的 Tunnel"
+              echo "⚠️ 未找到包含 SSH_HOST 的 Tunnel"
               kill $TUNNEL_PID 2>/dev/null || true
               continue
             fi
             
             # 获取当前 ingress 配置
-            CURRENT_CONFIG=$(curl -s "https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/cfd_tunnel/${TUNNEL_ID}/configurations" \
-              -H "X-Auth-Email: ${CF_API_EMAIL}" \
-              -H "X-Auth-Key: ${CF_API_KEY}")
+            CURRENT_CONFIG=$(curl -s "https://api.cloudflare.com/client/v4/accounts/${ACTIVE_CF_ACCOUNT}/cfd_tunnel/${TUNNEL_ID}/configurations" \
+              -H "X-Auth-Email: ${ACTIVE_CF_EMAIL}" \
+              -H "X-Auth-Key: ${ACTIVE_CF_KEY}")
             
             CURRENT_INGRESS=$(echo "$CURRENT_CONFIG" | jq '.result.config.ingress')
             
@@ -167,9 +194,9 @@ jobs:
                 '. | .[:-1] + [{"hostname": $host, "service": "http://127.0.0.1:10086", "originRequest": {}}] + [.[-1]]')
               
               # 更新 Tunnel 配置
-              UPDATE_RESULT=$(curl -s -X PUT "https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/cfd_tunnel/${TUNNEL_ID}/configurations" \
-                -H "X-Auth-Email: ${CF_API_EMAIL}" \
-                -H "X-Auth-Key: ${CF_API_KEY}" \
+              UPDATE_RESULT=$(curl -s -X PUT "https://api.cloudflare.com/client/v4/accounts/${ACTIVE_CF_ACCOUNT}/cfd_tunnel/${TUNNEL_ID}/configurations" \
+                -H "X-Auth-Email: ${ACTIVE_CF_EMAIL}" \
+                -H "X-Auth-Key: ${ACTIVE_CF_KEY}" \
                 -H "Content-Type: application/json" \
                 -d "{\"config\":{\"ingress\":$NEW_INGRESS}}")
               
