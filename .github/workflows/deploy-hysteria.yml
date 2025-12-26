@@ -87,6 +87,10 @@ jobs:
             SSH_HOST=$(echo "$host_item" | jq -r '.ssh_host')
             PROXY_DOMAIN=$(echo "$host_item" | jq -r '.proxy_domains')
             
+            # 隐藏敏感信息
+            echo "::add-mask::$SSH_HOST"
+            echo "::add-mask::$PROXY_DOMAIN"
+            
             if [ "$HOST_NAME" = "null" ] || [ -z "$HOST_NAME" ]; then
               continue
             fi
@@ -97,7 +101,7 @@ jobs:
             
             echo ""
             echo "==========================================="
-            echo "Processing: $HOST_NAME ($PROXY_DOMAIN)"
+            echo "Processing: $HOST_NAME"
             echo "==========================================="
             
             pkill -f "cloudflared.*2222" 2>/dev/null || true
@@ -142,17 +146,20 @@ jobs:
               kill $TUNNEL_PID 2>/dev/null || true
               continue
             fi
-            echo "✅ 公网 IP: $PUBLIC_IP"
+            # 隐藏 IP 地址
+            echo "::add-mask::$PUBLIC_IP"
+            MASKED_IP=$(echo "$PUBLIC_IP" | awk -F. '{print $1"."$2".*.*"}')
+            echo "✅ 公网 IP: $MASKED_IP"
             
             # DNS 配置
             echo ">>> 检查 DNS..."
             DNS_RECORD=$(curl -s "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records?name=${PROXY_DOMAIN}" -H "X-Auth-Email: ${CF_API_EMAIL}" -H "X-Auth-Key: ${CF_API_KEY}" | jq -r '.result[0].content // empty')
             
             if [ -z "$DNS_RECORD" ]; then
-              echo ">>> 创建 DNS: $PROXY_DOMAIN -> $PUBLIC_IP"
+              echo ">>> 创建 DNS 记录..."
               curl -s -X POST "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records" -H "X-Auth-Email: ${CF_API_EMAIL}" -H "X-Auth-Key: ${CF_API_KEY}" -H "Content-Type: application/json" -d "{\"type\":\"A\",\"name\":\"${PROXY_DOMAIN}\",\"content\":\"${PUBLIC_IP}\",\"proxied\":false,\"ttl\":1}" > /dev/null
             elif [ "$DNS_RECORD" != "$PUBLIC_IP" ]; then
-              echo ">>> 更新 DNS: $PROXY_DOMAIN -> $PUBLIC_IP"
+              echo ">>> 更新 DNS 记录..."
               RECORD_ID=$(curl -s "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records?name=${PROXY_DOMAIN}" -H "X-Auth-Email: ${CF_API_EMAIL}" -H "X-Auth-Key: ${CF_API_KEY}" | jq -r '.result[0].id')
               curl -s -X PUT "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records/${RECORD_ID}" -H "X-Auth-Email: ${CF_API_EMAIL}" -H "X-Auth-Key: ${CF_API_KEY}" -H "Content-Type: application/json" -d "{\"type\":\"A\",\"name\":\"${PROXY_DOMAIN}\",\"content\":\"${PUBLIC_IP}\",\"proxied\":false,\"ttl\":1}" > /dev/null
             fi
