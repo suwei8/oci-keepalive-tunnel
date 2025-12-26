@@ -387,3 +387,35 @@ jobs:
           else
             echo "No results found." >> $GITHUB_STEP_SUMMARY
           fi
+
+      - name: Send Telegram notification
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          CSV_FILE="csv/iperf3_results.csv"
+          
+          if [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$TELEGRAM_CHAT_ID" ]; then
+            echo "⚠️ Telegram 未配置，跳过通知"
+            exit 0
+          fi
+          
+          if [ ! -f "$CSV_FILE" ]; then
+            echo "⚠️ CSV 文件不存在，跳过通知"
+            exit 0
+          fi
+          
+          # 构建 TOP 10 列表
+          TOP10_TEXT=$(tail -n +2 "$CSV_FILE" | grep -v "N/A" | head -10 | awk -F',' '{printf "%2d. %-12s %s\n", NR, $2, $1}')
+          
+          # 构建完整消息 (使用 printf 避免 heredoc)
+          TIMESTAMP=$(date -u +'%Y-%m-%d %H:%M UTC')
+          FINAL_MSG=$(printf "🚀 *iPerf3 测速完成*\n\n📅 %s\n\n🏆 *速度排名 (Top 10)*\n\`\`\`\n%s\n\`\`\`" "$TIMESTAMP" "$TOP10_TEXT")
+          
+          # 发送 Telegram
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -d chat_id="${TELEGRAM_CHAT_ID}" \
+            -d parse_mode="Markdown" \
+            --data-urlencode "text=${FINAL_MSG}" > /dev/null
+          
+          echo "✅ Telegram 通知已发送"
