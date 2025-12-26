@@ -1,12 +1,17 @@
 name: iPerf3 Speedtest All Instances (Loop)
 
 on:
+  schedule:
+    # UTC 02:00 = 北京时间 10:00
+    - cron: '0 2 * * *'
+    # UTC 11:00 = 北京时间 19:00
+    - cron: '0 11 * * *'
   workflow_dispatch:
     inputs:
       test_duration:
         description: '测速时长 (秒)'
         required: false
-        default: '10'
+        default: '30'
       target_hosts:
         description: '选择测速主机 (GitHub限制仅支持单选)'
         required: false
