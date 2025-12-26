@@ -344,6 +344,19 @@ jobs:
         run: |
           CSV_FILE="csv/iperf3_results.csv"
           if [ -f "$CSV_FILE" ]; then
+            # 按下载速度降序排序 (保留表头)
+            echo ">>> 排序 CSV 文件 (按下载速度降序)..."
+            head -1 "$CSV_FILE" > /tmp/csv_header.tmp
+            # 跳过表头，提取数字部分排序 (格式: "123.45 Mbps")
+            tail -n +2 "$CSV_FILE" | sort -t',' -k2 -rn > /tmp/csv_body.tmp
+            cat /tmp/csv_header.tmp /tmp/csv_body.tmp > "$CSV_FILE"
+            rm -f /tmp/csv_header.tmp /tmp/csv_body.tmp
+            echo "✅ 排序完成"
+            
+            # 显示排序后内容
+            echo "=== 排序后 CSV (Top 10) ==="
+            head -11 "$CSV_FILE"
+            
             git config user.name "github-actions[bot]"
             git config user.email "github-actions[bot]@users.noreply.github.com"
             git pull --rebase origin main || echo "Git pull failed"
