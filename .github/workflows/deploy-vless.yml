@@ -53,9 +53,11 @@ jobs:
           CF_API_EMAIL: ${{ secrets.CF_API_EMAIL }}
           CF_API_KEY: ${{ secrets.CF_API_KEY }}
           CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          CF_ZONE_ID: ${{ secrets.CF_ZONE_ID }}
           CF_API_EMAIL_555606: ${{ secrets.CF_API_EMAIL_555606 }}
           CF_API_KEY_555606: ${{ secrets.CF_API_KEY_555606 }}
           CF_ACCOUNT_ID_555606: ${{ secrets.CF_ACCOUNT_ID_555606 }}
+          CF_ZONE_ID_555606: ${{ secrets.CF_ZONE_ID_555606 }}
           VLESS_UUID: ${{ secrets.VLESS_UUID }}
           FORCE_REDEPLOY: ${{ github.event.inputs.force_redeploy }}
           TARGET_HOST: ${{ github.event.inputs.target_host }}
@@ -195,6 +197,41 @@ jobs:
                 echo "❌ Tunnel 配置更新失败"
                 echo "$UPDATE_RESULT" | jq '.errors'
               fi
+            fi
+            
+            # 创建 DNS CNAME 记录 (指向 Tunnel)
+            echo ">>> 检查 DNS 记录..."
+            
+            # 根据域名选择 Zone ID
+            if echo "$VLESS_HOST" | grep -q "555606.xyz"; then
+              ACTIVE_ZONE_ID="$CF_ZONE_ID_555606"
+            else
+              ACTIVE_ZONE_ID="$CF_ZONE_ID"
+            fi
+            
+            TUNNEL_CNAME="${TUNNEL_ID}.cfargotunnel.com"
+            
+            # 检查 DNS 记录是否已存在
+            EXISTING_DNS=$(curl -s "https://api.cloudflare.com/client/v4/zones/${ACTIVE_ZONE_ID}/dns_records?name=${VLESS_HOST}" \
+              -H "X-Auth-Email: ${ACTIVE_CF_EMAIL}" \
+              -H "X-Auth-Key: ${ACTIVE_CF_KEY}" | jq -r '.result[0].id // empty')
+            
+            if [ -z "$EXISTING_DNS" ]; then
+              echo ">>> 创建 DNS CNAME: $VLESS_HOST -> Tunnel"
+              DNS_RESULT=$(curl -s -X POST "https://api.cloudflare.com/client/v4/zones/${ACTIVE_ZONE_ID}/dns_records" \
+                -H "X-Auth-Email: ${ACTIVE_CF_EMAIL}" \
+                -H "X-Auth-Key: ${ACTIVE_CF_KEY}" \
+                -H "Content-Type: application/json" \
+                -d "{\"type\":\"CNAME\",\"name\":\"${VLESS_HOST}\",\"content\":\"${TUNNEL_CNAME}\",\"proxied\":true}")
+              
+              if echo "$DNS_RESULT" | jq -e '.success' > /dev/null; then
+                echo "✅ DNS CNAME 已创建"
+              else
+                echo "❌ DNS CNAME 创建失败"
+                echo "$DNS_RESULT" | jq '.errors'
+              fi
+            else
+              echo "✅ DNS 记录已存在"
             fi
             
             # ============================================
