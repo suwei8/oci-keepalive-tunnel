@@ -151,9 +151,50 @@ jobs:
             # 检查容器状态
             CONTAINER_EXISTS=$(sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" 'docker ps -a --format "{{.Names}}" | grep -q "^hysteria-server$" && echo "yes" || echo "no"' 2>&1) || true
             
-            # 如果是更新模式且容器存在，执行更新
+            # 如果容器存在，验证配置是否正确
+            CONFIG_VALID="yes"
+            if [ "$CONTAINER_EXISTS" = "yes" ]; then
+              echo ">>> 验证配置文件..."
+              CONFIG_DOMAIN=$(sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" "grep -oP 'cert: /etc/letsencrypt/live/\K[^/]+' /home/sw/docker_root/hy/hy.yaml 2>/dev/null || echo 'UNKNOWN'" 2>&1 | tail -1) || true
+              if [ "$CONFIG_DOMAIN" != "$PROXY_DOMAIN" ]; then
+                echo "⚠️ 配置域名不匹配: 当前='$CONFIG_DOMAIN', 应为='$PROXY_DOMAIN'"
+                CONFIG_VALID="no"
+              else
+                echo "✅ 配置域名正确"
+              fi
+            fi
+            
+            # 如果是更新模式且容器存在，执行更新（同时修复配置）
             if [ "$CONTAINER_EXISTS" = "yes" ] && [ "$UPDATE_IMAGE" = "true" ]; then
               echo ">>> 更新 Hysteria 镜像..."
+              # 如果配置无效，先修复配置
+              if [ "$CONFIG_VALID" = "no" ]; then
+                echo ">>> 修复配置文件..."
+                sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" "cat > /home/sw/docker_root/hy/hy.yaml << EOFHY
+          listen: :2443
+          tls:
+            cert: /etc/letsencrypt/live/${PROXY_DOMAIN}/fullchain.pem
+            key: /etc/letsencrypt/live/${PROXY_DOMAIN}/privkey.pem
+          auth:
+            type: password
+            password: ${HYSTERIA_PASSWORD}
+          disableUDP: false
+          bandwidth:
+            up: 1000 mbps
+            down: 1000 mbps
+          masquerade:
+            type: proxy
+            proxy:
+              url: https://www.kernel.org/
+              rewriteHost: true
+          resolver:
+            type: udp
+            udp:
+              addr: 1.1.1.1:53
+              timeout: 4s
+          EOFHY" 2>&1 || true
+                echo "✅ 配置已修复"
+              fi
               sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" 'cd /home/sw/docker_root/hy && docker compose pull && docker compose up -d' 2>&1 || true
               UPDATED_COUNT=$((UPDATED_COUNT + 1))
               echo "✅ 镜像已更新"
@@ -162,8 +203,14 @@ jobs:
               continue
             fi
             
+            # 如果配置无效，强制重新部署
+            if [ "$CONFIG_VALID" = "no" ]; then
+              echo ">>> 配置无效，强制重新部署..."
+              FORCE_REDEPLOY="true"
+            fi
+            
             if [ "$CONTAINER_EXISTS" = "yes" ] && [ "$FORCE_REDEPLOY" != "true" ]; then
-              echo "⏭️ 容器已存在，跳过部署"
+              echo "⏭️ 容器已存在且配置正确，跳过部署"
               SKIPPED_COUNT=$((SKIPPED_COUNT + 1))
               NODES_INFO="${NODES_INFO}hysteria2://${HYSTERIA_PASSWORD}@${PROXY_DOMAIN}:2443?insecure=0&sni=${PROXY_DOMAIN}#${HOST_NAME}\n"
               kill $TUNNEL_PID 2>/dev/null || true
