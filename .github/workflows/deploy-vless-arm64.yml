@@ -115,10 +115,11 @@ jobs:
               continue
             fi
             
-            CONTAINER_EXISTS=$(sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" 'docker ps -a --format "{{.Names}}" | grep -q "^xray-vless$" && echo "yes" || echo "no"' 2>&1 | tail -1) || true
+            # 检查 xray-vless 服务状态 (使用 systemd)
+            SERVICE_ACTIVE=$(sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" 'sudo systemctl is-active xray-vless 2>/dev/null || echo "inactive"' 2>&1 | tail -1) || true
             
-            if [ "$CONTAINER_EXISTS" = "yes" ] && [ "$FORCE_REDEPLOY" != "true" ]; then
-              echo "⏭️ 容器已存在，跳过"
+            if [ "$SERVICE_ACTIVE" = "active" ] && [ "$FORCE_REDEPLOY" != "true" ]; then
+              echo "⏭️ 服务运行中，跳过"
               SKIPPED_COUNT=$((SKIPPED_COUNT + 1))
               NODES_INFO="${NODES_INFO}vless://${VLESS_UUID}@${VLESS_HOST}:443?encryption=none&security=tls&sni=${VLESS_HOST}&type=ws&host=${VLESS_HOST}&path=%2Fvless-ws#${HOST_NAME}\n"
               kill $TUNNEL_PID 2>/dev/null || true
