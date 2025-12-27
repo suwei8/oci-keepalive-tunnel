@@ -368,14 +368,14 @@ jobs:
           cd /tmp/blog
           
           TIMESTAMP=$(date -u +'%Y-%m-%d %H:%M UTC')
-          echo "# VLESS WS 节点列表" > vless.txt
-          echo "# 更新时间: $TIMESTAMP" >> vless.txt
-          echo "" >> vless.txt
-          cat /tmp/nodes_info.txt | grep -v "^$" >> vless.txt
+          echo "# VLESS WS 节点列表" > kphDl0SYZmghX7uxOxlLDnEiIOc3.txt
+          echo "# 更新时间: $TIMESTAMP" >> kphDl0SYZmghX7uxOxlLDnEiIOc3.txt
+          echo "" >> kphDl0SYZmghX7uxOxlLDnEiIOc3.txt
+          cat /tmp/nodes_info.txt | grep -v "^$" >> kphDl0SYZmghX7uxOxlLDnEiIOc3.txt
           
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add vless.txt
+          git add kphDl0SYZmghX7uxOxlLDnEiIOc3.txt
           git diff --staged --quiet || git commit -m "Update VLESS nodes $(date -u +%Y-%m-%d)"
           git push
           
