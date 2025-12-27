@@ -129,36 +129,52 @@ jobs:
             echo ">>> 开始部署..."
             
             # ============================================
-            # 步骤1: 根据 vless_host 域名选择账户并查找 Tunnel
+            # 步骤1: 配置 Cloudflare 账户
             # ============================================
             echo ">>> 配置 Cloudflare 账户..."
             
-            # 根据域名选择账户
+            # 根据 vless_host 域名选择账户 (用于后续 DNS)
             if echo "$VLESS_HOST" | grep -q "555606.xyz"; then
-              ACTIVE_CF_EMAIL="$CF_API_EMAIL_555606"
-              ACTIVE_CF_KEY="$CF_API_KEY_555606"
-              ACTIVE_CF_ACCOUNT="$CF_ACCOUNT_ID_555606"
-              ACCOUNT_NAME="555606.xyz"
+              VLESS_CF_EMAIL="$CF_API_EMAIL_555606"
+              VLESS_CF_KEY="$CF_API_KEY_555606"
+              VLESS_CF_ACCOUNT="$CF_ACCOUNT_ID_555606"
+              VLESS_ZONE_ID="$CF_ZONE_ID_555606"
+              VLESS_ACCOUNT_NAME="555606.xyz"
             else
-              ACTIVE_CF_EMAIL="$CF_API_EMAIL"
-              ACTIVE_CF_KEY="$CF_API_KEY"
-              ACTIVE_CF_ACCOUNT="$CF_ACCOUNT_ID"
-              ACCOUNT_NAME="ynshanghui.com"
+              VLESS_CF_EMAIL="$CF_API_EMAIL"
+              VLESS_CF_KEY="$CF_API_KEY"
+              VLESS_CF_ACCOUNT="$CF_ACCOUNT_ID"
+              VLESS_ZONE_ID="$CF_ZONE_ID"
+              VLESS_ACCOUNT_NAME="ynshanghui.com"
             fi
             
-            echo ">>> 使用账户: $ACCOUNT_NAME"
+            # 根据 ssh_host 域名选择账户 (用于查找 Tunnel)
+            if echo "$SSH_HOST" | grep -q "555606.xyz"; then
+              TUNNEL_CF_EMAIL="$CF_API_EMAIL_555606"
+              TUNNEL_CF_KEY="$CF_API_KEY_555606"
+              TUNNEL_CF_ACCOUNT="$CF_ACCOUNT_ID_555606"
+              TUNNEL_ACCOUNT_NAME="555606.xyz"
+            else
+              TUNNEL_CF_EMAIL="$CF_API_EMAIL"
+              TUNNEL_CF_KEY="$CF_API_KEY"
+              TUNNEL_CF_ACCOUNT="$CF_ACCOUNT_ID"
+              TUNNEL_ACCOUNT_NAME="ynshanghui.com"
+            fi
             
-            # 查找包含 ssh_host 的 Tunnel
+            echo ">>> VLESS DNS 账户: $VLESS_ACCOUNT_NAME"
+            echo ">>> Tunnel 账户: $TUNNEL_ACCOUNT_NAME"
+            
+            # 查找包含 ssh_host 的 Tunnel (在 SSH_HOST 对应的账户中)
             echo ">>> 查找 Tunnel..."
-            TUNNELS=$(curl -s "https://api.cloudflare.com/client/v4/accounts/${ACTIVE_CF_ACCOUNT}/cfd_tunnel?is_deleted=false" \
-              -H "X-Auth-Email: ${ACTIVE_CF_EMAIL}" \
-              -H "X-Auth-Key: ${ACTIVE_CF_KEY}")
+            TUNNELS=$(curl -s "https://api.cloudflare.com/client/v4/accounts/${TUNNEL_CF_ACCOUNT}/cfd_tunnel?is_deleted=false" \
+              -H "X-Auth-Email: ${TUNNEL_CF_EMAIL}" \
+              -H "X-Auth-Key: ${TUNNEL_CF_KEY}")
             
             TUNNEL_ID=""
             for tid in $(echo "$TUNNELS" | jq -r '.result[].id // empty' 2>/dev/null); do
-              CONFIG=$(curl -s "https://api.cloudflare.com/client/v4/accounts/${ACTIVE_CF_ACCOUNT}/cfd_tunnel/${tid}/configurations" \
-                -H "X-Auth-Email: ${ACTIVE_CF_EMAIL}" \
-                -H "X-Auth-Key: ${ACTIVE_CF_KEY}")
+              CONFIG=$(curl -s "https://api.cloudflare.com/client/v4/accounts/${TUNNEL_CF_ACCOUNT}/cfd_tunnel/${tid}/configurations" \
+                -H "X-Auth-Email: ${TUNNEL_CF_EMAIL}" \
+                -H "X-Auth-Key: ${TUNNEL_CF_KEY}")
               
               if echo "$CONFIG" | grep -q "$SSH_HOST"; then
                 TUNNEL_ID="$tid"
@@ -175,9 +191,9 @@ jobs:
             fi
             
             # 获取当前 ingress 配置
-            CURRENT_CONFIG=$(curl -s "https://api.cloudflare.com/client/v4/accounts/${ACTIVE_CF_ACCOUNT}/cfd_tunnel/${TUNNEL_ID}/configurations" \
-              -H "X-Auth-Email: ${ACTIVE_CF_EMAIL}" \
-              -H "X-Auth-Key: ${ACTIVE_CF_KEY}")
+            CURRENT_CONFIG=$(curl -s "https://api.cloudflare.com/client/v4/accounts/${TUNNEL_CF_ACCOUNT}/cfd_tunnel/${TUNNEL_ID}/configurations" \
+              -H "X-Auth-Email: ${TUNNEL_CF_EMAIL}" \
+              -H "X-Auth-Key: ${TUNNEL_CF_KEY}")
             
             CURRENT_INGRESS=$(echo "$CURRENT_CONFIG" | jq '.result.config.ingress')
             
@@ -192,9 +208,9 @@ jobs:
                 '. | .[:-1] + [{"hostname": $host, "service": "http://127.0.0.1:10086", "originRequest": {}}] + [.[-1]]')
               
               # 更新 Tunnel 配置
-              UPDATE_RESULT=$(curl -s -X PUT "https://api.cloudflare.com/client/v4/accounts/${ACTIVE_CF_ACCOUNT}/cfd_tunnel/${TUNNEL_ID}/configurations" \
-                -H "X-Auth-Email: ${ACTIVE_CF_EMAIL}" \
-                -H "X-Auth-Key: ${ACTIVE_CF_KEY}" \
+              UPDATE_RESULT=$(curl -s -X PUT "https://api.cloudflare.com/client/v4/accounts/${TUNNEL_CF_ACCOUNT}/cfd_tunnel/${TUNNEL_ID}/configurations" \
+                -H "X-Auth-Email: ${TUNNEL_CF_EMAIL}" \
+                -H "X-Auth-Key: ${TUNNEL_CF_KEY}" \
                 -H "Content-Type: application/json" \
                 -d "{\"config\":{\"ingress\":$NEW_INGRESS}}")
               
@@ -209,25 +225,18 @@ jobs:
             # 创建 DNS CNAME 记录 (指向 Tunnel)
             echo ">>> 检查 DNS 记录..."
             
-            # 根据域名选择 Zone ID
-            if echo "$VLESS_HOST" | grep -q "555606.xyz"; then
-              ACTIVE_ZONE_ID="$CF_ZONE_ID_555606"
-            else
-              ACTIVE_ZONE_ID="$CF_ZONE_ID"
-            fi
-            
             TUNNEL_CNAME="${TUNNEL_ID}.cfargotunnel.com"
             
-            # 检查 DNS 记录是否已存在
-            EXISTING_DNS=$(curl -s "https://api.cloudflare.com/client/v4/zones/${ACTIVE_ZONE_ID}/dns_records?name=${VLESS_HOST}" \
-              -H "X-Auth-Email: ${ACTIVE_CF_EMAIL}" \
-              -H "X-Auth-Key: ${ACTIVE_CF_KEY}" | jq -r '.result[0].id // empty')
+            # 检查 DNS 记录是否已存在 (使用 VLESS 账户)
+            EXISTING_DNS=$(curl -s "https://api.cloudflare.com/client/v4/zones/${VLESS_ZONE_ID}/dns_records?name=${VLESS_HOST}" \
+              -H "X-Auth-Email: ${VLESS_CF_EMAIL}" \
+              -H "X-Auth-Key: ${VLESS_CF_KEY}" | jq -r '.result[0].id // empty')
             
             if [ -z "$EXISTING_DNS" ]; then
               echo ">>> 创建 DNS CNAME: $VLESS_HOST -> Tunnel"
-              DNS_RESULT=$(curl -s -X POST "https://api.cloudflare.com/client/v4/zones/${ACTIVE_ZONE_ID}/dns_records" \
-                -H "X-Auth-Email: ${ACTIVE_CF_EMAIL}" \
-                -H "X-Auth-Key: ${ACTIVE_CF_KEY}" \
+              DNS_RESULT=$(curl -s -X POST "https://api.cloudflare.com/client/v4/zones/${VLESS_ZONE_ID}/dns_records" \
+                -H "X-Auth-Email: ${VLESS_CF_EMAIL}" \
+                -H "X-Auth-Key: ${VLESS_CF_KEY}" \
                 -H "Content-Type: application/json" \
                 -d "{\"type\":\"CNAME\",\"name\":\"${VLESS_HOST}\",\"content\":\"${TUNNEL_CNAME}\",\"proxied\":true}")
               
