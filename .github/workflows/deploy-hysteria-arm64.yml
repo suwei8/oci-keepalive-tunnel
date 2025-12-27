@@ -258,8 +258,13 @@ jobs:
               echo ">>> 申请 SSL 证书..."
               sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" "
                 which certbot > /dev/null 2>&1 || (sudo apt-get update -qq && sudo apt-get install -y -qq certbot)
+                # 停止所有占用端口80的服务
                 sudo systemctl stop nginx 2>/dev/null || true
+                sudo docker stop \$(sudo docker ps -q --filter 'publish=80') 2>/dev/null || true
+                sudo docker stop nginx 2>/dev/null || true
                 sudo docker stop hysteria-server 2>/dev/null || true
+                sudo fuser -k 80/tcp 2>/dev/null || true
+                sleep 2
                 sudo certbot certonly --standalone -d ${PROXY_DOMAIN} --non-interactive --agree-tos --email ${CF_API_EMAIL} --http-01-port 80 || true
                 sudo systemctl start nginx 2>/dev/null || true
               " 2>&1
@@ -339,6 +344,8 @@ jobs:
               
               sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" "
                 cd /home/sw/docker_root/hy
+                # 强制删除旧容器避免名称冲突
+                sudo docker rm -f hysteria-server 2>/dev/null || true
                 docker compose down 2>/dev/null || true
                 docker compose pull 2>/dev/null || true
                 docker compose up -d
