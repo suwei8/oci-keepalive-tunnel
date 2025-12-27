@@ -1,4 +1,4 @@
-name: iPerf3 Speedtest All Instances (Loop)
+name: iPerf3 Speedtest All Instances (ARM64)
 
 on:
   schedule:
@@ -158,8 +158,14 @@ jobs:
             host_item=$(echo "$HOSTS_CONFIG" | jq -c ".[$INDEX]")
             HOST_NAME=$(echo "$host_item" | jq -r '.name')
             SSH_HOST=$(echo "$host_item" | jq -r '.ssh_host')
+            CPU_TYPE=$(echo "$host_item" | jq -r '.cpu_type')
             
             if [ "$HOST_NAME" = "null" ] || [ -z "$HOST_NAME" ]; then
+               continue
+            fi
+            
+            # 只处理 arm64 类型的主机
+            if [ "$CPU_TYPE" != "arm64" ]; then
                continue
             fi
 

@@ -1,4 +1,4 @@
-name: OCI Keepalive via Tunnel
+name: OCI Keepalive via Tunnel (ARM64)
 
 on:
   schedule:
@@ -44,10 +44,18 @@ jobs:
           # 从 secrets 获取主机信息
           HOST_NAME=$(echo "$HOSTS_CONFIG" | jq -r ".[$HOST_INDEX].name")
           SSH_HOST=$(echo "$HOSTS_CONFIG" | jq -r ".[$HOST_INDEX].ssh_host")
+          CPU_TYPE=$(echo "$HOSTS_CONFIG" | jq -r ".[$HOST_INDEX].cpu_type")
           
           if [ "$HOST_NAME" = "null" ] || [ -z "$HOST_NAME" ]; then
             echo "skip=true" >> $GITHUB_OUTPUT
             echo "No host at index $HOST_INDEX"
+            exit 0
+          fi
+          
+          # 只处理 arm64 类型的主机
+          if [ "$CPU_TYPE" != "arm64" ]; then
+            echo "skip=true" >> $GITHUB_OUTPUT
+            echo "Skipping non-arm64 host at index $HOST_INDEX"
             exit 0
           fi
           

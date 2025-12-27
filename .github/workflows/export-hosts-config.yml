@@ -13,7 +13,6 @@ jobs:
       - name: Export configs
         env:
           HOSTS_CONFIG: ${{ secrets.HOSTS_CONFIG }}
-          PROXY_HOSTS_CONFIG: ${{ secrets.PROXY_HOSTS_CONFIG }}
           BLOG_GITHUB_TOKEN: ${{ secrets.BLOG_GITHUB_TOKEN }}
         run: |
           if [ -z "$BLOG_GITHUB_TOKEN" ]; then
@@ -33,20 +32,12 @@ jobs:
             echo "⚠️ HOSTS_CONFIG 未配置"
           fi
           
-          # 保存 PROXY_HOSTS_CONFIG
-          if [ -n "$PROXY_HOSTS_CONFIG" ]; then
-            echo "$PROXY_HOSTS_CONFIG" > PROXY_HOSTS_CONFIG.txt
-            echo "✅ PROXY_HOSTS_CONFIG 已保存"
-          else
-            echo "⚠️ PROXY_HOSTS_CONFIG 未配置"
-          fi
-          
           # 配置 git
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           
           # 提交
-          git add HOSTS_CONFIG.txt PROXY_HOSTS_CONFIG.txt 2>/dev/null || true
+          git add HOSTS_CONFIG.txt 2>/dev/null || true
           if git diff --staged --quiet; then
             echo "⚠️ 无变化"
           else
@@ -54,3 +45,4 @@ jobs:
             git push
             echo "✅ 已推送到 blog 仓库"
           fi
+

@@ -1,4 +1,4 @@
-name: Deploy VLESS WS
+name: Deploy VLESS WS (ARM64)
 
 on:
   schedule:
@@ -47,7 +47,7 @@ jobs:
       - name: Deploy to all hosts
         id: deploy
         env:
-          PROXY_HOSTS_CONFIG: ${{ secrets.PROXY_HOSTS_CONFIG }}
+          HOSTS_CONFIG: ${{ secrets.HOSTS_CONFIG }}
           SSH_USERNAME: ${{ secrets.SSH_USERNAME }}
           SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }}
           CF_API_EMAIL: ${{ secrets.CF_API_EMAIL }}
@@ -68,19 +68,25 @@ jobs:
           DEPLOYED_COUNT=0
           SKIPPED_COUNT=0
           
-          HOST_COUNT=$(echo "$PROXY_HOSTS_CONFIG" | jq '. | length')
+          HOST_COUNT=$(echo "$HOSTS_CONFIG" | jq '. | length')
           echo "Total hosts: $HOST_COUNT"
           
           for INDEX in $(seq 0 $((HOST_COUNT - 1))); do
-            host_item=$(echo "$PROXY_HOSTS_CONFIG" | jq -c ".[$INDEX]")
+            host_item=$(echo "$HOSTS_CONFIG" | jq -c ".[$INDEX]")
             HOST_NAME=$(echo "$host_item" | jq -r '.name')
             SSH_HOST=$(echo "$host_item" | jq -r '.ssh_host')
             VLESS_HOST=$(echo "$host_item" | jq -r '.vless_host')
+            CPU_TYPE=$(echo "$host_item" | jq -r '.cpu_type')
             
             echo "::add-mask::$SSH_HOST"
             echo "::add-mask::$VLESS_HOST"
             
             if [ "$HOST_NAME" = "null" ] || [ -z "$HOST_NAME" ]; then
+              continue
+            fi
+            
+            # 只处理 arm64 类型的主机
+            if [ "$CPU_TYPE" != "arm64" ]; then
               continue
             fi
             
