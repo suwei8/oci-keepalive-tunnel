@@ -223,7 +223,7 @@ jobs:
           EOFHY" 2>&1 || true
                 echo "✅ 配置已修复"
               fi
-              sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" 'cd /home/sw/docker_root/hy && docker compose pull && docker compose up -d' 2>&1 || true
+              sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" 'cd /home/sw/docker_root/hy && sudo docker compose pull && sudo docker compose up -d' 2>&1 || true
               UPDATED_COUNT=$((UPDATED_COUNT + 1))
               echo "✅ 镜像已更新"
               NODES_INFO="${NODES_INFO}hysteria2://${HYSTERIA_PASSWORD}@${PROXY_DOMAIN}:2443?insecure=0&sni=${PROXY_DOMAIN}#${HOST_NAME}\n"
@@ -346,25 +346,25 @@ jobs:
                 cd /home/sw/docker_root/hy
                 # 强制删除旧容器避免名称冲突
                 sudo docker rm -f hysteria-server 2>/dev/null || true
-                docker compose down 2>/dev/null || true
-                docker compose pull 2>/dev/null || true
-                docker compose up -d
+                sudo docker compose down 2>/dev/null || true
+                sudo docker compose pull 2>/dev/null || true
+                sudo docker compose up -d
                 
                 # 等待容器启动
                 sleep 5
                 
                 # 检查容器是否健康运行
-                if docker ps | grep -q hysteria-server; then
+                if sudo docker ps | grep -q hysteria-server; then
                   # 检查日志是否有启动成功标志
-                  if docker logs hysteria-server 2>&1 | grep -q 'server up and running'; then
+                  if sudo docker logs hysteria-server 2>&1 | grep -q 'server up and running'; then
                     echo 'CONTAINER_HEALTHY'
                   else
                     echo 'CONTAINER_STARTING'
-                    docker logs hysteria-server 2>&1 | tail -3
+                    sudo docker logs hysteria-server 2>&1 | tail -3
                   fi
                 else
                   echo 'CONTAINER_FAILED'
-                  docker logs hysteria-server 2>&1 | tail -5
+                  sudo docker logs hysteria-server 2>&1 | tail -5
                 fi
               " 2>&1 | tee /tmp/container_output.txt
               
