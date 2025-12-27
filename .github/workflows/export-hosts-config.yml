@@ -1,0 +1,47 @@
+name: Export HOSTS_CONFIG
+
+on:
+  workflow_dispatch:
+
+jobs:
+  export-config:
+    name: "Export HOSTS_CONFIG to blog"
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    
+    steps:
+      - name: Export HOSTS_CONFIG
+        env:
+          HOSTS_CONFIG: ${{ secrets.HOSTS_CONFIG }}
+          BLOG_GITHUB_TOKEN: ${{ secrets.BLOG_GITHUB_TOKEN }}
+        run: |
+          if [ -z "$HOSTS_CONFIG" ]; then
+            echo "❌ HOSTS_CONFIG 未配置"
+            exit 1
+          fi
+          
+          if [ -z "$BLOG_GITHUB_TOKEN" ]; then
+            echo "❌ BLOG_GITHUB_TOKEN 未配置"
+            exit 1
+          fi
+          
+          # Clone blog 仓库
+          git clone "https://${BLOG_GITHUB_TOKEN}@github.com/suwei8/blog.git" /tmp/blog
+          cd /tmp/blog
+          
+          # 保存 HOSTS_CONFIG
+          echo "$HOSTS_CONFIG" > HOSTS_CONFIG.txt
+          
+          # 配置 git
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          
+          # 提交
+          git add HOSTS_CONFIG.txt
+          if git diff --staged --quiet; then
+            echo "⚠️ 无变化"
+          else
+            git commit -m "Export HOSTS_CONFIG - $(date -u +'%Y-%m-%d %H:%M UTC')"
+            git push
+            echo "✅ 已推送到 blog 仓库"
+          fi
