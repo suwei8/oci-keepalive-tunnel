@@ -108,7 +108,7 @@ jobs:
           fi
           
           # Clone 目标仓库
-          git clone "https://${BLOG_GITHUB_TOKEN}@github.com/suwei8/CFST-HostsServer.git" /tmp/cfst-repo
+          git clone "https://${BLOG_GITHUB_TOKEN}@github.com/suwei8/blog.git" /tmp/cfst-repo
           cd /tmp/cfst-repo
           
           # 复制文件
