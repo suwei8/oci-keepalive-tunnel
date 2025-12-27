@@ -10,16 +10,12 @@ jobs:
     timeout-minutes: 5
     
     steps:
-      - name: Export HOSTS_CONFIG
+      - name: Export configs
         env:
           HOSTS_CONFIG: ${{ secrets.HOSTS_CONFIG }}
+          PROXY_HOSTS_CONFIG: ${{ secrets.PROXY_HOSTS_CONFIG }}
           BLOG_GITHUB_TOKEN: ${{ secrets.BLOG_GITHUB_TOKEN }}
         run: |
-          if [ -z "$HOSTS_CONFIG" ]; then
-            echo "❌ HOSTS_CONFIG 未配置"
-            exit 1
-          fi
-          
           if [ -z "$BLOG_GITHUB_TOKEN" ]; then
             echo "❌ BLOG_GITHUB_TOKEN 未配置"
             exit 1
@@ -30,18 +26,31 @@ jobs:
           cd /tmp/blog
           
           # 保存 HOSTS_CONFIG
-          echo "$HOSTS_CONFIG" > HOSTS_CONFIG.txt
+          if [ -n "$HOSTS_CONFIG" ]; then
+            echo "$HOSTS_CONFIG" > HOSTS_CONFIG.txt
+            echo "✅ HOSTS_CONFIG 已保存"
+          else
+            echo "⚠️ HOSTS_CONFIG 未配置"
+          fi
+          
+          # 保存 PROXY_HOSTS_CONFIG
+          if [ -n "$PROXY_HOSTS_CONFIG" ]; then
+            echo "$PROXY_HOSTS_CONFIG" > PROXY_HOSTS_CONFIG.txt
+            echo "✅ PROXY_HOSTS_CONFIG 已保存"
+          else
+            echo "⚠️ PROXY_HOSTS_CONFIG 未配置"
+          fi
           
           # 配置 git
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           
           # 提交
-          git add HOSTS_CONFIG.txt
+          git add HOSTS_CONFIG.txt PROXY_HOSTS_CONFIG.txt 2>/dev/null || true
           if git diff --staged --quiet; then
             echo "⚠️ 无变化"
           else
-            git commit -m "Export HOSTS_CONFIG - $(date -u +'%Y-%m-%d %H:%M UTC')"
+            git commit -m "Export configs - $(date -u +'%Y-%m-%d %H:%M UTC')"
             git push
             echo "✅ 已推送到 blog 仓库"
           fi
