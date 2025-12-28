@@ -164,12 +164,15 @@ jobs:
               if [ -n "$TUNNEL_ID" ]; then
                 TUNNEL_CNAME="${TUNNEL_ID}.cfargotunnel.com"
                 
-                # 检查 DNS 记录是否存在
-                EXISTING_DNS=$(curl -s "https://api.cloudflare.com/client/v4/zones/${VLESS_ZONE_ID}/dns_records?name=${VLESS_HOST}" \
+                # 检查 DNS 记录是否存在及内容是否正确
+                DNS_CHECK=$(curl -s "https://api.cloudflare.com/client/v4/zones/${VLESS_ZONE_ID}/dns_records?name=${VLESS_HOST}" \
                   -H "X-Auth-Email: ${VLESS_CF_EMAIL}" \
-                  -H "X-Auth-Key: ${VLESS_CF_KEY}" | jq -r '.result[0].id // empty')
+                  -H "X-Auth-Key: ${VLESS_CF_KEY}")
                 
-                if [ -z "$EXISTING_DNS" ]; then
+                EXISTING_DNS_ID=$(echo "$DNS_CHECK" | jq -r '.result[0].id // empty')
+                EXISTING_DNS_CONTENT=$(echo "$DNS_CHECK" | jq -r '.result[0].content // empty')
+                
+                if [ -z "$EXISTING_DNS_ID" ]; then
                   echo ">>> 创建缺失的 DNS CNAME: $VLESS_HOST -> Tunnel"
                   DNS_RESULT=$(curl -s -X POST "https://api.cloudflare.com/client/v4/zones/${VLESS_ZONE_ID}/dns_records" \
                     -H "X-Auth-Email: ${VLESS_CF_EMAIL}" \
@@ -182,8 +185,21 @@ jobs:
                   else
                     echo "⚠️ DNS CNAME 创建失败"
                   fi
+                elif [ "$EXISTING_DNS_CONTENT" != "$TUNNEL_CNAME" ]; then
+                  echo ">>> 更新 DNS CNAME: $VLESS_HOST -> Tunnel (原: ${EXISTING_DNS_CONTENT})"
+                  DNS_RESULT=$(curl -s -X PUT "https://api.cloudflare.com/client/v4/zones/${VLESS_ZONE_ID}/dns_records/${EXISTING_DNS_ID}" \
+                    -H "X-Auth-Email: ${VLESS_CF_EMAIL}" \
+                    -H "X-Auth-Key: ${VLESS_CF_KEY}" \
+                    -H "Content-Type: application/json" \
+                    -d "{\"type\":\"CNAME\",\"name\":\"${VLESS_HOST}\",\"content\":\"${TUNNEL_CNAME}\",\"proxied\":true}")
+                  
+                  if echo "$DNS_RESULT" | jq -e '.success' > /dev/null; then
+                    echo "✅ DNS CNAME 已更新"
+                  else
+                    echo "⚠️ DNS CNAME 更新失败"
+                  fi
                 else
-                  echo "✅ DNS 记录已存在"
+                  echo "✅ DNS 记录已存在且正确"
                 fi
               fi
               
@@ -294,12 +310,15 @@ jobs:
             
             TUNNEL_CNAME="${TUNNEL_ID}.cfargotunnel.com"
             
-            # 检查 DNS 记录是否已存在 (使用 VLESS 账户)
-            EXISTING_DNS=$(curl -s "https://api.cloudflare.com/client/v4/zones/${VLESS_ZONE_ID}/dns_records?name=${VLESS_HOST}" \
+            # 检查 DNS 记录是否已存在及内容是否正确 (使用 VLESS 账户)
+            DNS_CHECK=$(curl -s "https://api.cloudflare.com/client/v4/zones/${VLESS_ZONE_ID}/dns_records?name=${VLESS_HOST}" \
               -H "X-Auth-Email: ${VLESS_CF_EMAIL}" \
-              -H "X-Auth-Key: ${VLESS_CF_KEY}" | jq -r '.result[0].id // empty')
+              -H "X-Auth-Key: ${VLESS_CF_KEY}")
             
-            if [ -z "$EXISTING_DNS" ]; then
+            EXISTING_DNS_ID=$(echo "$DNS_CHECK" | jq -r '.result[0].id // empty')
+            EXISTING_DNS_CONTENT=$(echo "$DNS_CHECK" | jq -r '.result[0].content // empty')
+            
+            if [ -z "$EXISTING_DNS_ID" ]; then
               echo ">>> 创建 DNS CNAME: $VLESS_HOST -> Tunnel"
               DNS_RESULT=$(curl -s -X POST "https://api.cloudflare.com/client/v4/zones/${VLESS_ZONE_ID}/dns_records" \
                 -H "X-Auth-Email: ${VLESS_CF_EMAIL}" \
@@ -313,8 +332,22 @@ jobs:
                 echo "❌ DNS CNAME 创建失败"
                 echo "$DNS_RESULT" | jq '.errors'
               fi
+            elif [ "$EXISTING_DNS_CONTENT" != "$TUNNEL_CNAME" ]; then
+              echo ">>> 更新 DNS CNAME: $VLESS_HOST -> Tunnel (原: ${EXISTING_DNS_CONTENT})"
+              DNS_RESULT=$(curl -s -X PUT "https://api.cloudflare.com/client/v4/zones/${VLESS_ZONE_ID}/dns_records/${EXISTING_DNS_ID}" \
+                -H "X-Auth-Email: ${VLESS_CF_EMAIL}" \
+                -H "X-Auth-Key: ${VLESS_CF_KEY}" \
+                -H "Content-Type: application/json" \
+                -d "{\"type\":\"CNAME\",\"name\":\"${VLESS_HOST}\",\"content\":\"${TUNNEL_CNAME}\",\"proxied\":true}")
+              
+              if echo "$DNS_RESULT" | jq -e '.success' > /dev/null; then
+                echo "✅ DNS CNAME 已更新"
+              else
+                echo "❌ DNS CNAME 更新失败"
+                echo "$DNS_RESULT" | jq '.errors'
+              fi
             else
-              echo "✅ DNS 记录已存在"
+              echo "✅ DNS 记录已存在且正确"
             fi
             
             # ============================================
