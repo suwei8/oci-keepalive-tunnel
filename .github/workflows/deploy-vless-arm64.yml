@@ -119,7 +119,74 @@ jobs:
             SERVICE_ACTIVE=$(sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" 'sudo systemctl is-active xray-vless 2>/dev/null || echo "inactive"' 2>&1 | tail -1) || true
             
             if [ "$SERVICE_ACTIVE" = "active" ] && [ "$FORCE_REDEPLOY" != "true" ]; then
-              echo "⏭️ 服务运行中，跳过"
+              echo "⏭️ 服务运行中，检查 DNS 后跳过"
+              
+              # 即使跳过部署也检查 DNS 记录
+              # 根据 vless_host 域名选择账户
+              if echo "$VLESS_HOST" | grep -q "555606.xyz"; then
+                VLESS_CF_EMAIL="$CF_API_EMAIL_555606"
+                VLESS_CF_KEY="$CF_API_KEY_555606"
+                VLESS_ZONE_ID="$CF_ZONE_ID_555606"
+              else
+                VLESS_CF_EMAIL="$CF_API_EMAIL"
+                VLESS_CF_KEY="$CF_API_KEY"
+                VLESS_ZONE_ID="$CF_ZONE_ID"
+              fi
+              
+              # 根据 ssh_host 域名查找 Tunnel ID
+              if echo "$SSH_HOST" | grep -q "555606.xyz"; then
+                TUNNEL_CF_EMAIL="$CF_API_EMAIL_555606"
+                TUNNEL_CF_KEY="$CF_API_KEY_555606"
+                TUNNEL_CF_ACCOUNT="$CF_ACCOUNT_ID_555606"
+              else
+                TUNNEL_CF_EMAIL="$CF_API_EMAIL"
+                TUNNEL_CF_KEY="$CF_API_KEY"
+                TUNNEL_CF_ACCOUNT="$CF_ACCOUNT_ID"
+              fi
+              
+              # 查找 Tunnel ID
+              TUNNELS=$(curl -s "https://api.cloudflare.com/client/v4/accounts/${TUNNEL_CF_ACCOUNT}/cfd_tunnel?is_deleted=false" \
+                -H "X-Auth-Email: ${TUNNEL_CF_EMAIL}" \
+                -H "X-Auth-Key: ${TUNNEL_CF_KEY}")
+              
+              TUNNEL_ID=""
+              for tid in $(echo "$TUNNELS" | jq -r '.result[].id // empty' 2>/dev/null); do
+                CONFIG=$(curl -s "https://api.cloudflare.com/client/v4/accounts/${TUNNEL_CF_ACCOUNT}/cfd_tunnel/${tid}/configurations" \
+                  -H "X-Auth-Email: ${TUNNEL_CF_EMAIL}" \
+                  -H "X-Auth-Key: ${TUNNEL_CF_KEY}")
+                
+                if echo "$CONFIG" | grep -q "$SSH_HOST"; then
+                  TUNNEL_ID="$tid"
+                  break
+                fi
+              done
+              
+              if [ -n "$TUNNEL_ID" ]; then
+                TUNNEL_CNAME="${TUNNEL_ID}.cfargotunnel.com"
+                
+                # 检查 DNS 记录是否存在
+                EXISTING_DNS=$(curl -s "https://api.cloudflare.com/client/v4/zones/${VLESS_ZONE_ID}/dns_records?name=${VLESS_HOST}" \
+                  -H "X-Auth-Email: ${VLESS_CF_EMAIL}" \
+                  -H "X-Auth-Key: ${VLESS_CF_KEY}" | jq -r '.result[0].id // empty')
+                
+                if [ -z "$EXISTING_DNS" ]; then
+                  echo ">>> 创建缺失的 DNS CNAME: $VLESS_HOST -> Tunnel"
+                  DNS_RESULT=$(curl -s -X POST "https://api.cloudflare.com/client/v4/zones/${VLESS_ZONE_ID}/dns_records" \
+                    -H "X-Auth-Email: ${VLESS_CF_EMAIL}" \
+                    -H "X-Auth-Key: ${VLESS_CF_KEY}" \
+                    -H "Content-Type: application/json" \
+                    -d "{\"type\":\"CNAME\",\"name\":\"${VLESS_HOST}\",\"content\":\"${TUNNEL_CNAME}\",\"proxied\":true}")
+                  
+                  if echo "$DNS_RESULT" | jq -e '.success' > /dev/null; then
+                    echo "✅ DNS CNAME 已创建"
+                  else
+                    echo "⚠️ DNS CNAME 创建失败"
+                  fi
+                else
+                  echo "✅ DNS 记录已存在"
+                fi
+              fi
+              
               SKIPPED_COUNT=$((SKIPPED_COUNT + 1))
               NODES_INFO="${NODES_INFO}vless://${VLESS_UUID}@${VLESS_HOST}:443?encryption=none&security=tls&sni=${VLESS_HOST}&type=ws&host=${VLESS_HOST}&path=%2Fvless-ws#${HOST_NAME}\n"
               kill $TUNNEL_PID 2>/dev/null || true
