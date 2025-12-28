@@ -258,6 +258,16 @@ class SecurityChecker:
         """检查到矿池的网络连接"""
         print("\n[安全] 检查可疑网络连接...")
         
+        # Docker 内部网络白名单 (172.16.0.0/12 - 172.31.255.255)
+        # 包括常见的 Docker 网络: 172.17.x.x (bridge), 172.18.x.x, etc.
+        docker_network_prefixes = [
+            "172.16.", "172.17.", "172.18.", "172.19.",
+            "172.20.", "172.21.", "172.22.", "172.23.",
+            "172.24.", "172.25.", "172.26.", "172.27.",
+            "172.28.", "172.29.", "172.30.", "172.31.",
+            "10.0.", "10.1.", "10.2.", "10.3.",  # 其他常见内网
+        ]
+        
         try:
             result = subprocess.run(
                 ["ss", "-tnp"],
@@ -300,6 +310,12 @@ class SecurityChecker:
                         break
                 
                 if not is_mining_port:
+                    continue
+                
+                # 跳过 Docker 内部网络连接 (避免误报)
+                is_docker_network = any(peer_addr.startswith(prefix) for prefix in docker_network_prefixes)
+                if is_docker_network:
+                    # 记录跳过信息但不告警
                     continue
                 
                 # 提取进程名用于告警
