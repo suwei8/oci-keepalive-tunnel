@@ -1,0 +1,355 @@
+name: Deploy Cloudflare Tunnel SSH
+
+on:
+  workflow_dispatch:
+    inputs:
+      ssh_ip:
+        description: '远程实例 IP 地址'
+        required: true
+      ssh_password:
+        description: 'SSH 密码'
+        required: true
+      tunnel_tag_name:
+        description: '隧道标签名称 (如 singapore-West9)'
+        required: true
+      ssh_username:
+        description: 'SSH 用户名'
+        required: false
+        default: 'root'
+
+jobs:
+  deploy:
+    name: Deploy CF Tunnel SSH
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup SSH and tools
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq sshpass jq
+          mkdir -p ~/.ssh
+          cat >> ~/.ssh/config << 'EOF'
+          Host *
+            StrictHostKeyChecking no
+            UserKnownHostsFile /dev/null
+            LogLevel ERROR
+          EOF
+
+      - name: Install cloudflared on remote host
+        env:
+          SSH_IP: ${{ github.event.inputs.ssh_ip }}
+          SSH_USERNAME: ${{ github.event.inputs.ssh_username }}
+          SSH_PASSWORD: ${{ github.event.inputs.ssh_password }}
+        run: |
+          SSH_OPTS="-o ConnectTimeout=30 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ServerAliveInterval=30"
+          
+          # 屏蔽敏感信息
+          echo "::add-mask::$SSH_IP"
+          echo "::add-mask::$SSH_PASSWORD"
+          
+          echo ">>> 安装 cloudflared..."
+          sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS ${SSH_USERNAME}@${SSH_IP} '
+            # 添加 Cloudflare GPG 密钥
+            sudo mkdir -p --mode=0755 /usr/share/keyrings
+            curl -fsSL https://pkg.cloudflare.com/cloudflare-public-v2.gpg | sudo tee /usr/share/keyrings/cloudflare-public-v2.gpg >/dev/null
+            
+            # 添加 repo 到 apt 源
+            echo "deb [signed-by=/usr/share/keyrings/cloudflare-public-v2.gpg] https://pkg.cloudflare.com/cloudflared any main" | sudo tee /etc/apt/sources.list.d/cloudflared.list
+            
+            # 安装 cloudflared
+            sudo apt-get update && sudo apt-get install -y cloudflared
+            
+            # 验证安装
+            cloudflared --version
+          '
+          echo "✅ cloudflared 安装完成"
+
+      - name: Create Tunnel via Cloudflare API
+        id: tunnel
+        env:
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          CF_API_EMAIL: ${{ secrets.CF_API_EMAIL }}
+          CF_API_KEY: ${{ secrets.CF_API_KEY }}
+          TUNNEL_TAG_NAME: ${{ github.event.inputs.tunnel_tag_name }}
+          SSH_IP: ${{ github.event.inputs.ssh_ip }}
+        run: |
+          # 屏蔽敏感信息
+          echo "::add-mask::$CF_ACCOUNT_ID"
+          echo "::add-mask::$CF_API_KEY"
+          echo "::add-mask::$SSH_IP"
+          
+          # 生成隧道名称: {tunnel_tag_name}-{ssh_ip}
+          TUNNEL_NAME="${TUNNEL_TAG_NAME}-${SSH_IP}"
+          echo ">>> 创建 Tunnel: $TUNNEL_NAME"
+          
+          # 创建隧道
+          CREATE_RESULT=$(curl -s -X POST "https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/cfd_tunnel" \
+            -H "X-Auth-Email: ${CF_API_EMAIL}" \
+            -H "X-Auth-Key: ${CF_API_KEY}" \
+            -H "Content-Type: application/json" \
+            -d "{\"name\": \"${TUNNEL_NAME}\", \"config_src\": \"cloudflare\"}")
+          
+          if echo "$CREATE_RESULT" | jq -e '.success' > /dev/null; then
+            TUNNEL_ID=$(echo "$CREATE_RESULT" | jq -r '.result.id')
+            echo "✅ Tunnel 创建成功"
+          else
+            echo "⚠️ 创建失败，尝试获取已存在的 Tunnel..."
+            # 检查是否因重名失败，尝试获取已存在的隧道
+            TUNNEL_ID=$(curl -s "https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/cfd_tunnel?name=${TUNNEL_NAME}" \
+              -H "X-Auth-Email: ${CF_API_EMAIL}" \
+              -H "X-Auth-Key: ${CF_API_KEY}" | jq -r '.result[0].id // empty')
+            if [ -n "$TUNNEL_ID" ]; then
+              echo "✅ 使用已存在的 Tunnel"
+            else
+              echo "❌ 无法创建或获取 Tunnel"
+              echo "$CREATE_RESULT" | jq '.errors'
+              exit 1
+            fi
+          fi
+          
+          echo "::add-mask::$TUNNEL_ID"
+          echo "tunnel_id=$TUNNEL_ID" >> $GITHUB_OUTPUT
+          echo "tunnel_name=$TUNNEL_NAME" >> $GITHUB_OUTPUT
+
+      - name: Get Tunnel Token
+        id: token
+        env:
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          CF_API_EMAIL: ${{ secrets.CF_API_EMAIL }}
+          CF_API_KEY: ${{ secrets.CF_API_KEY }}
+          TUNNEL_ID: ${{ steps.tunnel.outputs.tunnel_id }}
+        run: |
+          echo "::add-mask::$TUNNEL_ID"
+          
+          echo ">>> 获取 Tunnel Token..."
+          TOKEN_RESULT=$(curl -s "https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/cfd_tunnel/${TUNNEL_ID}/token" \
+            -H "X-Auth-Email: ${CF_API_EMAIL}" \
+            -H "X-Auth-Key: ${CF_API_KEY}")
+          
+          TUNNEL_TOKEN=$(echo "$TOKEN_RESULT" | jq -r '.result // empty')
+          
+          if [ -z "$TUNNEL_TOKEN" ]; then
+            echo "❌ 获取 Tunnel Token 失败"
+            echo "$TOKEN_RESULT" | jq '.errors'
+            exit 1
+          fi
+          
+          echo "::add-mask::$TUNNEL_TOKEN"
+          echo "tunnel_token=$TUNNEL_TOKEN" >> $GITHUB_OUTPUT
+          echo "✅ Tunnel Token 获取成功"
+
+      - name: Install Tunnel service on remote host
+        env:
+          SSH_IP: ${{ github.event.inputs.ssh_ip }}
+          SSH_USERNAME: ${{ github.event.inputs.ssh_username }}
+          SSH_PASSWORD: ${{ github.event.inputs.ssh_password }}
+          TUNNEL_TOKEN: ${{ steps.token.outputs.tunnel_token }}
+        run: |
+          SSH_OPTS="-o ConnectTimeout=30 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ServerAliveInterval=30"
+          
+          echo "::add-mask::$SSH_IP"
+          echo "::add-mask::$SSH_PASSWORD"
+          echo "::add-mask::$TUNNEL_TOKEN"
+          
+          echo ">>> 安装 Tunnel 服务..."
+          sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS ${SSH_USERNAME}@${SSH_IP} "
+            # 停止并删除可能存在的旧服务
+            sudo cloudflared service uninstall 2>/dev/null || true
+            
+            # 安装 Tunnel 服务
+            sudo cloudflared service install ${TUNNEL_TOKEN}
+            
+            # 等待服务启动
+            sleep 5
+            
+            # 检查服务状态
+            sudo systemctl status cloudflared --no-pager || true
+          "
+          echo "✅ Tunnel 服务安装完成"
+
+      - name: Configure SSH Public Hostname
+        env:
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          CF_API_EMAIL: ${{ secrets.CF_API_EMAIL }}
+          CF_API_KEY: ${{ secrets.CF_API_KEY }}
+          TUNNEL_ID: ${{ steps.tunnel.outputs.tunnel_id }}
+          TUNNEL_TAG_NAME: ${{ github.event.inputs.tunnel_tag_name }}
+        run: |
+          echo "::add-mask::$TUNNEL_ID"
+          
+          # SSH hostname 格式: {tunnel_tag_name}-ssh.ynshanghui.com
+          SSH_HOSTNAME="${TUNNEL_TAG_NAME}-ssh"
+          FULL_HOSTNAME="${SSH_HOSTNAME}.ynshanghui.com"
+          echo ">>> 配置 SSH Hostname: $FULL_HOSTNAME"
+          
+          # 配置 Tunnel ingress 规则
+          CONFIG_RESULT=$(curl -s -X PUT "https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/cfd_tunnel/${TUNNEL_ID}/configurations" \
+            -H "X-Auth-Email: ${CF_API_EMAIL}" \
+            -H "X-Auth-Key: ${CF_API_KEY}" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"config\": {
+                \"ingress\": [
+                  {
+                    \"hostname\": \"${FULL_HOSTNAME}\",
+                    \"service\": \"ssh://localhost:22\"
+                  },
+                  {
+                    \"service\": \"http_status:404\"
+                  }
+                ]
+              }
+            }")
+          
+          if echo "$CONFIG_RESULT" | jq -e '.success' > /dev/null; then
+            echo "✅ Ingress 配置成功"
+          else
+            echo "❌ Ingress 配置失败:"
+            echo "$CONFIG_RESULT" | jq '.errors'
+            exit 1
+          fi
+          
+          # 等待配置生效
+          echo ">>> 等待隧道连接建立..."
+          sleep 15
+
+      - name: Test Tunnel SSH Connection
+        id: test
+        env:
+          SSH_USERNAME: ${{ github.event.inputs.ssh_username }}
+          SSH_PASSWORD: ${{ github.event.inputs.ssh_password }}
+          TUNNEL_TAG_NAME: ${{ github.event.inputs.tunnel_tag_name }}
+        run: |
+          echo "::add-mask::$SSH_PASSWORD"
+          
+          FULL_HOSTNAME="${TUNNEL_TAG_NAME}-ssh.ynshanghui.com"
+          SSH_OPTS="-o ConnectTimeout=30 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR"
+          
+          # 安装 cloudflared
+          sudo cp bin/cloudflared /usr/local/bin/cloudflared 2>/dev/null || \
+            (curl -fsSL https://pkg.cloudflare.com/cloudflared-linux-amd64 -o /tmp/cloudflared && \
+             chmod +x /tmp/cloudflared && sudo mv /tmp/cloudflared /usr/local/bin/cloudflared)
+          
+          echo ">>> 测试隧道 SSH 连接: $FULL_HOSTNAME"
+          
+          # 启动本地 SSH 隧道
+          cloudflared access ssh --hostname "$FULL_HOSTNAME" --url ssh://127.0.0.1:2202 &
+          TUNNEL_PID=$!
+          sleep 5
+          
+          # 测试 SSH 连接
+          if sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -p 2202 ${SSH_USERNAME}@127.0.0.1 "echo 'SSH via Tunnel OK'"; then
+            echo "✅ 隧道 SSH 连接测试成功"
+            echo "connection_ok=true" >> $GITHUB_OUTPUT
+          else
+            echo "❌ 隧道 SSH 连接测试失败"
+            echo "connection_ok=false" >> $GITHUB_OUTPUT
+          fi
+          
+          # 清理隧道
+          kill $TUNNEL_PID 2>/dev/null || true
+
+      - name: Create regular user
+        if: steps.test.outputs.connection_ok == 'true'
+        env:
+          SSH_IP: ${{ github.event.inputs.ssh_ip }}
+          ROOT_USERNAME: ${{ github.event.inputs.ssh_username }}
+          ROOT_PASSWORD: ${{ github.event.inputs.ssh_password }}
+          NEW_USERNAME: ${{ secrets.SSH_USERNAME }}
+          NEW_PASSWORD: ${{ secrets.SSH_PASSWORD }}
+        run: |
+          SSH_OPTS="-o ConnectTimeout=30 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR"
+          
+          echo "::add-mask::$SSH_IP"
+          echo "::add-mask::$ROOT_PASSWORD"
+          echo "::add-mask::$NEW_PASSWORD"
+          
+          echo ">>> 创建普通用户: $NEW_USERNAME"
+          sshpass -p "$ROOT_PASSWORD" ssh $SSH_OPTS ${ROOT_USERNAME}@${SSH_IP} "
+            # 检查用户是否存在
+            if id '${NEW_USERNAME}' &>/dev/null; then
+              echo '用户 ${NEW_USERNAME} 已存在'
+            else
+              # 创建用户
+              sudo useradd -m -s /bin/bash '${NEW_USERNAME}'
+              echo '${NEW_USERNAME}:${NEW_PASSWORD}' | sudo chpasswd
+              echo '✅ 用户 ${NEW_USERNAME} 已创建'
+            fi
+            
+            # 配置免密 sudo
+            echo '${NEW_USERNAME} ALL=(ALL) NOPASSWD:ALL' | sudo tee /etc/sudoers.d/${NEW_USERNAME}
+            sudo chmod 440 /etc/sudoers.d/${NEW_USERNAME}
+            echo '✅ 已配置免密 sudo'
+          "
+
+      - name: Send Telegram notification
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          SSH_IP: ${{ github.event.inputs.ssh_ip }}
+          TUNNEL_TAG_NAME: ${{ github.event.inputs.tunnel_tag_name }}
+          TUNNEL_NAME: ${{ steps.tunnel.outputs.tunnel_name }}
+          NEW_USERNAME: ${{ secrets.SSH_USERNAME }}
+          CONNECTION_OK: ${{ steps.test.outputs.connection_ok }}
+        run: |
+          if [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$TELEGRAM_CHAT_ID" ]; then
+            echo "⚠️ Telegram 未配置"
+            exit 0
+          fi
+          
+          echo "::add-mask::$SSH_IP"
+          
+          TIMESTAMP=$(date -u +'%Y-%m-%d %H:%M UTC')
+          FULL_HOSTNAME="${TUNNEL_TAG_NAME}-ssh.ynshanghui.com"
+          
+          if [ "$CONNECTION_OK" = "true" ]; then
+            STATUS_EMOJI="✅"
+            STATUS_TEXT="成功"
+          else
+            STATUS_EMOJI="❌"
+            STATUS_TEXT="失败"
+          fi
+          
+          MSG=$(printf "${STATUS_EMOJI} *Cloudflare Tunnel 部署${STATUS_TEXT}*\n\n📅 %s\n🏷️ 隧道名称: \`%s\`\n🌐 SSH Hostname: \`%s\`\n\n📝 *连接方式:*\n\`\`\`\ncloudflared access ssh --hostname %s --url ssh://127.0.0.1:2202\nssh -p 2202 %s@127.0.0.1\n\`\`\`" \
+            "$TIMESTAMP" \
+            "$TUNNEL_NAME" \
+            "$FULL_HOSTNAME" \
+            "$FULL_HOSTNAME" \
+            "$NEW_USERNAME")
+          
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -d chat_id="${TELEGRAM_CHAT_ID}" \
+            -d parse_mode="Markdown" \
+            --data-urlencode "text=${MSG}" > /dev/null
+          
+          echo "✅ Telegram 通知已发送"
+
+      - name: Summary
+        env:
+          TUNNEL_NAME: ${{ steps.tunnel.outputs.tunnel_name }}
+          TUNNEL_TAG_NAME: ${{ github.event.inputs.tunnel_tag_name }}
+          CONNECTION_OK: ${{ steps.test.outputs.connection_ok }}
+        run: |
+          FULL_HOSTNAME="${TUNNEL_TAG_NAME}-ssh.ynshanghui.com"
+          
+          echo "## 🚀 Cloudflare Tunnel SSH 部署结果" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ "$CONNECTION_OK" = "true" ]; then
+            echo "### ✅ 部署成功" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "### ❌ 部署失败或连接测试未通过" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| 项目 | 值 |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|-----|" >> $GITHUB_STEP_SUMMARY
+          echo "| 隧道名称 | \`$TUNNEL_NAME\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| SSH Hostname | \`$FULL_HOSTNAME\` |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 连接方式" >> $GITHUB_STEP_SUMMARY
+          echo '```bash' >> $GITHUB_STEP_SUMMARY
+          echo "cloudflared access ssh --hostname $FULL_HOSTNAME --url ssh://127.0.0.1:2202" >> $GITHUB_STEP_SUMMARY
+          echo "ssh -p 2202 <username>@127.0.0.1" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
