@@ -164,6 +164,33 @@ jobs:
               if [ -n "$TUNNEL_ID" ]; then
                 TUNNEL_CNAME="${TUNNEL_ID}.cfargotunnel.com"
                 
+                # 检查 Tunnel ingress 是否包含 VLESS_HOST
+                CURRENT_CONFIG=$(curl -s "https://api.cloudflare.com/client/v4/accounts/${TUNNEL_CF_ACCOUNT}/cfd_tunnel/${TUNNEL_ID}/configurations" \
+                  -H "X-Auth-Email: ${TUNNEL_CF_EMAIL}" \
+                  -H "X-Auth-Key: ${TUNNEL_CF_KEY}")
+                
+                if ! echo "$CURRENT_CONFIG" | grep -q "$VLESS_HOST"; then
+                  echo ">>> 添加 Tunnel ingress: $VLESS_HOST -> http://127.0.0.1:10086"
+                  
+                  CURRENT_INGRESS=$(echo "$CURRENT_CONFIG" | jq '.result.config.ingress')
+                  NEW_INGRESS=$(echo "$CURRENT_INGRESS" | jq --arg host "$VLESS_HOST" \
+                    '. | .[:-1] + [{"hostname": $host, "service": "http://127.0.0.1:10086", "originRequest": {}}] + [.[-1]]')
+                  
+                  UPDATE_RESULT=$(curl -s -X PUT "https://api.cloudflare.com/client/v4/accounts/${TUNNEL_CF_ACCOUNT}/cfd_tunnel/${TUNNEL_ID}/configurations" \
+                    -H "X-Auth-Email: ${TUNNEL_CF_EMAIL}" \
+                    -H "X-Auth-Key: ${TUNNEL_CF_KEY}" \
+                    -H "Content-Type: application/json" \
+                    -d "{\"config\":{\"ingress\":$NEW_INGRESS}}")
+                  
+                  if echo "$UPDATE_RESULT" | jq -e '.success' > /dev/null; then
+                    echo "✅ Tunnel ingress 已更新"
+                  else
+                    echo "⚠️ Tunnel ingress 更新失败"
+                  fi
+                else
+                  echo "✅ Tunnel ingress 已存在"
+                fi
+                
                 # 检查 DNS 记录是否存在及内容是否正确
                 DNS_CHECK=$(curl -s "https://api.cloudflare.com/client/v4/zones/${VLESS_ZONE_ID}/dns_records?name=${VLESS_HOST}" \
                   -H "X-Auth-Email: ${VLESS_CF_EMAIL}" \
