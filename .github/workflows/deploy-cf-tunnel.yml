@@ -170,15 +170,17 @@ jobs:
           "
           echo "✅ Tunnel 服务安装完成"
 
-      - name: Configure SSH Public Hostname
+      - name: Configure SSH Public Hostname and DNS
         env:
           CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
           CF_API_EMAIL: ${{ secrets.CF_API_EMAIL }}
           CF_API_KEY: ${{ secrets.CF_API_KEY }}
+          CF_ZONE_ID: ${{ secrets.CF_ZONE_ID }}
           TUNNEL_ID: ${{ steps.tunnel.outputs.tunnel_id }}
           TUNNEL_TAG_NAME: ${{ github.event.inputs.tunnel_tag_name }}
         run: |
           echo "::add-mask::$TUNNEL_ID"
+          echo "::add-mask::$CF_ZONE_ID"
           
           # SSH hostname 格式: {tunnel_tag_name}-ssh.ynshanghui.com
           SSH_HOSTNAME="${TUNNEL_TAG_NAME}-ssh"
@@ -212,8 +214,52 @@ jobs:
             exit 1
           fi
           
-          # 等待配置生效
-          echo ">>> 等待隧道连接建立..."
+          # 创建 DNS CNAME 记录 (指向隧道)
+          echo ">>> 创建 DNS CNAME 记录..."
+          DNS_RECORD=$(curl -s "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records?name=${FULL_HOSTNAME}" \
+            -H "X-Auth-Email: ${CF_API_EMAIL}" \
+            -H "X-Auth-Key: ${CF_API_KEY}" | jq -r '.result[0].id // empty')
+          
+          CNAME_TARGET="${TUNNEL_ID}.cfargotunnel.com"
+          
+          if [ -z "$DNS_RECORD" ]; then
+            # 创建新记录
+            DNS_RESULT=$(curl -s -X POST "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records" \
+              -H "X-Auth-Email: ${CF_API_EMAIL}" \
+              -H "X-Auth-Key: ${CF_API_KEY}" \
+              -H "Content-Type: application/json" \
+              -d "{
+                \"type\": \"CNAME\",
+                \"name\": \"${SSH_HOSTNAME}\",
+                \"content\": \"${CNAME_TARGET}\",
+                \"proxied\": true,
+                \"ttl\": 1
+              }")
+            if echo "$DNS_RESULT" | jq -e '.success' > /dev/null; then
+              echo "✅ DNS CNAME 记录已创建"
+            else
+              echo "⚠️ DNS 记录创建失败 (可能已存在):"
+              echo "$DNS_RESULT" | jq '.errors'
+            fi
+          else
+            # 更新现有记录
+            echo ">>> DNS 记录已存在，更新..."
+            curl -s -X PUT "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records/${DNS_RECORD}" \
+              -H "X-Auth-Email: ${CF_API_EMAIL}" \
+              -H "X-Auth-Key: ${CF_API_KEY}" \
+              -H "Content-Type: application/json" \
+              -d "{
+                \"type\": \"CNAME\",
+                \"name\": \"${SSH_HOSTNAME}\",
+                \"content\": \"${CNAME_TARGET}\",
+                \"proxied\": true,
+                \"ttl\": 1
+              }" > /dev/null
+            echo "✅ DNS CNAME 记录已更新"
+          fi
+          
+          # 等待 DNS 传播和配置生效
+          echo ">>> 等待隧道连接建立和 DNS 传播..."
           sleep 15
 
       - name: Test Tunnel SSH Connection
