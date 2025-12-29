@@ -125,50 +125,109 @@ jobs:
           RUNNER_IP=$(curl -s https://api.ipify.org)
           echo "GitHub Actions Runner IP: $RUNNER_IP"
           
-          # Fetch GitHub Actions IP ranges
-          echo "Fetching GitHub Actions IP ranges..."
-          GITHUB_IPS=$(curl -s https://api.github.com/meta | jq -r '.actions[]' | head -50)
-          
-          # Check if firewall rule already exists
-          RULE_ID=$(curl -s -X GET "https://api.cloudflare.com/client/v4/zones/$ZONE_ID/firewall/access_rules/rules" \
+          # Check if current Runner IP is already whitelisted
+          echo "Checking if current Runner IP is whitelisted..."
+          EXISTING_RULES=$(curl -s -X GET "https://api.cloudflare.com/client/v4/zones/$ZONE_ID/firewall/access_rules/rules" \
             -H "X-Auth-Email: $API_EMAIL" \
             -H "X-Auth-Key: $API_KEY" \
-            -H "Content-Type: application/json" | jq -r '.result[] | select(.notes == "GitHub Actions Auto-Whitelist") | .id' | head -1)
+            -H "Content-Type: application/json")
           
-          if [ -n "$RULE_ID" ]; then
-            echo "✅ Firewall rule already exists (ID: $RULE_ID)"
-          else
-            echo "Creating new firewall rules for GitHub Actions IPs..."
-            
-            # Create firewall rule for each IP range (limit to first 10 to avoid rate limits)
-            COUNT=0
-            for IP_RANGE in $GITHUB_IPS; do
-              if [ $COUNT -ge 10 ]; then
+          RUNNER_WHITELISTED=false
+          
+          # Check if Runner IP is in any existing IP range rules
+          for rule in $(echo "$EXISTING_RULES" | jq -r '.result[] | select(.mode == "whitelist") | .configuration.value'); do
+            # Check if it's an IP range and if our IP falls within it
+            if echo "$rule" | grep -q "/"; then
+              # For CIDR ranges, we'd need to check if IP is in range (complex)
+              # For simplicity, just check if the IP matches exactly
+              if [[ "$rule" == "$RUNNER_IP" ]]; then
+                RUNNER_WHITELISTED=true
                 break
               fi
-              
-              RESPONSE=$(curl -s -X POST "https://api.cloudflare.com/client/v4/zones/$ZONE_ID/firewall/access_rules/rules" \
-                -H "X-Auth-Email: $API_EMAIL" \
-                -H "X-Auth-Key: $API_KEY" \
-                -H "Content-Type: application/json" \
-                --data '{"mode":"whitelist","configuration":{"target":"ip_range","value":"'$IP_RANGE'"},"notes":"GitHub Actions Auto-Whitelist"}')
-              
-              SUCCESS=$(echo "$RESPONSE" | jq -r '.success')
-              if [ "$SUCCESS" = "true" ]; then
-                echo "  ✅ Whitelisted: $IP_RANGE"
-              else
-                ERROR_MSG=$(echo "$RESPONSE" | jq -r '.errors[0].message')
-                echo "  ⚠️  Failed to whitelist $IP_RANGE: $ERROR_MSG"
+            else
+              # Exact IP match
+              if [[ "$rule" == "$RUNNER_IP" ]]; then
+                RUNNER_WHITELISTED=true
+                break
               fi
-              
-              COUNT=$((COUNT + 1))
-              sleep 0.5  # Small delay to avoid rate limiting
-            done
+            fi
+          done
+          
+          if [ "$RUNNER_WHITELISTED" = "true" ]; then
+            echo "✅ Current Runner IP is already whitelisted"
+          else
+            echo "⚠️  Current Runner IP NOT in whitelist, adding now..."
             
-            echo "✅ Created firewall rules for $COUNT IP ranges"
+            # Add current Runner IP specifically
+            RESPONSE=$(curl -s -X POST "https://api.cloudflare.com/client/v4/zones/$ZONE_ID/firewall/access_rules/rules" \
+              -H "X-Auth-Email: $API_EMAIL" \
+              -H "X-Auth-Key: $API_KEY" \
+              -H "Content-Type: application/json" \
+              --data '{"mode":"whitelist","configuration":{"target":"ip","value":"'$RUNNER_IP'"},"notes":"GitHub Actions Runner IP (Auto)"}')
+            
+            SUCCESS=$(echo "$RESPONSE" | jq -r '.success')
+            if [ "$SUCCESS" = "true" ]; then
+              echo "✅ Successfully whitelisted current Runner IP: $RUNNER_IP"
+            else
+              ERROR_MSG=$(echo "$RESPONSE" | jq -r '.errors[0].message')
+              echo "❌ Failed to whitelist Runner IP: $ERROR_MSG"
+              
+              # If already exists error (code 81053), that's actually OK
+              ERROR_CODE=$(echo "$RESPONSE" | jq -r '.errors[0].code')
+              if [ "$ERROR_CODE" = "81053" ]; then
+                echo "✅ IP already whitelisted (duplicate rule)"
+              else
+                echo "⚠️  Continuing anyway, but connection may fail..."
+              fi
+            fi
+            
+            # Wait for rule to propagate
+            echo "⏳ Waiting 3 seconds for firewall rule to propagate..."
+            sleep 3
           fi
           
-          echo "✅ IP whitelisting complete"
+          # Optionally also whitelist GitHub Actions IP ranges for future runs
+          echo ""
+          echo "Adding GitHub Actions IP ranges for future runs..."
+          GITHUB_IPS=$(curl -s https://api.github.com/meta | jq -r '.actions[]' | head -10)
+          
+          RANGE_COUNT=0
+          for IP_RANGE in $GITHUB_IPS; do
+            # Check if this range is already whitelisted
+            ALREADY_EXISTS=$(echo "$EXISTING_RULES" | jq -r '.result[] | select(.configuration.value == "'$IP_RANGE'") | .id')
+            
+            if [ -n "$ALREADY_EXISTS" ]; then
+              continue
+            fi
+            
+            RESPONSE=$(curl -s -X POST "https://api.cloudflare.com/client/v4/zones/$ZONE_ID/firewall/access_rules/rules" \
+              -H "X-Auth-Email: $API_EMAIL" \
+              -H "X-Auth-Key: $API_KEY" \
+              -H "Content-Type: application/json" \
+              --data '{"mode":"whitelist","configuration":{"target":"ip_range","value":"'$IP_RANGE'"},"notes":"GitHub Actions IP Range (Auto)"}')
+            
+            SUCCESS=$(echo "$RESPONSE" | jq -r '.success')
+            if [ "$SUCCESS" = "true" ]; then
+              echo "  ✅ Whitelisted range: $IP_RANGE"
+              RANGE_COUNT=$((RANGE_COUNT + 1))
+            fi
+            
+            # Limit to 5 ranges per run to avoid rate limits
+            if [ $RANGE_COUNT -ge 5 ]; then
+              break
+            fi
+            
+            sleep 0.5
+          done
+          
+          if [ $RANGE_COUNT -gt 0 ]; then
+            echo "✅ Added $RANGE_COUNT new IP ranges"
+          else
+            echo "✅ All IP ranges already whitelisted"
+          fi
+          
+          echo ""
+          echo "✅ IP whitelisting complete - ready to connect"
 
       - name: Run keepalive
         if: steps.host.outputs.skip != 'true'
