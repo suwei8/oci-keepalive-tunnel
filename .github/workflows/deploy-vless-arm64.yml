@@ -243,7 +243,7 @@ jobs:
               fi
               
               SKIPPED_COUNT=$((SKIPPED_COUNT + 1))
-              NODES_INFO="${NODES_INFO}vless://${VLESS_UUID}@${VLESS_HOST}:443?encryption=none&security=tls&sni=${VLESS_HOST}&type=ws&host=${VLESS_HOST}&path=%2Fvless-ws#${HOST_NAME}\n"
+              NODES_INFO="${NODES_INFO}vless://${VLESS_UUID}@${VLESS_HOST}:443?encryption=none&security=tls&sni=${VLESS_HOST}&type=ws&host=${VLESS_HOST}&path=%2Flibrary1629#${HOST_NAME}\n"
               kill $TUNNEL_PID 2>/dev/null || true
               continue
             fi
@@ -412,7 +412,7 @@ jobs:
             " 2>&1 || true
             
             echo ">>> 创建 Xray 配置..."
-            XRAY_CONFIG=$(printf '{"log":{"loglevel":"warning"},"inbounds":[{"port":10086,"listen":"127.0.0.1","protocol":"vless","settings":{"clients":[{"id":"%s","level":0}],"decryption":"none"},"streamSettings":{"network":"ws","wsSettings":{"path":"/vless-ws"}}}],"outbounds":[{"protocol":"freedom"}]}' "$VLESS_UUID")
+            XRAY_CONFIG=$(printf '{"log":{"loglevel":"warning"},"inbounds":[{"port":10086,"listen":"127.0.0.1","protocol":"vless","settings":{"clients":[{"id":"%s","level":0}],"decryption":"none"},"streamSettings":{"network":"ws","wsSettings":{"path":"/library1629"}}}],"outbounds":[{"protocol":"freedom"}]}' "$VLESS_UUID")
             sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" "sudo mkdir -p /etc/xray && echo '$XRAY_CONFIG' | sudo tee /etc/xray/config.json > /dev/null" 2>&1 || true
             
             echo ">>> 创建 systemd 服务..."
@@ -446,7 +446,7 @@ jobs:
             if [ "$SERVICE_OK" = "yes" ]; then
               echo "✅ 部署成功: $HOST_NAME"
               DEPLOYED_COUNT=$((DEPLOYED_COUNT + 1))
-              NODES_INFO="${NODES_INFO}vless://${VLESS_UUID}@${VLESS_HOST}:443?encryption=none&security=tls&sni=${VLESS_HOST}&type=ws&host=${VLESS_HOST}&path=%2Fvless-ws#${HOST_NAME}\n"
+              NODES_INFO="${NODES_INFO}vless://${VLESS_UUID}@${VLESS_HOST}:443?encryption=none&security=tls&sni=${VLESS_HOST}&type=ws&host=${VLESS_HOST}&path=%2Flibrary1629#${HOST_NAME}\n"
             else
               echo "❌ 部署失败: $HOST_NAME"
             fi

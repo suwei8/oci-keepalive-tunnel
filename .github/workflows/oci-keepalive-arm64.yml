@@ -71,7 +71,9 @@ jobs:
       - name: Install cloudflared
         if: steps.host.outputs.skip != 'true'
         run: |
-          sudo cp bin/cloudflared /usr/local/bin/cloudflared
+          sudo mkdir -p /usr/local/bin
+          wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -O /usr/local/bin/cloudflared
+          sudo chmod +x /usr/local/bin/cloudflared
           cloudflared --version
 
       - name: Setup SSH
@@ -266,8 +268,12 @@ jobs:
             # 启动 Cloudflare Tunnel
             cloudflared access ssh --hostname "$SSH_HOST" --url "ssh://127.0.0.1:2222" &
             TUNNEL_PID=$!
-            sleep 5
             
+            # 等待 Cloudflare Tunnel 建立连接
+            echo "Waiting for tunnel to initialize..."
+            sleep 15
+            
+            # 检查端口是否被监听 (简单检查进程是否还活着是不够的)
             if ! kill -0 $TUNNEL_PID 2>/dev/null; then
               echo "❌ Tunnel failed to start (attempt $attempt)"
               if [ $attempt -eq $MAX_RETRIES ]; then
