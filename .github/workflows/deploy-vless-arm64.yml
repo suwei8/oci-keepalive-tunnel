@@ -385,23 +385,58 @@ jobs:
               fi
             " 2>&1 || true
             
-            echo ">>> 创建 Xray 配置 (双入口)..."
+            echo ">>> 创建 Xray 配置 (使用 jq 生成)..."
             
-            # 构建 Xray 配置 JSON
-            # 入口 1: Tunnel (127.0.0.1:10086, 无 TLS, path: /library1629)
-            # 入口 2: Direct (0.0.0.0:5443, 无 TLS - 免流专用, path: /library1629, host: a.189.cn)
-            
+            # 使用 jq 在 Runner 本地生成安全的 JSON 配置
             if [ "$PROXY_DOMAIN" != "null" ] && [ -n "$PROXY_DOMAIN" ]; then
               # 双入口配置 (Tunnel + Direct No-TLS)
-              XRAY_CONFIG=$(printf '{"log":{"loglevel":"warning"},"inbounds":[{"port":10086,"listen":"127.0.0.1","protocol":"vless","settings":{"clients":[{"id":"%s","level":0}],"decryption":"none"},"streamSettings":{"network":"ws","wsSettings":{"path":"/library1629"}}},{"port":5443,"listen":"0.0.0.0","protocol":"vless","settings":{"clients":[{"id":"%s","level":0}],"decryption":"none"},"streamSettings":{"network":"ws","wsSettings":{"path":"/library1629","headers":{"Host":"%s"}}}}],"outbounds":[{"protocol":"freedom"}]}' "$VLESS_UUID" "$VLESS_UUID" "a.189.cn")
+              XRAY_CONFIG=$(jq -n \
+                --arg uuid "$VLESS_UUID" \
+                --arg host "a.189.cn" \
+                '{
+                  log: {loglevel: "warning"},
+                  inbounds: [
+                    {
+                      port: 10086,
+                      listen: "127.0.0.1",
+                      protocol: "vless",
+                      settings: {clients: [{id: $uuid, level: 0}], decryption: "none"},
+                      streamSettings: {network: "ws", wsSettings: {path: "/library1629"}}
+                    },
+                    {
+                      port: 5443,
+                      listen: "0.0.0.0",
+                      protocol: "vless",
+                      settings: {clients: [{id: $uuid, level: 0}], decryption: "none"},
+                      streamSettings: {network: "ws", wsSettings: {path: "/library1629", headers: {Host: $host}}}
+                    }
+                  ],
+                  outbounds: [{protocol: "freedom"}]
+                }')
               echo "✅ 配置包含: Tunnel + Direct VLESS (无 TLS)"
             else
                # 单入口配置 (仅 Tunnel)
-              XRAY_CONFIG=$(printf '{"log":{"loglevel":"warning"},"inbounds":[{"port":10086,"listen":"127.0.0.1","protocol":"vless","settings":{"clients":[{"id":"%s","level":0}],"decryption":"none"},"streamSettings":{"network":"ws","wsSettings":{"path":"/library1629"}}}],"outbounds":[{"protocol":"freedom"}]}' "$VLESS_UUID")
+              XRAY_CONFIG=$(jq -n \
+                --arg uuid "$VLESS_UUID" \
+                '{
+                  log: {loglevel: "warning"},
+                  inbounds: [
+                    {
+                      port: 10086,
+                      listen: "127.0.0.1",
+                      protocol: "vless",
+                      settings: {clients: [{id: $uuid, level: 0}], decryption: "none"},
+                      streamSettings: {network: "ws", wsSettings: {path: "/library1629"}}
+                    }
+                  ],
+                  outbounds: [{protocol: "freedom"}]
+                }')
               echo "✅ 配置包含: 仅 Tunnel"
             fi
             
-            sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" "sudo mkdir -p /etc/xray && echo '$XRAY_CONFIG' | sudo tee /etc/xray/config.json > /dev/null" 2>&1 || true
+            # 使用 base64 传输 JSON 以避免转义问题
+            CONFIG_B64=$(echo "$XRAY_CONFIG" | base64 -w 0)
+            sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" "sudo mkdir -p /etc/xray && echo '$CONFIG_B64' | base64 -d | sudo tee /etc/xray/config.json > /dev/null" 2>&1 || true
             
             echo ">>> 创建 systemd 服务..."
             SYSTEMD_SERVICE="W1VuaXRdCkRlc2NyaXB0aW9uPVhyYXkgVkxFU1MgU2VydmljZQpBZnRlcj1uZXR3b3JrLnRhcmdldAoKW1NlcnZpY2VdClR5cGU9c2ltcGxlCkV4ZWNTdGFydD0vdXNyL2xvY2FsL2Jpbi94cmF5IHJ1biAtY29uZmlnIC9ldGMveHJheS9jb25maWcuanNvbgpSZXN0YXJ0PW9uLWZhaWx1cmUKUmVzdGFydFNlYz0zCgpbSW5zdGFsbF0KV2FudGVkQnk9bXVsdGktdXNlci50YXJnZXQK"
