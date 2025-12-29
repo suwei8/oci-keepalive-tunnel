@@ -471,7 +471,7 @@ jobs:
               DEPLOYED_COUNT=$((DEPLOYED_COUNT + 1))
               
               # 1. Cloudflare Tunnel 节点
-              NODES_INFO="${NODES_INFO}vless://${VLESS_UUID}@${VLESS_HOST}:443?encryption=none&security=tls&sni=${VLESS_HOST}&type=ws&host=${VLESS_HOST}&path=%2Flibrary1629#${HOST_NAME}\n"
+              NODES_INFO="${NODES_INFO}vless://${VLESS_UUID}@${VLESS_HOST}:443?encryption=none&security=tls&sni=${VLESS_HOST}&type=ws&host=${VLESS_HOST}&path=%2Flibrary1629#${HOST_NAME}-Tunnel\n"
               
               # 2. 直连免流节点 (无 TLS)
               if [ "$PROXY_DOMAIN" != "null" ] && [ -n "$PROXY_DOMAIN" ]; then
@@ -509,12 +509,22 @@ jobs:
           
           TIMESTAMP=$(date -u +'%Y-%m-%d %H:%M UTC')
           NODE_COUNT=$( (cat /tmp/nodes_info.txt | grep -v "^$" || true) | wc -l )
-          NODES_FULL=$( (cat /tmp/nodes_info.txt | grep -v "^$" || true) | head -20 )
+          
+          # 构建 Telegram 消息内容 (分栏显示)
+          NODES_FULL="📋 CF-Tunnel 节点:"$'\n'
+          NODES_FULL="${NODES_FULL}"'```'$'\n'
+          NODES_FULL="${NODES_FULL}$( (cat /tmp/nodes_info.txt | grep -v "^$" || true) | head -20 )"
+          NODES_FULL="${NODES_FULL}"$'\n''```'
           
           # 合并显示直连节点 (如果有)
           if [ -s /tmp/nodes_direct_info.txt ]; then
-             NODES_FULL="${NODES_FULL}"$'\n\n'"--- 直连免流节点 ---"$'\n'"$( (cat /tmp/nodes_direct_info.txt | grep -v "^$" || true) | head -20 )"
              DIRECT_COUNT=$( (cat /tmp/nodes_direct_info.txt | grep -v "^$" || true) | wc -l )
+             
+             NODES_FULL="${NODES_FULL}"$'\n\n'"📋 直连免流节点:"$'\n'
+             NODES_FULL="${NODES_FULL}"'```'$'\n'
+             NODES_FULL="${NODES_FULL}$( (cat /tmp/nodes_direct_info.txt | grep -v "^$" || true) | head -20 )"
+             NODES_FULL="${NODES_FULL}"$'\n''```'
+             
              NODE_COUNT="$NODE_COUNT (Tunnel) + $DIRECT_COUNT (Direct)"
           fi
           
