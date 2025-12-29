@@ -21,7 +21,7 @@ jobs:
       contents: write
     strategy:
       fail-fast: false
-      max-parallel: 10
+      max-parallel: 1
       matrix:
         # 使用索引避免在 YAML 中硬编码主机信息 (支持最多 30 台)
         index: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29]
@@ -86,6 +86,90 @@ jobs:
           EOF
           sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
 
+      - name: Whitelist GitHub Actions IP
+        if: steps.host.outputs.skip != 'true'
+        env:
+          SSH_HOST: ${{ steps.host.outputs.ssh_host }}
+          CF_API_EMAIL: ${{ secrets.CF_API_EMAIL }}
+          CF_API_KEY: ${{ secrets.CF_API_KEY }}
+          CF_ZONE_ID: ${{ secrets.CF_ZONE_ID }}
+          CF_API_EMAIL_555606: ${{ secrets.CF_API_EMAIL_555606 }}
+          CF_API_KEY_555606: ${{ secrets.CF_API_KEY_555606 }}
+          CF_ZONE_ID_555606: ${{ secrets.CF_ZONE_ID_555606 }}
+        run: |
+          echo "=========================================="
+          echo "Whitelisting GitHub Actions IPs"
+          echo "=========================================="
+          
+          # Extract domain from SSH_HOST
+          DOMAIN=$(echo "$SSH_HOST" | awk -F'.' '{print $(NF-1)"."$NF}')
+          echo "Domain: $DOMAIN"
+          
+          # Select Cloudflare credentials based on domain
+          if [[ "$DOMAIN" == "555606.xyz" ]]; then
+            API_EMAIL="$CF_API_EMAIL_555606"
+            API_KEY="$CF_API_KEY_555606"
+            ZONE_ID="$CF_ZONE_ID_555606"
+          elif [[ "$DOMAIN" == "ynshanghui.com" ]]; then
+            API_EMAIL="$CF_API_EMAIL"
+            API_KEY="$CF_API_KEY"
+            ZONE_ID="$CF_ZONE_ID"
+          else
+            echo "❌ Unknown domain: $DOMAIN"
+            exit 1
+          fi
+          
+          echo "Using Cloudflare Zone: $ZONE_ID"
+          
+          # Get current GitHub Actions Runner IP
+          RUNNER_IP=$(curl -s https://api.ipify.org)
+          echo "GitHub Actions Runner IP: $RUNNER_IP"
+          
+          # Fetch GitHub Actions IP ranges
+          echo "Fetching GitHub Actions IP ranges..."
+          GITHUB_IPS=$(curl -s https://api.github.com/meta | jq -r '.actions[]' | head -50)
+          
+          # Check if firewall rule already exists
+          RULE_ID=$(curl -s -X GET "https://api.cloudflare.com/client/v4/zones/$ZONE_ID/firewall/access_rules/rules" \
+            -H "X-Auth-Email: $API_EMAIL" \
+            -H "X-Auth-Key: $API_KEY" \
+            -H "Content-Type: application/json" | jq -r '.result[] | select(.notes == "GitHub Actions Auto-Whitelist") | .id' | head -1)
+          
+          if [ -n "$RULE_ID" ]; then
+            echo "✅ Firewall rule already exists (ID: $RULE_ID)"
+          else
+            echo "Creating new firewall rules for GitHub Actions IPs..."
+            
+            # Create firewall rule for each IP range (limit to first 10 to avoid rate limits)
+            COUNT=0
+            for IP_RANGE in $GITHUB_IPS; do
+              if [ $COUNT -ge 10 ]; then
+                break
+              fi
+              
+              RESPONSE=$(curl -s -X POST "https://api.cloudflare.com/client/v4/zones/$ZONE_ID/firewall/access_rules/rules" \
+                -H "X-Auth-Email: $API_EMAIL" \
+                -H "X-Auth-Key: $API_KEY" \
+                -H "Content-Type: application/json" \
+                --data '{"mode":"whitelist","configuration":{"target":"ip_range","value":"'$IP_RANGE'"},"notes":"GitHub Actions Auto-Whitelist"}')
+              
+              SUCCESS=$(echo "$RESPONSE" | jq -r '.success')
+              if [ "$SUCCESS" = "true" ]; then
+                echo "  ✅ Whitelisted: $IP_RANGE"
+              else
+                ERROR_MSG=$(echo "$RESPONSE" | jq -r '.errors[0].message')
+                echo "  ⚠️  Failed to whitelist $IP_RANGE: $ERROR_MSG"
+              fi
+              
+              COUNT=$((COUNT + 1))
+              sleep 0.5  # Small delay to avoid rate limiting
+            done
+            
+            echo "✅ Created firewall rules for $COUNT IP ranges"
+          fi
+          
+          echo "✅ IP whitelisting complete"
+
       - name: Run keepalive
         if: steps.host.outputs.skip != 'true'
         env:
@@ -109,6 +193,12 @@ jobs:
           for attempt in $(seq 1 $MAX_RETRIES); do
             echo ""
             echo ">>> 尝试 $attempt / $MAX_RETRIES"
+            
+            # 首次失败后等待5秒
+            if [ $attempt -gt 1 ]; then
+              echo "⏳ Waiting 5 seconds before retry (Cloudflare rate limit protection)..."
+              sleep 5
+            fi
             
             # 清理之前的隧道
             pkill -f "cloudflared access ssh" 2>/dev/null || true
@@ -165,6 +255,14 @@ jobs:
                 "predictions/${SAFE_NAME}.json" 2>/dev/null || echo "No prediction file"
               
               kill $TUNNEL_PID 2>/dev/null || true
+              
+              # 实例间随机延迟 (5-8分钟，避免触发 DDoS 保护)
+              DELAY=$((300 + RANDOM % 181))  # 300-480 seconds
+              echo ""
+              echo "⏳ Instance completed. Waiting $DELAY seconds before next instance..."
+              echo "   (This delay prevents Cloudflare DDoS detection)"
+              sleep $DELAY
+              
               echo "✅ Done"
               exit 0
             else
