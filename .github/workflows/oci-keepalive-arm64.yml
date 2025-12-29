@@ -2,8 +2,8 @@ name: OCI Keepalive via Tunnel (ARM64)
 
 on:
   schedule:
-    # 每 2 小时执行一次
-    - cron: "0 */2 * * *"
+    # 每 3 小时执行一次
+    - cron: "0 */3 * * *"
   workflow_dispatch:
     inputs:
       target_index:
