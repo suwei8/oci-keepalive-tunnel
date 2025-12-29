@@ -530,10 +530,17 @@ jobs:
           
           FINAL_MSG=$(printf "🔐 *VLESS WS 部署完成*\n\n📅 %s\n\n✅ *共 %s 个节点*\n\n%s\n\n🔗 *订阅地址:*\nCF-Tunnel\nhttps://v.555606.xyz/cf-2s1zhe9tq1f7f5i20lw2d243tyzts9.txt\n\n直连+免流\nhttps://v.555606.xyz/ml-4nlsgmf2iazhegmhwozyohxlek8t3c.txt\n\n💡 复制上方链接导入客户端即可使用" "$TIMESTAMP" "$NODE_COUNT" "$NODES_FULL")
           
-          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
-            -d chat_id="${TELEGRAM_CHAT_ID}" \
-            -d parse_mode="Markdown" \
-            --data-urlencode "text=${FINAL_MSG}" > /dev/null
+          # 支持多个 chat_id (逗号分隔)
+          IFS=',' read -ra CHAT_IDS <<< "$TELEGRAM_CHAT_ID"
+          for chat_id in "${CHAT_IDS[@]}"; do
+            chat_id=$(echo "$chat_id" | xargs)
+            if [ -n "$chat_id" ]; then
+              curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+                -d chat_id="${chat_id}" \
+                -d parse_mode="Markdown" \
+                --data-urlencode "text=${FINAL_MSG}" > /dev/null
+            fi
+          done
           
           echo "✅ Telegram 已发送"
 

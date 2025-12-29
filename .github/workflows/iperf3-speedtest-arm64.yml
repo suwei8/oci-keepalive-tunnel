@@ -424,9 +424,16 @@ jobs:
           FINAL_MSG=$(printf "🚀 *iPerf3 测速完成*\n\n📅 %s\n\n🏆 *速度排名 (Top 10)*\n\`\`\`\n%s\n\`\`\`" "$TIMESTAMP" "$TOP10_TEXT")
           
           # 发送 Telegram
-          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
-            -d chat_id="${TELEGRAM_CHAT_ID}" \
-            -d parse_mode="Markdown" \
-            --data-urlencode "text=${FINAL_MSG}" > /dev/null
+          # 支持多个 chat_id (逗号分隔)
+          IFS=',' read -ra CHAT_IDS <<< "$TELEGRAM_CHAT_ID"
+          for chat_id in "${CHAT_IDS[@]}"; do
+            chat_id=$(echo "$chat_id" | xargs)
+            if [ -n "$chat_id" ]; then
+              curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+                -d chat_id="${chat_id}" \
+                -d parse_mode="Markdown" \
+                --data-urlencode "text=${FINAL_MSG}" > /dev/null
+            fi
+          done
           
           echo "✅ Telegram 通知已发送"

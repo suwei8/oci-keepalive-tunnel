@@ -449,22 +449,26 @@ class SecurityChecker:
         message += f"⏰ {self.timestamp}"
         
         # 发送请求
-        try:
-            url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-            data = urllib.parse.urlencode({
-                "chat_id": TELEGRAM_CHAT_ID,
-                "text": message,
-                "parse_mode": "Markdown"
-            }).encode()
-            
-            req = urllib.request.Request(url, data=data)
-            with urllib.request.urlopen(req, timeout=10) as response:
-                if response.status == 200:
-                    print("[安全] ✅ Telegram 告警已发送")
-                else:
-                    print(f"[安全] ❌ Telegram 发送失败: {response.status}")
-        except Exception as e:
-            print(f"[安全] ❌ Telegram 发送出错: {e}")
+        # 支持多个 chat_id (逗号分隔)
+        chat_ids = [cid.strip() for cid in TELEGRAM_CHAT_ID.split(',') if cid.strip()]
+        
+        for chat_id in chat_ids:
+            try:
+                url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+                data = urllib.parse.urlencode({
+                    "chat_id": chat_id,
+                    "text": message,
+                    "parse_mode": "Markdown"
+                }).encode()
+                
+                req = urllib.request.Request(url, data=data)
+                with urllib.request.urlopen(req, timeout=10) as response:
+                    if response.status == 200:
+                        print(f"[安全] ✅ Telegram 告警已发送 (to {chat_id})")
+                    else:
+                        print(f"[安全] ❌ Telegram 发送失败: {response.status}")
+            except Exception as e:
+                print(f"[安全] ❌ Telegram 发送出错: {e}")
     
     def run_all_checks(self):
         """运行所有安全检查"""
