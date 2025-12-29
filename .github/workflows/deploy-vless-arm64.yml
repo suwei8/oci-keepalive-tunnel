@@ -508,13 +508,13 @@ jobs:
           fi
           
           TIMESTAMP=$(date -u +'%Y-%m-%d %H:%M UTC')
-          NODE_COUNT=$(cat /tmp/nodes_info.txt | grep -v "^$" | wc -l)
-          NODES_FULL=$(cat /tmp/nodes_info.txt | grep -v "^$" || true | head -20)
+          NODE_COUNT=$( (cat /tmp/nodes_info.txt | grep -v "^$" || true) | wc -l )
+          NODES_FULL=$( (cat /tmp/nodes_info.txt | grep -v "^$" || true) | head -20 )
           
           # 合并显示直连节点 (如果有)
           if [ -s /tmp/nodes_direct_info.txt ]; then
-             NODES_FULL="${NODES_FULL}\n\n--- 直连免流节点 ---\n$(cat /tmp/nodes_direct_info.txt | grep -v "^$" || true | head -20)"
-             DIRECT_COUNT=$(cat /tmp/nodes_direct_info.txt | grep -v "^$" || true | wc -l)
+             NODES_FULL="${NODES_FULL}"$'\n\n'"--- 直连免流节点 ---"$'\n'"$( (cat /tmp/nodes_direct_info.txt | grep -v "^$" || true) | head -20 )"
+             DIRECT_COUNT=$( (cat /tmp/nodes_direct_info.txt | grep -v "^$" || true) | wc -l )
              NODE_COUNT="$NODE_COUNT (Tunnel) + $DIRECT_COUNT (Direct)"
           fi
           
