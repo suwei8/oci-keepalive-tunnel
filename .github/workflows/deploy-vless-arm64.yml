@@ -74,6 +74,7 @@ jobs:
           }
           
           NODES_INFO=""
+          NODES_DIRECT_INFO=""
           DEPLOYED_COUNT=0
           SKIPPED_COUNT=0
           
