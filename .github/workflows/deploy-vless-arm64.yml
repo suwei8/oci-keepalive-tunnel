@@ -545,29 +545,37 @@ jobs:
           cd /tmp/blog
           
           TIMESTAMP=$(date -u +'%Y-%m-%d %H:%M UTC')
-          echo "# VLESS WS 节点列表" > kphDl0SYZmghX7uxOxlLDnEiIOc3.txt
-          echo "# 更新时间: $TIMESTAMP" >> kphDl0SYZmghX7uxOxlLDnEiIOc3.txt
-          echo "" >> kphDl0SYZmghX7uxOxlLDnEiIOc3.txt
-          cat /tmp/nodes_info.txt | grep -v "^$" >> kphDl0SYZmghX7uxOxlLDnEiIOc3.txt
           
-          # 推送直连免流节点到 cfml.txt
+          # 1. Cloudflare Tunnel 节点 (cf-2...)
+          FILE_CF="cf-2s1zhe9tq1f7f5i20lw2d243tyzts9.txt"
+          CONTENT_CF="# VLESS WS 节点列表"$'\n'"# 更新时间: $TIMESTAMP"$'\n\n'
+          CONTENT_CF="${CONTENT_CF}$(cat /tmp/nodes_info.txt | grep -v "^$" || true)"
+          
+          echo -n "$CONTENT_CF" | base64 > "$FILE_CF"
+          
+          # 2. 直连免流节点 (ml-4...)
+          FILE_ML="ml-4nlsgmf2iazhegmhwozyohxlek8t3c.txt"
           if [ -s /tmp/nodes_direct_info.txt ]; then
-             echo "# 直连免流 VLESS 节点列表" > cfml.txt
-             echo "# 更新时间: $TIMESTAMP" >> cfml.txt
-             echo "" >> cfml.txt
-             cat /tmp/nodes_direct_info.txt | grep -v "^$" >> cfml.txt
-             git add cfml.txt
-             echo "✅ 已生成 cfml.txt"
+             CONTENT_ML="# 直连免流 VLESS 节点列表"$'\n'"# 更新时间: $TIMESTAMP"$'\n\n'
+             CONTENT_ML="${CONTENT_ML}$(cat /tmp/nodes_direct_info.txt | grep -v "^$" || true)"
+             
+             echo -n "$CONTENT_ML" | base64 > "$FILE_ML"
+             git add "$FILE_ML"
+             echo "✅ 已生成直连订阅文件"
           fi
           
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add kphDl0SYZmghX7uxOxlLDnEiIOc3.txt
-          git diff --staged --quiet || git commit -m "Update VLESS nodes $(date -u +%Y-%m-%d)"
+          
+          # 清理旧文件 (如果存在)
+          git rm --ignore-unmatch kphDl0SYZmghX7uxOxlLDnEiIOc3.txt cfml.txt 2>/dev/null || true
+          
+          git add "$FILE_CF"
+          git diff --staged --quiet || git commit -m "Update VLESS nodes (Base64) $(date -u +%Y-%m-%d)"
           git push
           
           echo "✅ 已推送到 blog 仓库"
-
+          
       - name: Summary
         run: |
           echo "## 🔐 VLESS WS 部署结果" >> $GITHUB_STEP_SUMMARY
@@ -575,7 +583,7 @@ jobs:
           if [ -s /tmp/nodes_info.txt ]; then
             echo "### ✅ 节点列表" >> $GITHUB_STEP_SUMMARY
             echo '```' >> $GITHUB_STEP_SUMMARY
-            cat /tmp/nodes_info.txt | grep -v "^$" >> $GITHUB_STEP_SUMMARY
+            cat /tmp/nodes_info.txt | grep -v "^$" || true >> $GITHUB_STEP_SUMMARY
             echo '```' >> $GITHUB_STEP_SUMMARY
           else
             echo "无节点信息" >> $GITHUB_STEP_SUMMARY
