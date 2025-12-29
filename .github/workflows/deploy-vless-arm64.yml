@@ -408,7 +408,7 @@ jobs:
                       listen: "0.0.0.0",
                       protocol: "vless",
                       settings: {clients: [{id: $uuid, level: 0}], decryption: "none"},
-                      streamSettings: {network: "ws", wsSettings: {path: "/library1629", headers: {Host: $host}}}
+                      streamSettings: {network: "ws", wsSettings: {path: "/", headers: {Host: $host}}}
                     }
                   ],
                   outbounds: [{protocol: "freedom"}]
@@ -475,7 +475,7 @@ jobs:
               
               # 2. 直连免流节点 (无 TLS)
               if [ "$PROXY_DOMAIN" != "null" ] && [ -n "$PROXY_DOMAIN" ]; then
-                 NODES_DIRECT_INFO="${NODES_DIRECT_INFO}vless://${VLESS_UUID}@${PROXY_DOMAIN}:5443?encryption=none&security=none&type=ws&headerType=http&host=a.189.cn&path=%2Flibrary1629#${HOST_NAME}-直连免流\n"
+                 NODES_DIRECT_INFO="${NODES_DIRECT_INFO}vless://${VLESS_UUID}@${PROXY_DOMAIN}:5443?encryption=none&security=none&type=ws&headerType=http&host=a.189.cn&path=%2F#${HOST_NAME}-直连免流\n"
               fi
             else
               echo "❌ 部署失败: $HOST_NAME"
