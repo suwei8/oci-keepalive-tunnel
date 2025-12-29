@@ -362,60 +362,7 @@ jobs:
             fi
             
             # ============================================
-            # 步骤2: SSL 证书申请 (如果启用直连)
-            # ============================================
-            CERT_PATH_FULLCHAIN=""
-            CERT_PATH_KEY=""
-            
-            if [ "$PROXY_DOMAIN" != "null" ] && [ -n "$PROXY_DOMAIN" ]; then
-              echo ">>> 处理直连域名 SSL: $MASKED_PROXY_DOMAIN"
-              
-              # SSL 证书检查
-              CERT_EXISTS=$(sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" "sudo test -f /etc/letsencrypt/live/${PROXY_DOMAIN}/fullchain.pem && echo CERT_FOUND || echo CERT_MISSING" 2>/dev/null | tail -1) || true
-              
-              if [ "$CERT_EXISTS" = "CERT_FOUND" ]; then
-                echo "✅ SSL 证书已存在"
-              else
-                echo ">>> 申请 SSL 证书..."
-                sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" "
-                  # 安装 certbot
-                  which certbot > /dev/null 2>&1 || (sudo apt-get update -qq && sudo apt-get install -y -qq certbot)
-                  
-                  # 停止所有可能占用 80 端口的服务
-                  sudo systemctl stop nginx 2>/dev/null || true
-                  sudo docker stop \$(sudo docker ps -q --filter 'publish=80') 2>/dev/null || true
-                  sudo fuser -k 80/tcp 2>/dev/null || true
-                  
-                  # 申请证书
-                  sudo certbot certonly --standalone -d ${PROXY_DOMAIN} --non-interactive --agree-tos --email ${CF_API_EMAIL} --http-01-port 80 || true
-                  
-                  # 恢复服务 (如果有需要)
-                  # sudo systemctl start nginx 2>/dev/null || true
-                  
-                  # 赋予读取权限 (让 xray 用户能读取)
-                  sudo chmod 755 /etc/letsencrypt/live/
-                  sudo chmod 755 /etc/letsencrypt/archive/
-                  sudo chmod -R 644 /etc/letsencrypt/archive/${PROXY_DOMAIN}/
-                " 2>&1
-                
-                # 验证证书
-                CERT_CHECK=$(sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" "sudo test -f /etc/letsencrypt/live/${PROXY_DOMAIN}/fullchain.pem && echo CERT_FOUND || echo CERT_MISSING" 2>/dev/null | tail -1) || true
-                
-                if [ "$CERT_CHECK" = "CERT_FOUND" ]; then
-                  echo "✅ SSL 证书申请成功"
-                else
-                  echo "⚠️ SSL 证书申请失败，直连模式将不可用"
-                fi
-              fi
-              
-              if [ "$CERT_EXISTS" = "CERT_FOUND" ] || [ "$CERT_CHECK" = "CERT_FOUND" ]; then
-                CERT_PATH_FULLCHAIN="/etc/letsencrypt/live/${PROXY_DOMAIN}/fullchain.pem"
-                CERT_PATH_KEY="/etc/letsencrypt/live/${PROXY_DOMAIN}/privkey.pem"
-              fi
-            fi
-            
-            # ============================================
-            # 步骤3: 部署 Xray
+            # 步骤2: 部署 Xray (包含直连免流配置)
             # ============================================
             echo ">>> 检查/安装 Xray..."
             sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" "
@@ -441,17 +388,16 @@ jobs:
             
             # 构建 Xray 配置 JSON
             # 入口 1: Tunnel (127.0.0.1:10086, 无 TLS, path: /library1629)
-            # 入口 2: Direct (0.0.0.0:5443, TLS, path: /library1629)
+            # 入口 2: Direct (0.0.0.0:5443, 无 TLS - 免流专用, path: /library1629, host: a.189.cn)
             
-            # 必须用 printf 避免 JSON 格式错误
-            if [ -n "$CERT_PATH_FULLCHAIN" ]; then
-              # 双入口配置
-              XRAY_CONFIG=$(printf '{"log":{"loglevel":"warning"},"inbounds":[{"port":10086,"listen":"127.0.0.1","protocol":"vless","settings":{"clients":[{"id":"%s","level":0}],"decryption":"none"},"streamSettings":{"network":"ws","wsSettings":{"path":"/library1629"}}},{"port":5443,"listen":"0.0.0.0","protocol":"vless","settings":{"clients":[{"id":"%s","level":0}],"decryption":"none"},"streamSettings":{"network":"ws","security":"tls","tlsSettings":{"certificates":[{"certificateFile":"%s","keyFile":"%s"}]},"wsSettings":{"path":"/library1629","headers":{"Host":"%s"}}}}],"outbounds":[{"protocol":"freedom"}]}' "$VLESS_UUID" "$VLESS_UUID" "$CERT_PATH_FULLCHAIN" "$CERT_PATH_KEY" "a.189.cn")
-              echo "✅ 配置包含: Tunnel + Direct VLESS"
+            if [ "$PROXY_DOMAIN" != "null" ] && [ -n "$PROXY_DOMAIN" ]; then
+              # 双入口配置 (Tunnel + Direct No-TLS)
+              XRAY_CONFIG=$(printf '{"log":{"loglevel":"warning"},"inbounds":[{"port":10086,"listen":"127.0.0.1","protocol":"vless","settings":{"clients":[{"id":"%s","level":0}],"decryption":"none"},"streamSettings":{"network":"ws","wsSettings":{"path":"/library1629"}}},{"port":5443,"listen":"0.0.0.0","protocol":"vless","settings":{"clients":[{"id":"%s","level":0}],"decryption":"none"},"streamSettings":{"network":"ws","wsSettings":{"path":"/library1629","headers":{"Host":"%s"}}}}],"outbounds":[{"protocol":"freedom"}]}' "$VLESS_UUID" "$VLESS_UUID" "a.189.cn")
+              echo "✅ 配置包含: Tunnel + Direct VLESS (无 TLS)"
             else
                # 单入口配置 (仅 Tunnel)
               XRAY_CONFIG=$(printf '{"log":{"loglevel":"warning"},"inbounds":[{"port":10086,"listen":"127.0.0.1","protocol":"vless","settings":{"clients":[{"id":"%s","level":0}],"decryption":"none"},"streamSettings":{"network":"ws","wsSettings":{"path":"/library1629"}}}],"outbounds":[{"protocol":"freedom"}]}' "$VLESS_UUID")
-              echo "⚠️ 配置包含: 仅 Tunnel (缺失证书)"
+              echo "✅ 配置包含: 仅 Tunnel"
             fi
             
             sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" "sudo mkdir -p /etc/xray && echo '$XRAY_CONFIG' | sudo tee /etc/xray/config.json > /dev/null" 2>&1 || true
@@ -491,9 +437,9 @@ jobs:
               # 1. Cloudflare Tunnel 节点
               NODES_INFO="${NODES_INFO}vless://${VLESS_UUID}@${VLESS_HOST}:443?encryption=none&security=tls&sni=${VLESS_HOST}&type=ws&host=${VLESS_HOST}&path=%2Flibrary1629#${HOST_NAME}\n"
               
-              # 2. 直连免流节点
-              if [ -n "$CERT_PATH_FULLCHAIN" ]; then
-                 NODES_DIRECT_INFO="${NODES_DIRECT_INFO}vless://${VLESS_UUID}@${PROXY_DOMAIN}:5443?encryption=none&security=tls&sni=${PROXY_DOMAIN}&type=ws&headerType=http&host=a.189.cn&path=%2Flibrary1629#${HOST_NAME}-直连免流\n"
+              # 2. 直连免流节点 (无 TLS)
+              if [ "$PROXY_DOMAIN" != "null" ] && [ -n "$PROXY_DOMAIN" ]; then
+                 NODES_DIRECT_INFO="${NODES_DIRECT_INFO}vless://${VLESS_UUID}@${PROXY_DOMAIN}:5443?encryption=none&security=none&type=ws&headerType=http&host=a.189.cn&path=%2Flibrary1629#${HOST_NAME}-直连免流\n"
               fi
             else
               echo "❌ 部署失败: $HOST_NAME"
