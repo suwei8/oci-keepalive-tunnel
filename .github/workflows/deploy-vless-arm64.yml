@@ -367,8 +367,15 @@ jobs:
             # ============================================
             echo ">>> 检查/安装 Xray..."
             sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" "
-              # 开放端口
-              sudo iptables -I INPUT -p tcp --dport 5443 -j ACCEPT 2>/dev/null || true
+              # 安装必要工具 (Firewall & Unzip)
+              export DEBIAN_FRONTEND=noninteractive
+              sudo apt-get update -qq 2>/dev/null || true
+              echo "iptables-persistent iptables-persistent/autosave_v4 boolean true" | sudo debconf-set-selections 2>/dev/null || true
+              echo "iptables-persistent iptables-persistent/autosave_v6 boolean true" | sudo debconf-set-selections 2>/dev/null || true
+              sudo apt-get install -y -qq iptables iptables-persistent netfilter-persistent unzip 2>/dev/null || true
+
+              # 开放端口 (Idempotent check)
+              sudo iptables -C INPUT -p tcp --dport 5443 -j ACCEPT 2>/dev/null || sudo iptables -I INPUT -p tcp --dport 5443 -j ACCEPT
               sudo netfilter-persistent save 2>/dev/null || true
               
               # 检查安装
