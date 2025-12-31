@@ -24,10 +24,10 @@ else
     echo '  -> Rclone is up to date (v1.72.1)'
 fi
 
-# 2. Install fuse
-if ! command -v fusermount >/dev/null; then
-    echo '  -> Installing fuse...'
-    sudo apt-get update -qq && sudo apt-get install -y -qq fuse
+# 2. Install fuse3 (Required for Rclone v1.72+)
+if ! command -v fusermount3 >/dev/null; then
+    echo '  -> Installing fuse3...'
+    sudo apt-get update -qq && sudo apt-get install -y -qq fuse3
 fi
 
 # 3. Check Config
@@ -60,14 +60,18 @@ create_service() {
         fi
     fi
     
-    # Find fusermount path
-    FUSERMOUNT_BIN=$(command -v fusermount || echo "/bin/fusermount")
+    # Find fusermount3 path
+    FUSERMOUNT_BIN=$(command -v fusermount3 || echo "/bin/fusermount3")
     if [ ! -x "$FUSERMOUNT_BIN" ]; then
-        if [ -x "/usr/bin/fusermount" ]; then
-            FUSERMOUNT_BIN="/usr/bin/fusermount"
+        if [ -x "/usr/bin/fusermount3" ]; then
+            FUSERMOUNT_BIN="/usr/bin/fusermount3"
         else
-            echo "❌ fusermount not found!"
-            exit 1
+             # Fallback to fuse2 if fuse3 not found (unlikely after install)
+             FUSERMOUNT_BIN=$(command -v fusermount || echo "/bin/fusermount")
+             if [ ! -x "$FUSERMOUNT_BIN" ]; then
+                echo "❌ fusermount3/fusermount not found!"
+                exit 1
+             fi
         fi
     fi
     echo "     Using fusermount at: $FUSERMOUNT_BIN"
