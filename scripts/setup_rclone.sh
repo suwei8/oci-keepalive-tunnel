@@ -50,6 +50,18 @@ create_service() {
     
     echo "  -> Configuring Service: ${SERVICE_NAME}..."
     
+    # Find fusermount path
+    FUSERMOUNT_BIN=$(command -v fusermount || echo "/bin/fusermount")
+    if [ ! -x "$FUSERMOUNT_BIN" ]; then
+        if [ -x "/usr/bin/fusermount" ]; then
+            FUSERMOUNT_BIN="/usr/bin/fusermount"
+        else
+            echo "❌ fusermount not found!"
+            exit 1
+        fi
+    fi
+    echo "     Using fusermount at: $FUSERMOUNT_BIN"
+
     sudo tee /etc/systemd/system/${SERVICE_NAME}.service > /dev/null <<EOF
 [Unit]
 Description=Rclone Mount for ${REMOTE}
@@ -69,9 +81,8 @@ ExecStart=/usr/bin/rclone mount ${REMOTE}: ${MOUNT_POINT} \\
     --buffer-size 32M \\
     --low-level-retries 10 \\
     --log-level ERROR \\
-    --log-file /var/log/rclone-${REMOTE}.log \\
-    --umask 000
-ExecStop=$(command -v fusermount) -u ${MOUNT_POINT}
+    --log-file /var/log/rclone-${REMOTE}.log
+ExecStop=${FUSERMOUNT_BIN} -u ${MOUNT_POINT}
 Restart=always
 RestartSec=10
 
