@@ -106,32 +106,35 @@ jobs:
             # --- 部署逻辑 ---
             echo ">>> 开始配置 Rclone..."
             
-            # 上传二进制文件
-            echo "  -> 上传 bin/rclone-arm64.zip..."
-            if [ -f "bin/rclone-arm64.zip" ]; then
-                sshpass -p "$SSH_PASSWORD" scp $SSH_OPTS -P 2222 "bin/rclone-arm64.zip" "${SSH_USERNAME}@127.0.0.1:/tmp/rclone.zip"
-            else
-                echo "❌ 本地文件 bin/rclone-arm64.zip 不存在，无法部署"
-                exit 1
-            fi
-
             sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" "
               set -e
               
+              # 0. 确保仓库存在并更新 (以获取 bin/rclone-arm64.zip)
+              if [ ! -d 'oci-keepalive-tunnel' ]; then
+                git clone https://github.com/suwei8/oci-keepalive-tunnel.git
+              fi
+              cd oci-keepalive-tunnel
+              git pull --quiet 2>/dev/null || (git fetch --all && git reset --hard origin/main)
               
-              # 1. 安装 Rclone (上传本地包)
+              # 1. 安装 Rclone (从本地仓库安装)
               CURRENT_VER=\$(rclone version 2>/dev/null | head -1 | cut -d' ' -f2 || echo 'none')
               if [ \"\$CURRENT_VER\" != \"v1.72.1\" ]; then
-                 echo '  -> 上传并安装 Rclone v1.72.1 ...'
-                 # 接收端准备 (传输前已通过 scp 上传到 /tmp/rclone.zip)
-                 unzip -q -o /tmp/rclone.zip -d /tmp/
-                 sudo cp /tmp/rclone-v1.72.1-linux-arm64/rclone /usr/bin/rclone
-                 sudo chmod 755 /usr/bin/rclone
-                 sudo chown root:root /usr/bin/rclone
-                 rm -rf /tmp/rclone.zip /tmp/rclone-v1.72.1-linux-arm64
+                 echo '  -> 从仓库安装 Rclone v1.72.1 ...'
+                 if [ -f \"bin/rclone-arm64.zip\" ]; then
+                     unzip -q -o bin/rclone-arm64.zip -d /tmp/
+                     sudo cp /tmp/rclone-v1.72.1-linux-arm64/rclone /usr/bin/rclone
+                     sudo chmod 755 /usr/bin/rclone
+                     sudo chown root:root /usr/bin/rclone
+                     rm -rf /tmp/rclone-v1.72.1-linux-arm64
+                 else
+                     echo '❌ 仓库中未找到 bin/rclone-arm64.zip'
+                     exit 1
+                 fi
               else
                  echo '  -> Rclone 已是最新 (v1.72.1)'
               fi
+              ls -l /usr/bin/rclone
+
               
               # 2. 安装 fuse (如果缺少)
               if ! command -v fusermount >/dev/null; then
