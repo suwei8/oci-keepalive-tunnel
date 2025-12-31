@@ -1,0 +1,247 @@
+name: Monitor Resource Usage (ARM64)
+
+on:
+  schedule:
+    # 每天 UTC 0点 (北京时间 8:00) 运行一次
+    - cron: '0 0 * * *'
+  workflow_dispatch:
+    inputs:
+      target_host:
+        description: '指定主机 (留空=全部)'
+        required: false
+        default: ''
+
+jobs:
+  monitor-loop:
+    name: "Resource Monitor"
+    runs-on: ubuntu-latest
+    timeout-minutes: 120  # 假设有20台主机，每台5分钟，串行会导致超时。需要注意并发限制或接受长时间运行。
+                          # 如果主机过多，可能需要并行 `strategy: matrix`，但 matrix 难以上报 CSV 汇总。
+                          # 这里暂时维持串行循环，假设主机数在可控范围内 (10-15台 ~ 75分)。
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install cloudflared
+        run: |
+          sudo cp bin/cloudflared /usr/local/bin/cloudflared
+          cloudflared --version
+
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          cat >> ~/.ssh/config << 'EOF'
+          Host *
+            StrictHostKeyChecking no
+            UserKnownHostsFile /dev/null
+            LogLevel ERROR
+          EOF
+          sudo apt-get update -qq && sudo apt-get install -y -qq sshpass jq bc
+
+      - name: Run Monitor Loop
+        id: monitor
+        env:
+          HOSTS_CONFIG: ${{ secrets.HOSTS_CONFIG }}
+          SSH_USERNAME: ${{ secrets.SSH_USERNAME }}
+          SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }}
+          TARGET_HOST_INPUT: ${{ github.event.inputs.target_host }}
+        run: |
+          SSH_OPTS="-o ConnectTimeout=30 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ServerAliveInterval=30"
+          
+          # CSV 文件
+          mkdir -p csv
+          CSV_FILE="csv/resource_usage.csv"
+          echo "name,cpu_usage_pct,mem_usage_pct,timestamp" > "$CSV_FILE"
+          
+          # 获取主机列表
+          HOST_COUNT=$(echo "$HOSTS_CONFIG" | jq '. | length')
+          echo "Total hosts: $HOST_COUNT"
+          
+          for INDEX in $(seq 0 $((HOST_COUNT - 1))); do
+            host_item=$(echo "$HOSTS_CONFIG" | jq -c ".[$INDEX]")
+            HOST_NAME=$(echo "$host_item" | jq -r '.name')
+            SSH_HOST=$(echo "$host_item" | jq -r '.ssh_host')
+            CPU_TYPE=$(echo "$host_item" | jq -r '.cpu_type')
+            
+            if [ "$HOST_NAME" = "null" ] || [ -z "$HOST_NAME" ]; then continue; fi
+            if [ "$CPU_TYPE" != "arm64" ]; then continue; fi
+            
+            if [ -n "$TARGET_HOST_INPUT" ] && [ "$HOST_NAME" != "$TARGET_HOST_INPUT" ]; then
+                continue
+            fi
+            
+            echo ""
+            echo "==========================================="
+            echo "Processing: $HOST_NAME"
+            echo "==========================================="
+            
+            # 建立 Tunnel
+            pkill -f "cloudflared.*2222" 2>/dev/null || true
+            sleep 2
+            cloudflared access ssh --hostname "$SSH_HOST" --url "ssh://127.0.0.1:2222" &
+            TUNNEL_PID=$!
+            sleep 5
+            
+            if ! kill -0 $TUNNEL_PID 2>/dev/null; then
+              echo "❌ Tunnel 连接失败"
+              continue
+            fi
+            
+            # 执行监控脚本 (5分钟)
+            # 逻辑：每 10 秒采集一次，共 30 次。计算平均值。
+            # 使用 /proc/stat 计算 CPU, free 计算内存
+            echo ">>> 开始监控 (5分钟)..."
+            
+            STATS=$(sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" '
+              CPU_SUM=0
+              MEM_SUM=0
+              COUNT=0
+              MAX_LOOPS=30
+              
+              # 获取初始 CPU 状态
+              read cpu user nice system idle iowait irq softirq steal guest < /proc/stat
+              PREV_TOTAL=$((user+nice+system+idle+iowait+irq+softirq+steal))
+              PREV_IDLE=$((idle+iowait))
+              
+              for i in $(seq 1 $MAX_LOOPS); do
+                sleep 10
+                
+                # ------ CPU 计算 ------
+                read cpu user nice system idle iowait irq softirq steal guest < /proc/stat
+                TOTAL=$((user+nice+system+idle+iowait+irq+softirq+steal))
+                IDLE=$((idle+iowait))
+                
+                DIFF_TOTAL=$((TOTAL-PREV_TOTAL))
+                DIFF_IDLE=$((IDLE-PREV_IDLE))
+                
+                if [ "$DIFF_TOTAL" -eq 0 ]; then DIFF_TOTAL=1; fi
+                CPU_USAGE=$((100 * (DIFF_TOTAL - DIFF_IDLE) / DIFF_TOTAL))
+                
+                PREV_TOTAL=$TOTAL
+                PREV_IDLE=$IDLE
+                
+                # ------ 内存 计算 (KB) ------
+                # MemTotal: 24000000 kB
+                # MemAvailable: ...
+                # Use MemAvailable for accurate "free" logic, or just (Total-Available)/Total
+                
+                MEM_INFO=$(grep -E "MemTotal|MemAvailable" /proc/meminfo)
+                TOTAL_KB=$(echo "$MEM_INFO" | grep "MemTotal" | awk "{print \$2}")
+                AVAIL_KB=$(echo "$MEM_INFO" | grep "MemAvailable" | awk "{print \$2}")
+                
+                if [ -z "$AVAIL_KB" ]; then
+                   # Fallback for old kernels without MemAvailable
+                   FREE_KB=$(grep "MemFree" /proc/meminfo | awk "{print \$2}")
+                   BUFF_KB=$(grep "Buffers" /proc/meminfo | awk "{print \$2}")
+                   CACH_KB=$(grep "^Cached" /proc/meminfo | awk "{print \$2}")
+                   AVAIL_KB=$((FREE_KB + BUFF_KB + CACH_KB))
+                fi
+                
+                MEM_USED_KB=$((TOTAL_KB - AVAIL_KB))
+                MEM_USAGE=$((100 * MEM_USED_KB / TOTAL_KB))
+                
+                CPU_SUM=$((CPU_SUM + CPU_USAGE))
+                MEM_SUM=$((MEM_SUM + MEM_USAGE))
+                COUNT=$((COUNT + 1))
+              done
+              
+              AVG_CPU=$((CPU_SUM / COUNT))
+              AVG_MEM=$((MEM_SUM / COUNT))
+              
+              echo "RESULT::$AVG_CPU::$AVG_MEM"
+            ' 2>&1)
+            
+            RESULT_LINE=$(echo "$STATS" | grep "RESULT::")
+            if [ -n "$RESULT_LINE" ]; then
+               AVG_CPU=$(echo "$RESULT_LINE" | awk -F:: '{print $2}')
+               AVG_MEM=$(echo "$RESULT_LINE" | awk -F:: '{print $3}')
+               echo "✅ 监控完成: CPU=${AVG_CPU}%, MEM=${AVG_MEM}%"
+               
+               TIMESTAMP=$(date -u +"%Y-%m-%d %H:%M:%S")
+               echo "${HOST_NAME},${AVG_CPU},${AVG_MEM},${TIMESTAMP}" >> "$CSV_FILE"
+            else
+               echo "❌ 监控失败或无数据返回"
+               echo "$STATS"
+            fi
+            
+            kill $TUNNEL_PID 2>/dev/null || true
+          done
+          
+          # 显示 CSV 内容
+          cat "$CSV_FILE"
+
+      - name: Commit results
+        run: |
+          CSV_FILE="csv/resource_usage.csv"
+          if [ -f "$CSV_FILE" ]; then
+            # 排序：按 CPU 使用率 (第2列) 升序 (使用率最低排前面 -> 风险最高)
+            # 同时也考虑内存 (第3列) 作为次级排序
+            
+            echo ">>> 排序 CSV 文件 (按 CPU 使用率升序)..."
+            head -1 "$CSV_FILE" > /tmp/csv_header.tmp
+            tail -n +2 "$CSV_FILE" | sort -t',' -k2 -n -k3 -n > /tmp/csv_body.tmp
+            cat /tmp/csv_header.tmp /tmp/csv_body.tmp > "$CSV_FILE"
+            rm -f /tmp/csv_header.tmp /tmp/csv_body.tmp
+            
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git pull --rebase origin main || echo "Git pull failed"
+            git add "$CSV_FILE"
+            git diff --staged --quiet || git commit -m "Update resource usage stats $(date -u +%Y-%m-%d)"
+            git push || echo "Nothing to push"
+          fi
+
+      - name: Send Telegram notification (Low Usage Warning)
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          CSV_FILE="csv/resource_usage.csv"
+          
+          if [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$TELEGRAM_CHAT_ID" ]; then
+            echo "⚠️ Telegram 未配置"
+            exit 0
+          fi
+          
+          if [ ! -f "$CSV_FILE" ]; then
+             echo "⚠️ 无结果文件"
+             exit 0
+          fi
+          
+          # 提取 Top 10 低负载 (即 CSV 的前10行，因为已经按升序排了)
+          TOP10_TEXT=$(tail -n +2 "$CSV_FILE" | head -10 | awk -F',' '{printf "%2d. %-12s CPU: %s%% | MEM: %s%%\n", NR, $1, $2, $3}')
+          
+          TIMESTAMP=$(date -u +'%Y-%m-%d %H:%M UTC')
+          
+          # 警告信息
+          FINAL_MSG=$(printf "⚠️ *ARM64 闲置实例警告 (Top 10)*\n\n📅 %s\n\n📉 *低负载排名 (CPU升序)*:\n\`\`\`\n%s\n\`\`\`\n\n💡 请注意由于负载过低可能有回收风险！" "$TIMESTAMP" "$TOP10_TEXT")
+          
+          IFS=',' read -ra CHAT_IDS <<< "$TELEGRAM_CHAT_ID"
+          for chat_id in "${CHAT_IDS[@]}"; do
+            chat_id=$(echo "$chat_id" | xargs)
+            if [ -n "$chat_id" ]; then
+              curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+                -d chat_id="${chat_id}" \
+                -d parse_mode="Markdown" \
+                --data-urlencode "text=${FINAL_MSG}" > /dev/null
+            fi
+          done
+          echo "✅ Telegram 已发送"
+
+      - name: Summary
+        run: |
+          echo "## 📉 资源监控结果 (ARM64)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          CSV_FILE="csv/resource_usage.csv"
+          if [ -f "$CSV_FILE" ]; then
+             echo "| 实例名称 | 平均 CPU (%) | 平均 内存 (%) |" >> $GITHUB_STEP_SUMMARY
+             echo "| :--- | :--- | :--- |" >> $GITHUB_STEP_SUMMARY
+             # 仅显示前 10
+             tail -n +2 "$CSV_FILE" | head -10 | awk -F',' '{printf "| %s | %s%% | %s%% |\n", $1, $2, $3}' >> $GITHUB_STEP_SUMMARY
+          else
+             echo "无数据" >> $GITHUB_STEP_SUMMARY
+          fi
