@@ -109,7 +109,7 @@ jobs:
             sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" "
               set -e
               
-              # 0. 确保仓库存在并更新 (以获取 bin/rclone-arm64.zip)
+              # 0. 确保仓库存在并更新
               if [ ! -d 'oci-keepalive-tunnel' ]; then
                 git clone https://github.com/suwei8/oci-keepalive-tunnel.git
               fi
@@ -133,10 +133,8 @@ jobs:
               else
                  echo '  -> Rclone 已是最新 (v1.72.1)'
               fi
-              ls -l /usr/bin/rclone
-
               
-              # 2. 安装 fuse (如果缺少)
+              # 2. 安装 fuse
               if ! command -v fusermount >/dev/null; then
                  echo '  -> 安装 fuse...'
                  sudo apt-get update -qq && sudo apt-get install -y -qq fuse
@@ -145,7 +143,6 @@ jobs:
               # 3. 配置文件
               echo '  -> 写入配置...'
               sudo mkdir -p /etc/rclone
-              # 使用 base64 传递多行文件，避免转义噩梦
               echo \"$(echo "$RCLONE_CONF" | base64 -w 0)\" | base64 -d | sudo tee /etc/rclone/rclone.conf > /dev/null
               sudo chmod 600 /etc/rclone/rclone.conf
               
@@ -154,7 +151,7 @@ jobs:
               sudo mkdir -p /mnt/onedrive
               sudo chmod 777 /mnt/gpan /mnt/onedrive
               
-              # 5. Systemd 服务模板函数
+              # 5. Systemd 服务
               create_service() {
                   local REMOTE=\$1
                   local MOUNT_POINT=\$2
@@ -162,7 +159,6 @@ jobs:
                   
                   echo \"  -> 配置服务: \${SERVICE_NAME}...\"
                   
-                  # 写入 service 文件
                   sudo tee /etc/systemd/system/\${SERVICE_NAME}.service > /dev/null <<EOF
 [Unit]
 Description=Rclone Mount for \${REMOTE}
@@ -194,7 +190,6 @@ EOF
                   sudo systemctl daemon-reload
                   sudo systemctl enable \${SERVICE_NAME}
                   
-                  # 检查是否已经在运行
                   if sudo systemctl is-active --quiet \${SERVICE_NAME}; then
                       if [ \"$FORCE_REMOUNT\" = \"true\" ]; then
                           echo \"     重启服务...\"
@@ -208,11 +203,9 @@ EOF
                   fi
               }
               
-              # 6. 配置并启动两个挂载点
               create_service \"gpan\" \"/mnt/gpan\"
               create_service \"onedrive\" \"/mnt/onedrive\"
               
-              # 7. 验证
               sleep 3
               echo '  -> 挂载点检查:'
               if mountpoint -q /mnt/gpan; then echo '     ✅ /mnt/gpan 挂载成功'; else echo '     ❌ /mnt/gpan 未挂载'; fi
@@ -228,6 +221,3 @@ EOF
         run: |
           echo "## ☁️ Rclone 部署结果" >> $GITHUB_STEP_SUMMARY
           echo "目标: ARM64 实例" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "配置已注入 `/etc/rclone/rclone.conf`" >> $GITHUB_STEP_SUMMARY
-          echo "挂载服务: `rclone-gpan.service`, `rclone-onedrive.service`" >> $GITHUB_STEP_SUMMARY
