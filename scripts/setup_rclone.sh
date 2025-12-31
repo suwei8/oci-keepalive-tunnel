@@ -50,6 +50,16 @@ create_service() {
     
     echo "  -> Configuring Service: ${SERVICE_NAME}..."
     
+    # Check if already mounted
+    if mountpoint -q "${MOUNT_POINT}"; then
+        if [ "$FORCE_REMOUNT" = "true" ]; then
+             echo "     🔄 ${MOUNT_POINT} is mounted, but FORCE_REMOUNT=true. Proceeding..."
+        else
+             echo "     ✅ ${MOUNT_POINT} is already mounted. Skipping service setup."
+             return
+        fi
+    fi
+    
     # Find fusermount path
     FUSERMOUNT_BIN=$(command -v fusermount || echo "/bin/fusermount")
     if [ ! -x "$FUSERMOUNT_BIN" ]; then
