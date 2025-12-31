@@ -11,6 +11,10 @@ on:
         required: false
         default: ''
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   # 每个主机作为独立 Job (使用索引避免暴露主机名)
   keepalive:
