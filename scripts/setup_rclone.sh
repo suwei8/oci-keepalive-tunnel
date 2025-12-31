@@ -69,8 +69,9 @@ ExecStart=/usr/bin/rclone mount ${REMOTE}: ${MOUNT_POINT} \\
     --buffer-size 32M \\
     --low-level-retries 10 \\
     --log-level ERROR \\
-    --log-file /var/log/rclone-${REMOTE}.log
-ExecStop=/bin/fusermount -u ${MOUNT_POINT}
+    --log-file /var/log/rclone-${REMOTE}.log \\
+    --umask 000
+ExecStop=$(command -v fusermount) -u ${MOUNT_POINT}
 Restart=always
 RestartSec=10
 
