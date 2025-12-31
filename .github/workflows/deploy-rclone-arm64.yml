@@ -116,100 +116,16 @@ jobs:
               cd oci-keepalive-tunnel
               git pull --quiet 2>/dev/null || (git fetch --all && git reset --hard origin/main)
               
-              # 1. 安装 Rclone (从本地仓库安装)
-              CURRENT_VER=\$(rclone version 2>/dev/null | head -1 | cut -d' ' -f2 || echo 'none')
-              if [ \"\$CURRENT_VER\" != \"v1.72.1\" ]; then
-                 echo '  -> 从仓库安装 Rclone v1.72.1 ...'
-                 if [ -f \"bin/rclone-arm64.zip\" ]; then
-                     unzip -q -o bin/rclone-arm64.zip -d /tmp/
-                     sudo cp /tmp/rclone-v1.72.1-linux-arm64/rclone /usr/bin/rclone
-                     sudo chmod 755 /usr/bin/rclone
-                     sudo chown root:root /usr/bin/rclone
-                     rm -rf /tmp/rclone-v1.72.1-linux-arm64
-                 else
-                     echo '❌ 仓库中未找到 bin/rclone-arm64.zip'
-                     exit 1
-                 fi
-              else
-                 echo '  -> Rclone 已是最新 (v1.72.1)'
-              fi
-              
-              # 2. 安装 fuse
-              if ! command -v fusermount >/dev/null; then
-                 echo '  -> 安装 fuse...'
-                 sudo apt-get update -qq && sudo apt-get install -y -qq fuse
-              fi
-              
-              # 3. 配置文件
+              # 1. 注入配置 (workflow 负责，因为脚本读取本地文件比较复杂)
               echo '  -> 写入配置...'
               sudo mkdir -p /etc/rclone
               echo \"$(echo "$RCLONE_CONF" | base64 -w 0)\" | base64 -d | sudo tee /etc/rclone/rclone.conf > /dev/null
               sudo chmod 600 /etc/rclone/rclone.conf
               
-              # 4. 创建挂载目录
-              sudo mkdir -p /mnt/gpan
-              sudo mkdir -p /mnt/onedrive
-              sudo chmod 777 /mnt/gpan /mnt/onedrive
-              
-              # 5. Systemd 服务
-              create_service() {
-                  local REMOTE=\$1
-                  local MOUNT_POINT=\$2
-                  local SERVICE_NAME=\"rclone-\${REMOTE}\"
-                  
-                  echo \"  -> 配置服务: \${SERVICE_NAME}...\"
-                  
-                  sudo tee /etc/systemd/system/\${SERVICE_NAME}.service > /dev/null <<EOF
-[Unit]
-Description=Rclone Mount for \${REMOTE}
-AssertPathIsDirectory=\${MOUNT_POINT}
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=notify
-User=root
-ExecStart=/usr/bin/rclone mount \${REMOTE}: \${MOUNT_POINT} \\
-    --config=/etc/rclone/rclone.conf \\
-    --allow-other \\
-    --allow-non-empty \\
-    --vfs-cache-mode writes \\
-    --transfers 4 \\
-    --buffer-size 32M \\
-    --low-level-retries 10 \\
-    --log-level ERROR \\
-    --log-file /var/log/rclone-\${REMOTE}.log
-ExecStop=/bin/fusermount -u \${MOUNT_POINT}
-Restart=always
-RestartSec=10
-
-[Install]
-WantedBy=multi-user.target
-EOF
-                  
-                  sudo systemctl daemon-reload
-                  sudo systemctl enable \${SERVICE_NAME}
-                  
-                  if sudo systemctl is-active --quiet \${SERVICE_NAME}; then
-                      if [ \"$FORCE_REMOUNT\" = \"true\" ]; then
-                          echo \"     重启服务...\"
-                          sudo systemctl restart \${SERVICE_NAME}
-                      else
-                          echo \"     服务已运行 (跳过重启)\"
-                      fi
-                  else
-                      echo \"     启动服务...\"
-                      sudo systemctl start \${SERVICE_NAME}
-                  fi
-              }
-              
-              create_service \"gpan\" \"/mnt/gpan\"
-              create_service \"onedrive\" \"/mnt/onedrive\"
-              
-              sleep 3
-              echo '  -> 挂载点检查:'
-              if mountpoint -q /mnt/gpan; then echo '     ✅ /mnt/gpan 挂载成功'; else echo '     ❌ /mnt/gpan 未挂载'; fi
-              if mountpoint -q /mnt/onedrive; then echo '     ✅ /mnt/onedrive 挂载成功'; else echo '     ❌ /mnt/onedrive 未挂载'; fi
+              # 2. 执行脚本 (传递 FORCE_REMOUNT 参数)
+              echo '  -> 执行 setup_rclone.sh...'
+              chmod +x scripts/setup_rclone.sh
+              sudo ./scripts/setup_rclone.sh \"$FORCE_REMOUNT\"
             "
             
             kill $TUNNEL_PID 2>/dev/null || true
