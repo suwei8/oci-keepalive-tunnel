@@ -389,7 +389,7 @@ jobs:
           # 节点列表
           NODES_FULL=$(cat /tmp/nodes_info.txt | grep -v "^$" | head -20)
           
-          FINAL_MSG=$(printf "🚀 *Hysteria v2 部署完成 (AMD64 - Binary)*\n\n📅 %s\n\n✅ *共 %s 个节点*\n\n📋 *客户端连接信息:*\n\`\`\`\n%s\n\`\`\`\n\n💡 复制上方链接导入客户端即可使用" "$TIMESTAMP" "$NODE_COUNT" "$NODES_FULL")
+          FINAL_MSG=$(printf "🚀 *Hysteria v2 部署完成 (AMD64 - Binary)*\n\n📅 %s\n\n✅ *共 %s 个节点*\n\n📋 *客户端连接信息:*\n\`\`\`\n%s\n\`\`\`\n\n🔗 *订阅地址:*\nhttps://v.555606.xyz/hy2\_amd64.txt\n\n💡 复制上方链接导入客户端即可使用" "$TIMESTAMP" "$NODE_COUNT" "$NODES_FULL")
           
           IFS=',' read -ra CHAT_IDS <<< "$TELEGRAM_CHAT_ID"
           for chat_id in "${CHAT_IDS[@]}"; do
