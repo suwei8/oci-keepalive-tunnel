@@ -6,15 +6,15 @@ on:
   workflow_dispatch:
     inputs:
       force_redeploy:
-        description: '强制重新部署 (即使容器已存在)'
+        description: '强制重新部署 (即使服务运行正常)'
         required: false
         default: 'false'
         type: choice
         options:
           - 'false'
           - 'true'
-      update_image:
-        description: '更新 Docker 镜像 (拉取最新版)'
+      update_binary:
+        description: '更新 Hysteria 程序 (下载最新版)'
         required: false
         default: 'false'
         type: choice
@@ -67,7 +67,7 @@ jobs:
           CF_ZONE_ID: ${{ secrets.CF_ZONE_ID }}
           HYSTERIA_PASSWORD: ${{ secrets.HYSTERIA_PASSWORD }}
           FORCE_REDEPLOY: ${{ github.event.inputs.force_redeploy }}
-          UPDATE_IMAGE: ${{ github.event.inputs.update_image }}
+          UPDATE_BINARY: ${{ github.event.inputs.update_binary }}
           TARGET_HOST: ${{ github.event.inputs.target_host }}
         run: |
           SSH_OPTS="-o ConnectTimeout=30 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ServerAliveInterval=30"
@@ -80,9 +80,9 @@ jobs:
           HOST_COUNT=$(echo "$HOSTS_CONFIG" | jq '. | length')
           echo "Total hosts: $HOST_COUNT"
           
-          # 定时任务时自动更新镜像
+          # 定时任务时自动更新程序
           if [ "${{ github.event_name }}" = "schedule" ]; then
-            UPDATE_IMAGE="true"
+            UPDATE_BINARY="true"
           fi
           
           for INDEX in $(seq 0 $((HOST_COUNT - 1))); do
@@ -136,7 +136,7 @@ jobs:
             MASKED_IP=$(echo "$PUBLIC_IP" | awk -F. '{print $1"."$2".*.*"}')
             echo "✅ 公网 IP: $MASKED_IP"
             
-            # DNS 配置 (每次都检查，确保 DNS 记录存在)
+            # DNS 配置
             echo ">>> 检查 DNS..."
             DNS_RECORD=$(curl -s "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records?name=${PROXY_DOMAIN}" -H "X-Auth-Email: ${CF_API_EMAIL}" -H "X-Auth-Key: ${CF_API_KEY}" | jq -r '.result[0].content // empty')
             
@@ -158,91 +158,58 @@ jobs:
               echo "✅ DNS 记录已存在且正确"
             fi
             
-            # 每次连接都检查并开放 iptables 端口
+            # 检查 iptables 端口
             echo ">>> 检查 iptables 端口..."
             sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" "
-              # 检查并开放 80 端口 (SSL 证书验证)
+              # 安装必要的工具
+              export DEBIAN_FRONTEND=noninteractive
+              sudo apt-get update -qq 2>/dev/null || true
+              echo 'iptables-persistent iptables-persistent/autosave_v4 boolean true' | sudo debconf-set-selections 2>/dev/null || true
+              echo 'iptables-persistent iptables-persistent/autosave_v6 boolean true' | sudo debconf-set-selections 2>/dev/null || true
+              sudo apt-get install -y -qq iptables iptables-persistent netfilter-persistent wget 2>/dev/null || true
+
+              # 开放端口
               if ! sudo iptables -C INPUT -p tcp --dport 80 -j ACCEPT 2>/dev/null; then
                 sudo iptables -I INPUT -p tcp --dport 80 -j ACCEPT
-                echo '已开放 80 端口'
               fi
-              # 检查并开放 2443 端口 (Hysteria)
               if ! sudo iptables -C INPUT -p tcp --dport 2443 -j ACCEPT 2>/dev/null; then
                 sudo iptables -I INPUT -p tcp --dport 2443 -j ACCEPT
-                echo '已开放 2443 TCP 端口'
               fi
               if ! sudo iptables -C INPUT -p udp --dport 2443 -j ACCEPT 2>/dev/null; then
                 sudo iptables -I INPUT -p udp --dport 2443 -j ACCEPT
-                echo '已开放 2443 UDP 端口'
               fi
-              # 保存规则
               sudo netfilter-persistent save 2>/dev/null || true
             " 2>&1 || true
             echo "✅ iptables 端口检查完成"
             
-            # 检查容器状态
-            CONTAINER_EXISTS=$(sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" 'docker ps -a --format "{{.Names}}" | grep -q "^hysteria-server$" && echo "yes" || echo "no"' 2>&1) || true
+            # 检查服务状态
+            SERVICE_ACTIVE=$(sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" 'sudo systemctl is-active hysteria-server 2>/dev/null || echo "inactive"' 2>&1 | tail -1) || true
             
-            # 如果容器存在，验证配置是否正确
-            CONFIG_VALID="yes"
-            if [ "$CONTAINER_EXISTS" = "yes" ]; then
-              echo ">>> 验证配置文件..."
-              CONFIG_DOMAIN=$(sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" "grep -oP 'cert: /etc/letsencrypt/live/\K[^/]+' /home/sw/docker_root/hy/hy.yaml 2>/dev/null || echo 'UNKNOWN'" 2>&1 | tail -1) || true
-              if [ "$CONFIG_DOMAIN" != "$PROXY_DOMAIN" ]; then
-                echo "⚠️ 配置域名不匹配: 当前='$CONFIG_DOMAIN', 应为='$PROXY_DOMAIN'"
+            # 检查现有配置是否匹配 (通过检查 config.yaml 中证书路径)
+            if [ "$SERVICE_ACTIVE" = "active" ]; then
+                CONFIG_DOMAIN=$(sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" "grep -oP 'cert: /etc/letsencrypt/live/\K[^/]+' /etc/hysteria/config.yaml 2>/dev/null || echo 'UNKNOWN'" 2>&1 | tail -1) || true
+                if [ "$CONFIG_DOMAIN" != "$PROXY_DOMAIN" ]; then
+                    echo "⚠️ 配置域名不匹配: 当前='$CONFIG_DOMAIN', 应为='$PROXY_DOMAIN'"
+                    CONFIG_VALID="no"
+                else
+                    CONFIG_VALID="yes"
+                fi
+            else
                 CONFIG_VALID="no"
-              else
-                echo "✅ 配置域名正确"
-              fi
+            fi
+
+            # 决定是否需要更新/部署
+            SHOULD_DEPLOY="false"
+            
+            if [ "$CONFIG_VALID" = "no" ] || [ "$FORCE_REDEPLOY" = "true" ]; then
+                SHOULD_DEPLOY="true"
+            elif [ "$UPDATE_BINARY" = "true" ]; then
+                echo ">>> 请求更新 Hysteria 程序..."
+                SHOULD_DEPLOY="true"
             fi
             
-            # 如果是更新模式且容器存在，执行更新（同时修复配置）
-            if [ "$CONTAINER_EXISTS" = "yes" ] && [ "$UPDATE_IMAGE" = "true" ]; then
-              echo ">>> 更新 Hysteria 镜像..."
-              # 如果配置无效，先修复配置
-              if [ "$CONFIG_VALID" = "no" ]; then
-                echo ">>> 修复配置文件..."
-                sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" "cat > /home/sw/docker_root/hy/hy.yaml << EOFHY
-          listen: :2443
-          tls:
-            cert: /etc/letsencrypt/live/${PROXY_DOMAIN}/fullchain.pem
-            key: /etc/letsencrypt/live/${PROXY_DOMAIN}/privkey.pem
-          auth:
-            type: password
-            password: ${HYSTERIA_PASSWORD}
-          disableUDP: false
-          bandwidth:
-            up: 1000 mbps
-            down: 1000 mbps
-          masquerade:
-            type: proxy
-            proxy:
-              url: https://www.kernel.org/
-              rewriteHost: true
-          resolver:
-            type: udp
-            udp:
-              addr: 1.1.1.1:53
-              timeout: 4s
-          EOFHY" 2>&1 || true
-                echo "✅ 配置已修复"
-              fi
-              sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" 'cd /home/sw/docker_root/hy && sudo docker compose pull && sudo docker compose up -d' 2>&1 || true
-              UPDATED_COUNT=$((UPDATED_COUNT + 1))
-              echo "✅ 镜像已更新"
-              NODES_INFO="${NODES_INFO}hysteria2://${HYSTERIA_PASSWORD}@${PROXY_DOMAIN}:2443?insecure=0&sni=${PROXY_DOMAIN}#${HOST_NAME}\n"
-              kill $TUNNEL_PID 2>/dev/null || true
-              continue
-            fi
-            
-            # 如果配置无效，强制重新部署
-            if [ "$CONFIG_VALID" = "no" ]; then
-              echo ">>> 配置无效，强制重新部署..."
-              FORCE_REDEPLOY="true"
-            fi
-            
-            if [ "$CONTAINER_EXISTS" = "yes" ] && [ "$FORCE_REDEPLOY" != "true" ]; then
-              echo "⏭️ 容器已存在且配置正确，跳过部署"
+            if [ "$SHOULD_DEPLOY" = "false" ]; then
+              echo "⏭️ 服务运行中且配置正确，跳过部署"
               SKIPPED_COUNT=$((SKIPPED_COUNT + 1))
               NODES_INFO="${NODES_INFO}hysteria2://${HYSTERIA_PASSWORD}@${PROXY_DOMAIN}:2443?insecure=0&sni=${PROXY_DOMAIN}#${HOST_NAME}\n"
               kill $TUNNEL_PID 2>/dev/null || true
@@ -251,70 +218,62 @@ jobs:
             
             echo ">>> 开始部署..."
             
-            # SSL 证书检查 (需要 sudo 权限访问 letsencrypt 目录)
+            # --- SSL 证书逻辑 ---
             echo ">>> 检查 SSL..."
             CERT_EXISTS=$(sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" "sudo test -f /etc/letsencrypt/live/${PROXY_DOMAIN}/fullchain.pem && echo CERT_FOUND || echo CERT_MISSING" 2>/dev/null | tail -1) || true
-            echo ">>> 证书状态: $CERT_EXISTS"
             
-            if [ "$CERT_EXISTS" = "CERT_FOUND" ]; then
-              echo "✅ SSL 证书已存在"
-            else
+            if [ "$CERT_EXISTS" != "CERT_FOUND" ]; then
               echo ">>> 申请 SSL 证书..."
               sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" "
                 which certbot > /dev/null 2>&1 || (sudo apt-get update -qq && sudo apt-get install -y -qq certbot)
-                # 停止所有占用端口80的服务
+                # 停止占用 80 端口的服务
                 sudo systemctl stop nginx 2>/dev/null || true
-                sudo docker stop \$(sudo docker ps -q --filter 'publish=80') 2>/dev/null || true
-                sudo docker stop nginx 2>/dev/null || true
-                sudo docker stop hysteria-server 2>/dev/null || true
                 sudo fuser -k 80/tcp 2>/dev/null || true
                 sleep 2
                 sudo certbot certonly --standalone -d ${PROXY_DOMAIN} --non-interactive --agree-tos --email ${CF_API_EMAIL} --http-01-port 80 || true
                 sudo systemctl start nginx 2>/dev/null || true
               " 2>&1
               
-              # 验证证书是否存在
-              CERT_CHECK=$(sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" "sudo test -f /etc/letsencrypt/live/${PROXY_DOMAIN}/fullchain.pem && echo CERT_FOUND || echo CERT_MISSING" 2>/dev/null | tail -1) || true
-              echo ">>> 验证结果: $CERT_CHECK"
-              
-              if [ "$CERT_CHECK" = "CERT_FOUND" ]; then
-                echo "✅ SSL 证书就绪"
-              else
-                echo "❌ SSL 证书申请失败"
-                kill $TUNNEL_PID 2>/dev/null || true
-                continue
-              fi
+               if sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" "sudo test -f /etc/letsencrypt/live/${PROXY_DOMAIN}/fullchain.pem" 2>/dev/null; then
+                   echo "✅ SSL 证书获取成功"
+               else
+                   echo "❌ SSL 证书获取失败"
+                   kill $TUNNEL_PID 2>/dev/null || true
+                   continue
+               fi
+            else
+                echo "✅ SSL 证书已存在"
             fi
+                        
+            # --- 安装/更新 Hysteria 二进制文件 ---
+            echo ">>> 检查/安装 Hysteria..."
+            sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" "
+                NEED_INSTALL=false
+                if [ ! -f /usr/local/bin/hysteria-server ]; then
+                    NEED_INSTALL=true
+                elif [ \"$UPDATE_BINARY\" = \"true\" ]; then
+                    NEED_INSTALL=true
+                fi
+                
+                if [ \"\$NEED_INSTALL\" = \"true\" ]; then
+                    echo '>>> 下载 Hysteria (AMD64)...'
+                    cd /tmp
+                    # 获取最新版下载链接 (假设是 hysteria-linux-amd64)
+                    wget -q -O hysteria-server https://github.com/apernet/hysteria/releases/latest/download/hysteria-linux-amd64
+                    chmod +x hysteria-server
+                    sudo mv hysteria-server /usr/local/bin/hysteria-server
+                    echo '✅ Hysteria 二进制文件已安装'
+                else
+                     echo '✅ Hysteria 已安装'
+                fi
+            " 2>&1 || true
+
+             # --- 配置文件 ---
+            echo ">>> 更新配置文件..."
+            sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" "sudo mkdir -p /etc/hysteria" 2>&1 || true
             
-            # 创建配置文件
-            echo ">>> 创建配置文件..."
-            sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" "mkdir -p /home/sw/docker_root/hy" 2>&1 || true
-            
-            # docker-compose.yml
-            sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" "cat > /home/sw/docker_root/hy/docker-compose.yml << 'EOFCOMPOSE'
-          services:
-            hysteria:
-              image: tobyxdd/hysteria:latest
-              container_name: hysteria-server
-              restart: always
-              network_mode: host
-              volumes:
-                - ./hy.yaml:/etc/hysteria/hysteria.yaml
-                - /etc/letsencrypt:/etc/letsencrypt
-              environment:
-                - TZ=Asia/Jakarta
-                - HYSTERIA_DISABLE_UPDATE_CHECK=1
-                - HYSTERIA_LOG_LEVEL=info
-              cap_add:
-                - NET_ADMIN
-                - NET_BIND_SERVICE
-              devices:
-                - /dev/net/tun:/dev/net/tun
-              command: [server, -c, /etc/hysteria/hysteria.yaml]
-          EOFCOMPOSE" 2>&1 || true
-            
-            # hy.yaml
-            sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" "cat > /home/sw/docker_root/hy/hy.yaml << EOFHY
+            # 使用 cat 写入 yaml
+            sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" "cat > /tmp/config.yaml << EOFHY
           listen: :2443
           tls:
             cert: /etc/letsencrypt/live/${PROXY_DOMAIN}/fullchain.pem
@@ -336,66 +295,67 @@ jobs:
             udp:
               addr: 1.1.1.1:53
               timeout: 4s
-          EOFHY" 2>&1 || true
+          EOFHY
+          sudo mv /tmp/config.yaml /etc/hysteria/config.yaml
+          " 2>&1 || true
             
-            echo "✅ 配置文件已创建"
+            # --- Systemd 服务 ---
+            echo ">>> 更新 Systemd 服务..."
+            SYSTEMD_UNIT="[Unit]
+          Description=Hysteria Server
+          After=network.target
+
+          [Service]
+          Type=simple
+          # 增加缓冲区大小以优化性能 (可选)
+          ExecStart=/usr/local/bin/hysteria-server server -c /etc/hysteria/config.yaml
+          WorkingDirectory=/etc/hysteria
+          User=root
+          Group=root
+          Restart=always
+          RestartSec=3
+          # 资源限制 (针对低配机器)
+          LimitNOFILE=65535
+
+          [Install]
+          WantedBy=multi-user.target"
             
-            # 启动容器 (带重试)
-            echo ">>> 启动容器..."
-            CONTAINER_OK="no"
+            # 传输 systemd 文件 (base64防止转义)
+            UNIT_B64=$(echo "$SYSTEMD_UNIT" | base64 -w 0)
+            sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" "echo '$UNIT_B64' | base64 -d | sudo tee /etc/systemd/system/hysteria-server.service > /dev/null && sudo systemctl daemon-reload" 2>&1 || true
+
+            # --- 启动/重启服务 ---
+            echo ">>> 启动服务..."
+            SERVICE_OK="no"
             for RETRY in 1 2 3; do
-              echo ">>> 尝试启动 (第 $RETRY 次)..."
-              
-              sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" "
-                cd /home/sw/docker_root/hy
-                # 强制删除旧容器避免名称冲突
-                sudo docker rm -f hysteria-server 2>/dev/null || true
-                sudo docker compose down 2>/dev/null || true
-                sudo docker compose pull 2>/dev/null || true
-                sudo docker compose up -d
+                sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" "
+                    sudo systemctl enable hysteria-server
+                    sudo systemctl restart hysteria-server
+                    sleep 3
+                    if sudo systemctl is-active hysteria-server > /dev/null 2>&1; then
+                        echo 'SERVICE_HEALTHY'
+                    else
+                        sudo journalctl -u hysteria-server --no-pager | tail -5
+                    fi
+                " 2>&1 | tee /tmp/service_output.txt
                 
-                # 等待容器启动
-                sleep 5
-                
-                # 检查容器是否健康运行
-                if sudo docker ps | grep -q hysteria-server; then
-                  # 检查日志是否有启动成功标志
-                  if sudo docker logs hysteria-server 2>&1 | grep -q 'server up and running'; then
-                    echo 'CONTAINER_HEALTHY'
-                  else
-                    echo 'CONTAINER_STARTING'
-                    sudo docker logs hysteria-server 2>&1 | tail -3
-                  fi
-                else
-                  echo 'CONTAINER_FAILED'
-                  sudo docker logs hysteria-server 2>&1 | tail -5
+                if grep -q "SERVICE_HEALTHY" /tmp/service_output.txt; then
+                    SERVICE_OK="yes"
+                    break
                 fi
-              " 2>&1 | tee /tmp/container_output.txt
-              
-              if grep -q "CONTAINER_HEALTHY" /tmp/container_output.txt; then
-                CONTAINER_OK="yes"
-                break
-              elif grep -q "CONTAINER_STARTING" /tmp/container_output.txt; then
-                echo ">>> 容器启动中，等待 5 秒..."
-                sleep 5
-                # 再次检查
-                CHECK=$(sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" "docker logs hysteria-server 2>&1 | grep -q 'server up and running' && echo OK" 2>&1) || true
-                if [ "$CHECK" = "OK" ]; then
-                  CONTAINER_OK="yes"
-                  break
-                fi
-              fi
-              
-              echo ">>> 启动失败，等待重试..."
-              sleep 3
+                echo ">>> 启动失败，等待重试..."
+                sleep 3
             done
             
-            if [ "$CONTAINER_OK" = "yes" ]; then
+            if [ "$SERVICE_OK" = "yes" ]; then
               echo "✅ 部署成功: $HOST_NAME"
-              DEPLOYED_COUNT=$((DEPLOYED_COUNT + 1))
+              # 如果进行了更新或重新部署，增加计数
+              if [ "$UPDATE_BINARY" = "true" ] || [ "$FORCE_REDEPLOY" = "true" ] || [ "$CONFIG_VALID" = "no" ]; then
+                  if [ "$UPDATE_BINARY" = "true" ]; then UPDATED_COUNT=$((UPDATED_COUNT + 1)); else DEPLOYED_COUNT=$((DEPLOYED_COUNT + 1)); fi
+              fi
               NODES_INFO="${NODES_INFO}hysteria2://${HYSTERIA_PASSWORD}@${PROXY_DOMAIN}:2443?insecure=0&sni=${PROXY_DOMAIN}#${HOST_NAME}\n"
             else
-              echo "❌ 部署失败: $HOST_NAME (3次重试后仍失败)"
+              echo "❌ 部署失败: $HOST_NAME"
             fi
             
             kill $TUNNEL_PID 2>/dev/null || true
@@ -426,12 +386,11 @@ jobs:
           TIMESTAMP=$(date -u +'%Y-%m-%d %H:%M UTC')
           NODE_COUNT=$(cat /tmp/nodes_info.txt | grep -v "^$" | wc -l)
           
-          # 节点列表 (完整 URI)
+          # 节点列表
           NODES_FULL=$(cat /tmp/nodes_info.txt | grep -v "^$" | head -20)
           
-          FINAL_MSG=$(printf "🚀 *Hysteria v2 部署完成 (AMD64)*\n\n📅 %s\n\n✅ *共 %s 个节点*\n\n📋 *客户端连接信息:*\n\`\`\`\n%s\n\`\`\`\n\n💡 复制上方链接导入客户端即可使用" "$TIMESTAMP" "$NODE_COUNT" "$NODES_FULL")
+          FINAL_MSG=$(printf "🚀 *Hysteria v2 部署完成 (AMD64 - Binary)*\n\n📅 %s\n\n✅ *共 %s 个节点*\n\n📋 *客户端连接信息:*\n\`\`\`\n%s\n\`\`\`\n\n💡 复制上方链接导入客户端即可使用" "$TIMESTAMP" "$NODE_COUNT" "$NODES_FULL")
           
-          # 支持多个 chat_id (逗号分隔)
           IFS=',' read -ra CHAT_IDS <<< "$TELEGRAM_CHAT_ID"
           for chat_id in "${CHAT_IDS[@]}"; do
             chat_id=$(echo "$chat_id" | xargs)
