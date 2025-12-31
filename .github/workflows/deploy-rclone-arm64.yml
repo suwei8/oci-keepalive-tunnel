@@ -1,0 +1,220 @@
+name: Deploy Rclone & Mount (ARM64)
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_host:
+        description: '指定主机 (留空=全部)'
+        required: false
+        default: ''
+      force_remount:
+        description: '强制重新挂载 (重启服务)'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  deploy-rclone:
+    name: "Deploy Rclone"
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install cloudflared
+        run: |
+          sudo cp bin/cloudflared /usr/local/bin/cloudflared
+          cloudflared --version
+
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          cat >> ~/.ssh/config << 'EOF'
+          Host *
+            StrictHostKeyChecking no
+            UserKnownHostsFile /dev/null
+            LogLevel ERROR
+          EOF
+          sudo apt-get update -qq && sudo apt-get install -y -qq sshpass jq
+
+      - name: Deploy to all hosts
+        id: deploy
+        env:
+          HOSTS_CONFIG: ${{ secrets.HOSTS_CONFIG }}
+          SSH_USERNAME: ${{ secrets.SSH_USERNAME }}
+          SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }}
+          RCLONE_CONF: ${{ secrets.RCLONE_CONF }}
+          TARGET_HOST_INPUT: ${{ github.event.inputs.target_host }}
+          FORCE_REMOUNT: ${{ github.event.inputs.force_remount }}
+        run: |
+          SSH_OPTS="-o ConnectTimeout=30 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ServerAliveInterval=30"
+          
+          # 检查必要 Secret
+          if [ -z "$RCLONE_CONF" ]; then
+             echo "❌ Error: Secret 'RCLONE_CONF' is missing!"
+             exit 1
+          fi
+          
+          # 获取主机列表
+          HOST_COUNT=$(echo "$HOSTS_CONFIG" | jq '. | length')
+          MAX_INDEX=$((HOST_COUNT - 1))
+          
+          echo "Total hosts: $HOST_COUNT"
+          
+          for INDEX in $(seq 0 $MAX_INDEX); do
+            host_item=$(echo "$HOSTS_CONFIG" | jq -c ".[$INDEX]")
+            HOST_NAME=$(echo "$host_item" | jq -r '.name')
+            SSH_HOST=$(echo "$host_item" | jq -r '.ssh_host')
+            CPU_TYPE=$(echo "$host_item" | jq -r '.cpu_type')
+            
+            if [ "$HOST_NAME" = "null" ] || [ -z "$HOST_NAME" ]; then continue; fi
+            if [ "$CPU_TYPE" != "arm64" ]; then continue; fi
+            
+            if [ -n "$TARGET_HOST_INPUT" ] && [ "$HOST_NAME" != "$TARGET_HOST_INPUT" ]; then
+                continue
+            fi
+            
+            echo ""
+            echo "==========================================="
+            echo "Processing: $HOST_NAME"
+            echo "==========================================="
+            
+            # --- SSH Tunnel ---
+            pkill -f "cloudflared.*2222" 2>/dev/null || true
+            sleep 2
+            
+            cloudflared access ssh --hostname "$SSH_HOST" --url "ssh://127.0.0.1:2222" &
+            TUNNEL_PID=$!
+            sleep 5
+            
+            if ! kill -0 $TUNNEL_PID 2>/dev/null; then
+              echo "❌ Tunnel 连接失败"
+              continue
+            fi
+            
+            # --- 部署逻辑 ---
+            echo ">>> 开始配置 Rclone..."
+            sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" "
+              set -e
+              
+              # 1. 安装 Rclone (如果不存在或需要更新)
+              # 总是检查是否为 v1.72.1
+              CURRENT_VER=\$(rclone version 2>/dev/null | head -1 | cut -d' ' -f2 || echo 'none')
+              if [ \"\$CURRENT_VER\" != \"v1.72.1\" ]; then
+                 echo '  -> 安装/更新 Rclone v1.72.1 ...'
+                 wget -q https://downloads.rclone.org/v1.72.1/rclone-v1.72.1-linux-arm64.zip -O /tmp/rclone.zip
+                 unzip -q -o /tmp/rclone.zip -d /tmp/
+                 sudo cp /tmp/rclone-v1.72.1-linux-arm64/rclone /usr/bin/rclone
+                 sudo chmod 755 /usr/bin/rclone
+                 sudo chown root:root /usr/bin/rclone
+                 rm -rf /tmp/rclone.zip /tmp/rclone-v1.72.1-linux-arm64
+              else
+                 echo '  -> Rclone 已是最新 (v1.72.1)'
+              fi
+              
+              # 2. 安装 fuse (如果缺少)
+              if ! command -v fusermount >/dev/null; then
+                 echo '  -> 安装 fuse...'
+                 sudo apt-get update -qq && sudo apt-get install -y -qq fuse
+              fi
+              
+              # 3. 配置文件
+              echo '  -> 写入配置...'
+              sudo mkdir -p /etc/rclone
+              # 使用 base64 传递多行文件，避免转义噩梦
+              echo \"$(echo "$RCLONE_CONF" | base64 -w 0)\" | base64 -d | sudo tee /etc/rclone/rclone.conf > /dev/null
+              sudo chmod 600 /etc/rclone/rclone.conf
+              
+              # 4. 创建挂载目录
+              sudo mkdir -p /mnt/gpan
+              sudo mkdir -p /mnt/onedrive
+              sudo chmod 777 /mnt/gpan /mnt/onedrive
+              
+              # 5. Systemd 服务模板函数
+              create_service() {
+                  local REMOTE=\$1
+                  local MOUNT_POINT=\$2
+                  local SERVICE_NAME=\"rclone-\${REMOTE}\"
+                  
+                  echo \"  -> 配置服务: \${SERVICE_NAME}...\"
+                  
+                  # 写入 service 文件
+                  sudo tee /etc/systemd/system/\${SERVICE_NAME}.service > /dev/null <<EOF
+[Unit]
+Description=Rclone Mount for \${REMOTE}
+AssertPathIsDirectory=\${MOUNT_POINT}
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+User=root
+ExecStart=/usr/bin/rclone mount \${REMOTE}: \${MOUNT_POINT} \\
+    --config=/etc/rclone/rclone.conf \\
+    --allow-other \\
+    --allow-non-empty \\
+    --vfs-cache-mode writes \\
+    --transfers 4 \\
+    --buffer-size 32M \\
+    --low-level-retries 10 \\
+    --log-level ERROR \\
+    --log-file /var/log/rclone-\${REMOTE}.log
+ExecStop=/bin/fusermount -u \${MOUNT_POINT}
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+EOF
+                  
+                  sudo systemctl daemon-reload
+                  sudo systemctl enable \${SERVICE_NAME}
+                  
+                  # 检查是否已经在运行
+                  if sudo systemctl is-active --quiet \${SERVICE_NAME}; then
+                      if [ \"$FORCE_REMOUNT\" = \"true\" ]; then
+                          echo \"     重启服务...\"
+                          sudo systemctl restart \${SERVICE_NAME}
+                      else
+                          echo \"     服务已运行 (跳过重启)\"
+                      fi
+                  else
+                      echo \"     启动服务...\"
+                      sudo systemctl start \${SERVICE_NAME}
+                  fi
+              }
+              
+              # 6. 配置并启动两个挂载点
+              create_service \"gpan\" \"/mnt/gpan\"
+              create_service \"onedrive\" \"/mnt/onedrive\"
+              
+              # 7. 验证
+              sleep 3
+              echo '  -> 挂载点检查:'
+              if mountpoint -q /mnt/gpan; then echo '     ✅ /mnt/gpan 挂载成功'; else echo '     ❌ /mnt/gpan 未挂载'; fi
+              if mountpoint -q /mnt/onedrive; then echo '     ✅ /mnt/onedrive 挂载成功'; else echo '     ❌ /mnt/onedrive 未挂载'; fi
+            "
+            
+            kill $TUNNEL_PID 2>/dev/null || true
+          done
+          
+          echo "All deployments finished."
+
+      - name: Summary
+        run: |
+          echo "## ☁️ Rclone 部署结果" >> $GITHUB_STEP_SUMMARY
+          echo "目标: ARM64 实例" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "配置已注入 `/etc/rclone/rclone.conf`" >> $GITHUB_STEP_SUMMARY
+          echo "挂载服务: `rclone-gpan.service`, `rclone-onedrive.service`" >> $GITHUB_STEP_SUMMARY
