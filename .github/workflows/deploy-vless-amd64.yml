@@ -52,7 +52,7 @@ jobs:
         id: deploy
         env:
           HOSTS_CONFIG: ${{ secrets.HOSTS_CONFIG }}
-          SSH_USERNAME: "root"
+          SSH_USERNAME: ${{ secrets.AMD_SSH_USERNAME }}
           SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }}
           CF_API_EMAIL: ${{ secrets.CF_API_EMAIL }}
           CF_API_KEY: ${{ secrets.CF_API_KEY }}
