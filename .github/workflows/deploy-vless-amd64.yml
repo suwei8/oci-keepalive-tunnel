@@ -1,0 +1,615 @@
+name: Deploy VLESS WS (AMD64)
+
+on:
+  schedule:
+    - cron: "0 4 * * 1"
+  workflow_dispatch:
+    inputs:
+      force_redeploy:
+        description: '强制重新部署'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+      target_host:
+        description: '指定部署主机 (留空=全部)'
+        required: false
+        default: ''
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: "Deploy VLESS"
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install cloudflared
+        run: |
+          sudo cp bin/cloudflared /usr/local/bin/cloudflared
+          cloudflared --version
+
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          cat >> ~/.ssh/config << 'EOF'
+          Host *
+            StrictHostKeyChecking no
+            UserKnownHostsFile /dev/null
+            LogLevel ERROR
+          EOF
+          sudo apt-get update -qq && sudo apt-get install -y -qq sshpass jq
+
+      - name: Deploy to all hosts
+        id: deploy
+        env:
+          HOSTS_CONFIG: ${{ secrets.HOSTS_CONFIG }}
+          SSH_USERNAME: ${{ secrets.AMD_SSH_USERNAME }}
+          SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }}
+          CF_API_EMAIL: ${{ secrets.CF_API_EMAIL }}
+          CF_API_KEY: ${{ secrets.CF_API_KEY }}
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          CF_ZONE_ID: ${{ secrets.CF_ZONE_ID }}
+          CF_API_EMAIL_555606: ${{ secrets.CF_API_EMAIL_555606 }}
+          CF_API_KEY_555606: ${{ secrets.CF_API_KEY_555606 }}
+          CF_ACCOUNT_ID_555606: ${{ secrets.CF_ACCOUNT_ID_555606 }}
+          CF_ZONE_ID_555606: ${{ secrets.CF_ZONE_ID_555606 }}
+          VLESS_UUID: ${{ secrets.VLESS_UUID }}
+          FORCE_REDEPLOY: ${{ github.event.inputs.force_redeploy }}
+          TARGET_HOST: ${{ github.event.inputs.target_host }}
+        run: |
+          SSH_OPTS="-o ConnectTimeout=30 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ServerAliveInterval=30"
+          
+          # 部分隐藏域名函数 (如: cf-bd3.ynshanghui.com -> cf-bd3.**hui.com)
+          mask_domain() {
+            local domain="$1"
+            # 获取子域名前缀和主域名后7个字符
+            local prefix=$(echo "$domain" | cut -d. -f1)
+            local suffix=$(echo "$domain" | grep -oE '[^.]+\.[^.]+$' | tail -c 8)
+            echo "${prefix}.**${suffix}"
+          }
+          
+          NODES_INFO=""
+          NODES_DIRECT_INFO=""
+          DEPLOYED_COUNT=0
+          SKIPPED_COUNT=0
+          
+          HOST_COUNT=$(echo "$HOSTS_CONFIG" | jq '. | length')
+          echo "Total hosts: $HOST_COUNT"
+          
+          for INDEX in $(seq 0 $((HOST_COUNT - 1))); do
+            host_item=$(echo "$HOSTS_CONFIG" | jq -c ".[$INDEX]")
+            HOST_NAME=$(echo "$host_item" | jq -r '.name')
+            SSH_HOST=$(echo "$host_item" | jq -r '.ssh_host')
+            VLESS_HOST=$(echo "$host_item" | jq -r '.vless_host')
+            PROXY_DOMAIN=$(echo "$host_item" | jq -r '.proxy_domains')
+            CPU_TYPE=$(echo "$host_item" | jq -r '.cpu_type')
+            
+            # 创建隐藏版本用于日志显示
+            MASKED_VLESS_HOST=$(mask_domain "$VLESS_HOST")
+            MASKED_PROXY_DOMAIN=$(mask_domain "$PROXY_DOMAIN")
+            
+            echo "::add-mask::$SSH_HOST"
+            echo "::add-mask::$VLESS_HOST"
+            echo "::add-mask::$PROXY_DOMAIN"
+            
+            if [ "$HOST_NAME" = "null" ] || [ -z "$HOST_NAME" ]; then
+              continue
+            fi
+            
+            # 只处理 amd64 类型的主机
+            if [ "$CPU_TYPE" != "amd64" ]; then
+              continue
+            fi
+            
+            if [ "$VLESS_HOST" = "null" ] || [ -z "$VLESS_HOST" ]; then
+              echo ">>> 跳过 $HOST_NAME (无 vless_host 配置)"
+              continue
+            fi
+            
+            if [ -n "$TARGET_HOST" ] && [ "$HOST_NAME" != "$TARGET_HOST" ]; then
+              continue
+            fi
+            
+            echo ""
+            echo "==========================================="
+            echo "Processing: $HOST_NAME"
+            echo "==========================================="
+            
+            pkill -f "cloudflared.*2222" 2>/dev/null || true
+            sleep 2
+            cloudflared access ssh --hostname "$SSH_HOST" --url "ssh://127.0.0.1:2222" &
+            TUNNEL_PID=$!
+            sleep 5
+            
+            if ! kill -0 $TUNNEL_PID 2>/dev/null; then
+              echo "❌ Tunnel 连接失败"
+              continue
+            fi
+            
+            # 检查 xray-vless 服务状态 (使用 systemd)
+            SERVICE_ACTIVE=$(sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" 'sudo systemctl is-active xray-vless 2>/dev/null || echo "inactive"' 2>&1 | tail -1) || true
+            
+            if [ "$SERVICE_ACTIVE" = "active" ] && [ "$FORCE_REDEPLOY" != "true" ]; then
+              echo "⏭️ 服务运行中，检查配置后跳过"
+              
+              # 即使跳过部署也检查 DNS 记录 (Cloudflare Tunnel)
+              # 根据 vless_host 域名选择账户
+              if echo "$VLESS_HOST" | grep -q "555606.xyz"; then
+                VLESS_CF_EMAIL="$CF_API_EMAIL_555606"
+                VLESS_CF_KEY="$CF_API_KEY_555606"
+                VLESS_ZONE_ID="$CF_ZONE_ID_555606"
+              else
+                VLESS_CF_EMAIL="$CF_API_EMAIL"
+                VLESS_CF_KEY="$CF_API_KEY"
+                VLESS_ZONE_ID="$CF_ZONE_ID"
+              fi
+              
+              # 根据 ssh_host 域名查找 Tunnel ID
+              if echo "$SSH_HOST" | grep -q "555606.xyz"; then
+                TUNNEL_CF_EMAIL="$CF_API_EMAIL_555606"
+                TUNNEL_CF_KEY="$CF_API_KEY_555606"
+                TUNNEL_CF_ACCOUNT="$CF_ACCOUNT_ID_555606"
+              else
+                TUNNEL_CF_EMAIL="$CF_API_EMAIL"
+                TUNNEL_CF_KEY="$CF_API_KEY"
+                TUNNEL_CF_ACCOUNT="$CF_ACCOUNT_ID"
+              fi
+              
+              # 查找 Tunnel ID
+              TUNNELS=$(curl -s "https://api.cloudflare.com/client/v4/accounts/${TUNNEL_CF_ACCOUNT}/cfd_tunnel?is_deleted=false" \
+                -H "X-Auth-Email: ${TUNNEL_CF_EMAIL}" \
+                -H "X-Auth-Key: ${TUNNEL_CF_KEY}")
+              
+              TUNNEL_ID=""
+              for tid in $(echo "$TUNNELS" | jq -r '.result[].id // empty' 2>/dev/null); do
+                CONFIG=$(curl -s "https://api.cloudflare.com/client/v4/accounts/${TUNNEL_CF_ACCOUNT}/cfd_tunnel/${tid}/configurations" \
+                  -H "X-Auth-Email: ${TUNNEL_CF_EMAIL}" \
+                  -H "X-Auth-Key: ${TUNNEL_CF_KEY}")
+                
+                if echo "$CONFIG" | grep -q "$SSH_HOST"; then
+                  TUNNEL_ID="$tid"
+                  break
+                fi
+              done
+              
+              if [ -n "$TUNNEL_ID" ]; then
+                TUNNEL_CNAME="${TUNNEL_ID}.cfargotunnel.com"
+                # 检查 Tunnel ingress 是否包含 VLESS_HOST (略过详细检查，假设已存在)
+                
+                # 检查 DNS 记录是否存在及内容是否正确
+                DNS_CHECK=$(curl -s "https://api.cloudflare.com/client/v4/zones/${VLESS_ZONE_ID}/dns_records?name=${VLESS_HOST}" \
+                  -H "X-Auth-Email: ${VLESS_CF_EMAIL}" \
+                  -H "X-Auth-Key: ${VLESS_CF_KEY}")
+                
+                EXISTING_DNS_ID=$(echo "$DNS_CHECK" | jq -r '.result[0].id // empty')
+                EXISTING_DNS_CONTENT=$(echo "$DNS_CHECK" | jq -r '.result[0].content // empty')
+                
+                if [ -z "$EXISTING_DNS_ID" ]; then
+                  echo ">>> 创建缺失的 DNS CNAME: $MASKED_VLESS_HOST -> Tunnel"
+                  DNS_RESULT=$(curl -s -X POST "https://api.cloudflare.com/client/v4/zones/${VLESS_ZONE_ID}/dns_records" \
+                    -H "X-Auth-Email: ${VLESS_CF_EMAIL}" \
+                    -H "X-Auth-Key: ${VLESS_CF_KEY}" \
+                    -H "Content-Type: application/json" \
+                    -d "{\"type\":\"CNAME\",\"name\":\"${VLESS_HOST}\",\"content\":\"${TUNNEL_CNAME}\",\"proxied\":true}")
+                elif [ "$EXISTING_DNS_CONTENT" != "$TUNNEL_CNAME" ]; then
+                  echo ">>> 更新 DNS CNAME: $MASKED_VLESS_HOST -> Tunnel"
+                  DNS_RESULT=$(curl -s -X PUT "https://api.cloudflare.com/client/v4/zones/${VLESS_ZONE_ID}/dns_records/${EXISTING_DNS_ID}" \
+                    -H "X-Auth-Email: ${VLESS_CF_EMAIL}" \
+                    -H "X-Auth-Key: ${VLESS_CF_KEY}" \
+                    -H "Content-Type: application/json" \
+                    -d "{\"type\":\"CNAME\",\"name\":\"${VLESS_HOST}\",\"content\":\"${TUNNEL_CNAME}\",\"proxied\":true}")
+                fi
+              fi
+              
+              SKIPPED_COUNT=$((SKIPPED_COUNT + 1))
+              
+              # 生成两个链接
+              # 1. Cloudflare Tunnel 链接
+              NODES_INFO="${NODES_INFO}vless://${VLESS_UUID}@${VLESS_HOST}:443?encryption=none&security=tls&sni=${VLESS_HOST}&type=ws&host=${VLESS_HOST}&path=%2Flibrary1629#${HOST_NAME}\n"
+              
+              # 2. 直连免流链接 (如果 proxy_domains 存在)
+              if [ "$PROXY_DOMAIN" != "null" ] && [ -n "$PROXY_DOMAIN" ]; then
+                 NODES_DIRECT_INFO="${NODES_DIRECT_INFO}vless://${VLESS_UUID}@${PROXY_DOMAIN}:5443?encryption=none&security=tls&sni=${PROXY_DOMAIN}&type=ws&headerType=http&host=a.189.cn&path=%2Flibrary1629#${HOST_NAME}-直连免流\n"
+              fi
+              
+              kill $TUNNEL_PID 2>/dev/null || true
+              continue
+            fi
+            
+            echo ">>> 开始部署..."
+            
+            # ============================================
+            # 步骤1: 配置 Cloudflare 账户
+            # ============================================
+            echo ">>> 配置 Cloudflare 账户..."
+            
+            # 根据 vless_host 域名选择账户 (用于 Tunnel DNS)
+            if echo "$VLESS_HOST" | grep -q "555606.xyz"; then
+              VLESS_CF_EMAIL="$CF_API_EMAIL_555606"
+              VLESS_CF_KEY="$CF_API_KEY_555606"
+              VLESS_CF_ACCOUNT="$CF_ACCOUNT_ID_555606"
+              VLESS_ZONE_ID="$CF_ZONE_ID_555606"
+              VLESS_ACCOUNT_NAME="555606.xyz"
+            else
+              VLESS_CF_EMAIL="$CF_API_EMAIL"
+              VLESS_CF_KEY="$CF_API_KEY"
+              VLESS_CF_ACCOUNT="$CF_ACCOUNT_ID"
+              VLESS_ZONE_ID="$CF_ZONE_ID"
+              VLESS_ACCOUNT_NAME="ynshanghui.com"
+            fi
+            
+            # 根据 ssh_host 域名选择账户 (用于查找 Tunnel)
+            if echo "$SSH_HOST" | grep -q "555606.xyz"; then
+              TUNNEL_CF_EMAIL="$CF_API_EMAIL_555606"
+              TUNNEL_CF_KEY="$CF_API_KEY_555606"
+              TUNNEL_CF_ACCOUNT="$CF_ACCOUNT_ID_555606"
+              TUNNEL_ACCOUNT_NAME="555606.xyz"
+            else
+              TUNNEL_CF_EMAIL="$CF_API_EMAIL"
+              TUNNEL_CF_KEY="$CF_API_KEY"
+              TUNNEL_CF_ACCOUNT="$CF_ACCOUNT_ID"
+              TUNNEL_ACCOUNT_NAME="ynshanghui.com"
+            fi
+            
+            echo ">>> VLESS DNS 账户: $VLESS_ACCOUNT_NAME"
+            echo ">>> Tunnel 账户: $TUNNEL_ACCOUNT_NAME"
+            
+            # 查找包含 ssh_host 的 Tunnel (在 SSH_HOST 对应的账户中)
+            echo ">>> 查找 Tunnel..."
+            TUNNELS=$(curl -s "https://api.cloudflare.com/client/v4/accounts/${TUNNEL_CF_ACCOUNT}/cfd_tunnel?is_deleted=false" \
+              -H "X-Auth-Email: ${TUNNEL_CF_EMAIL}" \
+              -H "X-Auth-Key: ${TUNNEL_CF_KEY}")
+            
+            TUNNEL_ID=""
+            for tid in $(echo "$TUNNELS" | jq -r '.result[].id // empty' 2>/dev/null); do
+              CONFIG=$(curl -s "https://api.cloudflare.com/client/v4/accounts/${TUNNEL_CF_ACCOUNT}/cfd_tunnel/${tid}/configurations" \
+                -H "X-Auth-Email: ${TUNNEL_CF_EMAIL}" \
+                -H "X-Auth-Key: ${TUNNEL_CF_KEY}")
+              
+              if echo "$CONFIG" | grep -q "$SSH_HOST"; then
+                TUNNEL_ID="$tid"
+                TUNNEL_NAME=$(echo "$TUNNELS" | jq -r ".result[] | select(.id==\"$tid\") | .name")
+                echo ">>> 找到 Tunnel: $TUNNEL_NAME ($TUNNEL_ID)"
+                break
+              fi
+            done
+            
+            if [ -z "$TUNNEL_ID" ]; then
+              echo "⚠️ 未找到包含 SSH_HOST 的 Tunnel"
+              kill $TUNNEL_PID 2>/dev/null || true
+              continue
+            fi
+            
+            # 获取当前 ingress 配置
+            CURRENT_CONFIG=$(curl -s "https://api.cloudflare.com/client/v4/accounts/${TUNNEL_CF_ACCOUNT}/cfd_tunnel/${TUNNEL_ID}/configurations" \
+              -H "X-Auth-Email: ${TUNNEL_CF_EMAIL}" \
+              -H "X-Auth-Key: ${TUNNEL_CF_KEY}")
+            
+            CURRENT_INGRESS=$(echo "$CURRENT_CONFIG" | jq '.result.config.ingress')
+            
+            # 检查 vless_host 是否已存在
+            if echo "$CURRENT_INGRESS" | grep -q "$VLESS_HOST"; then
+              echo ">>> VLESS hostname 已存在于 Tunnel 配置中"
+            else
+              echo ">>> 添加 VLESS hostname: $MASKED_VLESS_HOST -> http://127.0.0.1:10086"
+              
+              # 在 catch-all 规则之前插入新的 ingress
+              NEW_INGRESS=$(echo "$CURRENT_INGRESS" | jq --arg host "$VLESS_HOST" \
+                '. | .[:-1] + [{"hostname": $host, "service": "http://127.0.0.1:10086", "originRequest": {}}] + [.[-1]]')
+              
+              # 更新 Tunnel 配置
+              UPDATE_RESULT=$(curl -s -X PUT "https://api.cloudflare.com/client/v4/accounts/${TUNNEL_CF_ACCOUNT}/cfd_tunnel/${TUNNEL_ID}/configurations" \
+                -H "X-Auth-Email: ${TUNNEL_CF_EMAIL}" \
+                -H "X-Auth-Key: ${TUNNEL_CF_KEY}" \
+                -H "Content-Type: application/json" \
+                -d "{\"config\":{\"ingress\":$NEW_INGRESS}}")
+              
+              if echo "$UPDATE_RESULT" | jq -e '.success' > /dev/null; then
+                echo "✅ Tunnel 配置已更新"
+              else
+                echo "❌ Tunnel 配置更新失败"
+                echo "$UPDATE_RESULT" | jq '.errors'
+              fi
+            fi
+            
+            # 创建 DNS CNAME 记录 (指向 Tunnel)
+            echo ">>> 检查 DNS 记录..."
+            
+            TUNNEL_CNAME="${TUNNEL_ID}.cfargotunnel.com"
+            
+            # 检查 DNS 记录是否已存在及内容是否正确 (使用 VLESS 账户)
+            DNS_CHECK=$(curl -s "https://api.cloudflare.com/client/v4/zones/${VLESS_ZONE_ID}/dns_records?name=${VLESS_HOST}" \
+              -H "X-Auth-Email: ${VLESS_CF_EMAIL}" \
+              -H "X-Auth-Key: ${VLESS_CF_KEY}")
+            
+            EXISTING_DNS_ID=$(echo "$DNS_CHECK" | jq -r '.result[0].id // empty')
+            EXISTING_DNS_CONTENT=$(echo "$DNS_CHECK" | jq -r '.result[0].content // empty')
+            
+            if [ -z "$EXISTING_DNS_ID" ]; then
+              echo ">>> 创建 DNS CNAME: $MASKED_VLESS_HOST -> Tunnel"
+              DNS_RESULT=$(curl -s -X POST "https://api.cloudflare.com/client/v4/zones/${VLESS_ZONE_ID}/dns_records" \
+                -H "X-Auth-Email: ${VLESS_CF_EMAIL}" \
+                -H "X-Auth-Key: ${VLESS_CF_KEY}" \
+                -H "Content-Type: application/json" \
+                -d "{\"type\":\"CNAME\",\"name\":\"${VLESS_HOST}\",\"content\":\"${TUNNEL_CNAME}\",\"proxied\":true}")
+              
+              if echo "$DNS_RESULT" | jq -e '.success' > /dev/null; then
+                echo "✅ DNS CNAME 已创建"
+              else
+                echo "❌ DNS CNAME 创建失败"
+                echo "$DNS_RESULT" | jq '.errors'
+              fi
+            elif [ "$EXISTING_DNS_CONTENT" != "$TUNNEL_CNAME" ]; then
+              echo ">>> 更新 DNS CNAME: $MASKED_VLESS_HOST -> Tunnel (原: ${EXISTING_DNS_CONTENT})"
+              DNS_RESULT=$(curl -s -X PUT "https://api.cloudflare.com/client/v4/zones/${VLESS_ZONE_ID}/dns_records/${EXISTING_DNS_ID}" \
+                -H "X-Auth-Email: ${VLESS_CF_EMAIL}" \
+                -H "X-Auth-Key: ${VLESS_CF_KEY}" \
+                -H "Content-Type: application/json" \
+                -d "{\"type\":\"CNAME\",\"name\":\"${VLESS_HOST}\",\"content\":\"${TUNNEL_CNAME}\",\"proxied\":true}")
+              
+              if echo "$DNS_RESULT" | jq -e '.success' > /dev/null; then
+                echo "✅ DNS CNAME 已更新"
+              else
+                echo "❌ DNS CNAME 更新失败"
+                echo "$DNS_RESULT" | jq '.errors'
+              fi
+            else
+              echo "✅ DNS 记录已存在且正确"
+            fi
+            
+            # ============================================
+            # 步骤2: 部署 Xray (包含直连免流配置)
+            # ============================================
+            echo ">>> 检查/安装 Xray..."
+            sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" "
+              # 安装必要工具 (Firewall & Unzip)
+              export DEBIAN_FRONTEND=noninteractive
+              sudo apt-get update -qq 2>/dev/null || true
+              echo "iptables-persistent iptables-persistent/autosave_v4 boolean true" | sudo debconf-set-selections 2>/dev/null || true
+              echo "iptables-persistent iptables-persistent/autosave_v6 boolean true" | sudo debconf-set-selections 2>/dev/null || true
+              sudo apt-get install -y -qq iptables iptables-persistent netfilter-persistent unzip 2>/dev/null || true
+
+              # 开放端口 (Idempotent check)
+              sudo iptables -C INPUT -p tcp --dport 5443 -j ACCEPT 2>/dev/null || sudo iptables -I INPUT -p tcp --dport 5443 -j ACCEPT
+              sudo netfilter-persistent save 2>/dev/null || true
+              
+              # 检查安装
+              if [ ! -f /usr/local/bin/xray ]; then
+                echo '>>> 下载 Xray (AMD64)...'
+                cd /tmp
+                wget -q https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip -O xray.zip
+                unzip -o xray.zip xray geoip.dat geosite.dat
+                sudo mv xray /usr/local/bin/
+                sudo chmod +x /usr/local/bin/xray
+                sudo mkdir -p /usr/local/share/xray
+                sudo mv geoip.dat geosite.dat /usr/local/share/xray/
+                rm -f xray.zip
+              fi
+            " 2>&1 || true
+            
+            echo ">>> 创建 Xray 配置 (使用 jq 生成)..."
+            
+            # 使用 jq 在 Runner 本地生成安全的 JSON 配置
+            if [ "$PROXY_DOMAIN" != "null" ] && [ -n "$PROXY_DOMAIN" ]; then
+              # 双入口配置 (Tunnel + Direct No-TLS)
+              XRAY_CONFIG=$(jq -n \
+                --arg uuid "$VLESS_UUID" \
+                --arg host "a.189.cn" \
+                '{
+                  log: {loglevel: "warning"},
+                  inbounds: [
+                    {
+                      port: 10086,
+                      listen: "127.0.0.1",
+                      protocol: "vless",
+                      settings: {clients: [{id: $uuid, level: 0}], decryption: "none"},
+                      streamSettings: {network: "ws", wsSettings: {path: "/library1629"}}
+                    },
+                    {
+                      port: 5443,
+                      listen: "0.0.0.0",
+                      protocol: "vless",
+                      settings: {clients: [{id: $uuid, level: 0}], decryption: "none"},
+                      streamSettings: {network: "ws", wsSettings: {path: "/", headers: {Host: $host}}}
+                    }
+                  ],
+                  outbounds: [{protocol: "freedom"}]
+                }')
+              echo "✅ 配置包含: Tunnel + Direct VLESS (无 TLS)"
+            else
+               # 单入口配置 (仅 Tunnel)
+              XRAY_CONFIG=$(jq -n \
+                --arg uuid "$VLESS_UUID" \
+                '{
+                  log: {loglevel: "warning"},
+                  inbounds: [
+                    {
+                      port: 10086,
+                      listen: "127.0.0.1",
+                      protocol: "vless",
+                      settings: {clients: [{id: $uuid, level: 0}], decryption: "none"},
+                      streamSettings: {network: "ws", wsSettings: {path: "/library1629"}}
+                    }
+                  ],
+                  outbounds: [{protocol: "freedom"}]
+                }')
+              echo "✅ 配置包含: 仅 Tunnel"
+            fi
+            
+            # 使用 base64 传输 JSON 以避免转义问题
+            CONFIG_B64=$(echo "$XRAY_CONFIG" | base64 -w 0)
+            sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" "sudo mkdir -p /etc/xray && echo '$CONFIG_B64' | base64 -d | sudo tee /etc/xray/config.json > /dev/null" 2>&1 || true
+            
+            echo ">>> 创建 systemd 服务..."
+            SYSTEMD_SERVICE="W1VuaXRdCkRlc2NyaXB0aW9uPVhyYXkgVkxFU1MgU2VydmljZQpBZnRlcj1uZXR3b3JrLnRhcmdldAoKW1NlcnZpY2VdClR5cGU9c2ltcGxlCkV4ZWNTdGFydD0vdXNyL2xvY2FsL2Jpbi94cmF5IHJ1biAtY29uZmlnIC9ldGMveHJheS9jb25maWcuanNvbgpSZXN0YXJ0PW9uLWZhaWx1cmUKUmVzdGFydFNlYz0zCgpbSW5zdGFsbF0KV2FudGVkQnk9bXVsdGktdXNlci50YXJnZXQK"
+            sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" "echo '$SYSTEMD_SERVICE' | base64 -d | sudo tee /etc/systemd/system/xray-vless.service > /dev/null && sudo systemctl daemon-reload" 2>&1 || true
+            
+            echo ">>> 启动 Xray 服务..."
+            SERVICE_OK="no"
+            for RETRY in 1 2 3; do
+              echo ">>> 尝试启动 (第 $RETRY 次)..."
+              sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" "
+                sudo systemctl stop xray-vless 2>/dev/null || true
+                sudo systemctl enable xray-vless
+                sudo systemctl start xray-vless
+                sleep 2
+                if sudo systemctl is-active xray-vless > /dev/null 2>&1; then
+                  echo 'SERVICE_HEALTHY'
+                else
+                  echo 'SERVICE_FAILED'
+                  sudo journalctl -u xray-vless --no-pager | tail -5
+                fi
+              " 2>&1 | tee /tmp/service_output.txt
+              
+              if grep -q "SERVICE_HEALTHY" /tmp/service_output.txt; then
+                SERVICE_OK="yes"
+                break
+              fi
+              sleep 3
+            done
+            
+            if [ "$SERVICE_OK" = "yes" ]; then
+              echo "✅ 部署成功: $HOST_NAME"
+              DEPLOYED_COUNT=$((DEPLOYED_COUNT + 1))
+              
+              # 1. Cloudflare Tunnel 节点
+              NODES_INFO="${NODES_INFO}vless://${VLESS_UUID}@${VLESS_HOST}:443?encryption=none&security=tls&sni=${VLESS_HOST}&type=ws&host=${VLESS_HOST}&path=%2Flibrary1629#${HOST_NAME}-Tunnel\n"
+              
+              # 2. 直连免流节点 (无 TLS)
+              if [ "$PROXY_DOMAIN" != "null" ] && [ -n "$PROXY_DOMAIN" ]; then
+                 NODES_DIRECT_INFO="${NODES_DIRECT_INFO}vless://${VLESS_UUID}@${PROXY_DOMAIN}:5443?encryption=none&security=none&type=ws&headerType=http&host=a.189.cn&path=%2F#${HOST_NAME}-直连免流\n"
+              fi
+            else
+              echo "❌ 部署失败: $HOST_NAME"
+            fi
+            
+            kill $TUNNEL_PID 2>/dev/null || true
+          done
+          
+          echo ""
+          echo "==========================================="
+          echo "完成: 新部署 $DEPLOYED_COUNT, 跳过 $SKIPPED_COUNT"
+          echo "==========================================="
+          
+          echo -e "$NODES_INFO" > /tmp/nodes_info.txt
+          echo -e "$NODES_DIRECT_INFO" > /tmp/nodes_direct_info.txt
+
+      - name: Send Telegram notification
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          if [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$TELEGRAM_CHAT_ID" ]; then
+            echo "⚠️ Telegram 未配置"
+            exit 0
+          fi
+          
+          if [ ! -s /tmp/nodes_info.txt ]; then
+            echo "⚠️ 无节点信息"
+            exit 0
+          fi
+          
+          TIMESTAMP=$(date -u +'%Y-%m-%d %H:%M UTC')
+          NODE_COUNT=$( (cat /tmp/nodes_info.txt | grep -v "^$" || true) | wc -l )
+          
+          # 构建 Telegram 消息内容 (分栏显示)
+          NODES_FULL="📋 CF-Tunnel 节点 (AMD64):"$'\n'
+          NODES_FULL="${NODES_FULL}"'```'$'\n'
+          NODES_FULL="${NODES_FULL}$( (cat /tmp/nodes_info.txt | grep -v "^$" || true) | head -20 )"
+          NODES_FULL="${NODES_FULL}"$'\n''```'
+          
+          # 合并显示直连节点 (如果有)
+          if [ -s /tmp/nodes_direct_info.txt ]; then
+             DIRECT_COUNT=$( (cat /tmp/nodes_direct_info.txt | grep -v "^$" || true) | wc -l )
+             
+             NODES_FULL="${NODES_FULL}"$'\n\n'"📋 直连免流节点 (AMD64):"$'\n'
+             NODES_FULL="${NODES_FULL}"'```'$'\n'
+             NODES_FULL="${NODES_FULL}$( (cat /tmp/nodes_direct_info.txt | grep -v "^$" || true) | head -20 )"
+             NODES_FULL="${NODES_FULL}"$'\n''```'
+             
+             NODE_COUNT="$NODE_COUNT (Tunnel) + $DIRECT_COUNT (Direct)"
+          fi
+          
+          FINAL_MSG=$(printf "🔐 *VLESS WS 部署完成 (AMD64)*\n\n📅 %s\n\n✅ *共 %s 个节点*\n\n%s\n\n🔗 *订阅地址:*\nCF-Tunnel\nhttps://v.555606.xyz/cf_vless_amd64.txt\n\n直连+免流\nhttps://v.555606.xyz/ml_vless_amd64.txt\n\n💡 复制上方链接导入客户端即可使用" "$TIMESTAMP" "$NODE_COUNT" "$NODES_FULL")
+          
+          # 支持多个 chat_id (逗号分隔)
+          IFS=',' read -ra CHAT_IDS <<< "$TELEGRAM_CHAT_ID"
+          for chat_id in "${CHAT_IDS[@]}"; do
+            chat_id=$(echo "$chat_id" | xargs)
+            if [ -n "$chat_id" ]; then
+              curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+                -d chat_id="${chat_id}" \
+                -d parse_mode="Markdown" \
+                --data-urlencode "text=${FINAL_MSG}" > /dev/null
+            fi
+          done
+          
+          echo "✅ Telegram 已发送"
+
+      - name: Push to blog repository
+        env:
+          BLOG_GITHUB_TOKEN: ${{ secrets.BLOG_GITHUB_TOKEN }}
+        run: |
+          if [ -z "$BLOG_GITHUB_TOKEN" ]; then
+            echo "⚠️ BLOG_GITHUB_TOKEN 未配置"
+            exit 0
+          fi
+          
+          if [ ! -s /tmp/nodes_info.txt ]; then
+            echo "⚠️ 无节点信息"
+            exit 0
+          fi
+          
+          git clone "https://${BLOG_GITHUB_TOKEN}@github.com/suwei8/blog.git" /tmp/blog
+          cd /tmp/blog
+          
+          TIMESTAMP=$(date -u +'%Y-%m-%d %H:%M UTC')
+          
+          # 1. Cloudflare Tunnel 节点
+          FILE_CF="cf_vless_amd64.txt"
+          CONTENT_CF="# VLESS WS 节点列表 (AMD64)"$'\n'"# 更新时间: $TIMESTAMP"$'\n\n'
+          CONTENT_CF="${CONTENT_CF}$(cat /tmp/nodes_info.txt | grep -v "^$" || true)"
+          
+          echo -n "$CONTENT_CF" | base64 > "$FILE_CF"
+          
+          # 2. 直连免流节点
+          FILE_ML="ml_vless_amd64.txt"
+          if [ -s /tmp/nodes_direct_info.txt ]; then
+             CONTENT_ML="# 直连免流 VLESS 节点列表 (AMD64)"$'\n'"# 更新时间: $TIMESTAMP"$'\n\n'
+             CONTENT_ML="${CONTENT_ML}$(cat /tmp/nodes_direct_info.txt | grep -v "^$" || true)"
+             
+             echo -n "$CONTENT_ML" | base64 > "$FILE_ML"
+             git add "$FILE_ML"
+             echo "✅ 已生成直连订阅文件"
+          fi
+          
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          
+          git add "$FILE_CF"
+          git diff --staged --quiet || git commit -m "Update VLESS AMD64 nodes (Base64) $(date -u +%Y-%m-%d)"
+          git push
+          
+          echo "✅ 已推送到 blog 仓库"
+          
+      - name: Summary
+        run: |
+          echo "## 🔐 VLESS WS 部署结果 (AMD64)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ -s /tmp/nodes_info.txt ]; then
+            echo "### ✅ 节点列表" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            cat /tmp/nodes_info.txt | grep -v "^$" || true >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          else
+            echo "无节点信息" >> $GITHUB_STEP_SUMMARY
+          fi
