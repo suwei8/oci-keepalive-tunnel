@@ -65,6 +65,7 @@ jobs:
           
           echo "skip=false" >> $GITHUB_OUTPUT
           echo "name=$HOST_NAME" >> $GITHUB_OUTPUT
+          echo "::add-mask::$SSH_HOST"
           echo "ssh_host=$SSH_HOST" >> $GITHUB_OUTPUT
           echo "Host: $HOST_NAME ($SSH_HOST)"
 
