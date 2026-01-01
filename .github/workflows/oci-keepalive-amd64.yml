@@ -41,9 +41,8 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y sshpass jq unzip
         
-        # Install cloudflared manually
-        sudo mkdir -p /usr/local/bin
-        wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -O /usr/local/bin/cloudflared
+        # Install cloudflared from local bin
+        sudo cp bin/cloudflared /usr/local/bin/cloudflared
         sudo chmod +x /usr/local/bin/cloudflared
         cloudflared --version
         
