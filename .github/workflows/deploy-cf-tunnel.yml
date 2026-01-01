@@ -185,6 +185,7 @@ jobs:
           # SSH hostname 格式: {tunnel_tag_name}-ssh.ynshanghui.com
           SSH_HOSTNAME="${TUNNEL_TAG_NAME}-ssh"
           FULL_HOSTNAME="${SSH_HOSTNAME}.ynshanghui.com"
+          echo "::add-mask::$FULL_HOSTNAME"
           echo ">>> 配置 SSH Hostname: $FULL_HOSTNAME"
           
           # 配置 Tunnel ingress 规则
@@ -272,6 +273,7 @@ jobs:
           echo "::add-mask::$SSH_PASSWORD"
           
           FULL_HOSTNAME="${TUNNEL_TAG_NAME}-ssh.ynshanghui.com"
+          echo "::add-mask::$FULL_HOSTNAME"
           SSH_OPTS="-o ConnectTimeout=30 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR"
           
           # 安装 cloudflared
@@ -350,6 +352,7 @@ jobs:
           
           TIMESTAMP=$(date -u +'%Y-%m-%d %H:%M UTC')
           FULL_HOSTNAME="${TUNNEL_TAG_NAME}-ssh.ynshanghui.com"
+          echo "::add-mask::$FULL_HOSTNAME"
           
           if [ "$CONNECTION_OK" = "true" ]; then
             STATUS_EMOJI="✅"
