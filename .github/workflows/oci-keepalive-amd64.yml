@@ -15,15 +15,47 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  define-matrix:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - name: Filter AMD64 Hosts
+        id: set-matrix
+        env:
+          HOSTS_CONFIG: ${{ secrets.HOSTS_CONFIG }}
+          TARGET_INDEX: ${{ inputs.target_index }}
+        run: |
+          # 动态生成 AMD64 主机列表，避免无效的任务启动
+          if [ -n "$TARGET_INDEX" ]; then
+             # 如果指定了目标，检查是否为 amd64
+             IS_AMD=$(echo $HOSTS_CONFIG | jq --argjson idx "$TARGET_INDEX" '.[$idx].cpu_type == "amd64"')
+             if [ "$IS_AMD" == "true" ]; then
+                 echo "Target $TARGET_INDEX is AMD64. Proceeding."
+                 JSON="{\"host_id\": [$TARGET_INDEX]}"
+             else
+                 echo "Target $TARGET_INDEX is NOT AMD64. Skipping."
+                 JSON="{\"host_id\": []}"
+             fi
+          else
+             # 筛选所有 amd64 主机
+             INDICES=$(echo $HOSTS_CONFIG | jq -c '[to_entries[] | select(.value.cpu_type == "amd64") | .key]')
+             echo "Found AMD64 indices: $INDICES"
+             JSON="{\"host_id\": $INDICES}"
+          fi
+          echo "matrix=$JSON" >> $GITHUB_OUTPUT
+
   keepalive-matrix:
+    needs: define-matrix
+    # 如果列表为空（例如没有 amd64 实例），跳过执行
+    if: ${{ fromJson(needs.define-matrix.outputs.matrix).host_id[0] != null }}
     runs-on: ubuntu-latest
     permissions:
-      contents: write  # 为 GITHUB_TOKEN 授予 Release 操作权限
+      contents: write
     strategy:
       fail-fast: false
       max-parallel: 3
-      matrix:
-        host_id: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29]
+      matrix: ${{ fromJson(needs.define-matrix.outputs.matrix) }}
 
     steps:
     - name: Checkout
@@ -57,7 +89,6 @@ jobs:
         SSH_KEY: ${{ secrets.SSH_KEY }}
         AMD_SSH_USERNAME: ${{ secrets.AMD_SSH_USERNAME }}
         SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }}
-        TARGET_INDEX: ${{ inputs.target_index }}
         CURRENT_INDEX: ${{ matrix.host_id }}
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         REPO_OWNER: ${{ github.repository_owner }}
@@ -73,19 +104,7 @@ jobs:
 
         NAME=$(echo $HOST_INFO | jq -r '.name')
         SSH_HOST=$(echo $HOST_INFO | jq -r '.ssh_host')
-        CPU_TYPE=$(echo $HOST_INFO | jq -r '.cpu_type')
-
-        # 🎯 关键过滤：仅处理 AMD64 实例
-        if [ "$CPU_TYPE" != "amd64" ]; then
-            echo "⚠️  Skipping $NAME (Type: $CPU_TYPE) - This workflow is for AMD64 only."
-            exit 0
-        fi
-
-        # 处理手动触发的目标筛选
-        if [ ! -z "$TARGET_INDEX" ] && [ "$TARGET_INDEX" != "$CURRENT_INDEX" ]; then
-            echo "Skipping $CURRENT_INDEX (Target is $TARGET_INDEX)"
-            exit 0
-        fi
+        # CPU_TYPE 已在 define-matrix 阶段过滤，此处无需再次检查
         
         echo "=========================================="
         echo "🚀 Starting Keepalive for $NAME ($SSH_HOST) [AMD64]"
