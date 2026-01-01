@@ -673,21 +673,7 @@ def main(hostname: str = None):
     print("第三步: 内存活动 (自适应)")
     print("-" * 40)
     
-    # 内存策略：根据 CPU 核心数调整，避免满载
-    # 4核机器训练进程已占用较多内存，降低额外分配
-    if cpu_count >= 4:
-        mem_percent = 0.12  # 4核机器: 12% (~3GB for 24GB)
-        mem_cap = 3 * 1024 * 1024 * 1024  # 上限 3GB
-    else:
-        mem_percent = 0.20  # 2核机器: 20% (~2.4GB for 12GB)
-        mem_cap = 2 * 1024 * 1024 * 1024  # 上限 2GB
-    
-    target_mem_size = int(mem_total_kb * 1024 * mem_percent)
-    
-    # 安全上限和下限 (500MB)
-    safe_mem_size = min(mem_cap, max(500 * 1024 * 1024, target_mem_size))
-    
-    # 检查可用内存，防止 OOM (保留 30%)
+    # 内存策略 (用户指定: 激进模式，占用所有空闲内存，仅预留 3GB 给系统)
     mem_avail_kb = 0
     with open("/proc/meminfo") as f:
         for line in f:
@@ -695,10 +681,21 @@ def main(hostname: str = None):
                 mem_avail_kb = int(line.split()[1])
                 break
     
-    safe_limit = int(mem_avail_kb * 1024 * 0.7)  # 只用可用内存的 70%
-    final_size = min(safe_mem_size, safe_limit)
+    mem_avail_bytes = mem_avail_kb * 1024
+    reserved_bytes = 3 * 1024 * 1024 * 1024  # 3GB 预留给系统和其他业务
     
-    print(f"[内存] 策略: 目标{int(mem_percent*100)}%({target_mem_size/1024/1024:.0f}MB), 上限{mem_cap/1024/1024/1024:.0f}GB, 可用{safe_limit/1024/1024:.0f}MB")
+    # 目标占用 = 可用 - 预留
+    target_mem_size = mem_avail_bytes - reserved_bytes
+    
+    # 兜底逻辑：如果剩余空间不足 3GB，则至少运行 512MB 以维持基本保活
+    # 或者如果计算结果为负，说明内存已经非常紧张
+    if target_mem_size < 512 * 1024 * 1024:
+        final_size = 512 * 1024 * 1024 # 最小 512MB
+        print(f"[内存] ⚠️ 系统可用内存紧张 ({mem_avail_bytes/1024/1024:.0f}MB < 预留3GB)，强制最小保活: 512 MB")
+    else:
+        final_size = target_mem_size
+        
+    print(f"[内存] 策略: 激进占用 (可用 {mem_avail_bytes/1024/1024:.0f}MB - 预留 3072MB)")
     print(f"[内存] 最终执行: {final_size/1024/1024:.0f} MB")
     
     memory_activity_run(final_size, 180)
