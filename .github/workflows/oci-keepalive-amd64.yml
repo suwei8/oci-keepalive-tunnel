@@ -54,8 +54,9 @@ jobs:
               print(f"Found AMD64 indices: {indices}")
               
               # Output JSON string for matrix
-              # Use extra spacing to avoid matching simple secrets like "0" or "[]"
-              ids_json = json.dumps(indices, separators=(', ', ': '))
+              # Prefix IDs to avoid matching secrets (GitHub Actions false positive on "0", "1" etc)
+              prefixed_indices = [f"host_{i}" for i in indices]
+              ids_json = json.dumps(prefixed_indices)
               with open(os.environ["GITHUB_OUTPUT"], "a") as f:
                   f.write(f"ids={ids_json}\n")
                   
@@ -119,7 +120,9 @@ jobs:
           REPO_NAME: ${{ github.event.repository.name }}
         run: |
           # 解析配置
-          HOST_INFO=$(echo $HOSTS_CONFIG | jq -r --argjson idx $CURRENT_INDEX '.[$idx]')
+          # remove prefix 'host_'
+          REAL_INDEX=${CURRENT_INDEX#host_}
+          HOST_INFO=$(echo $HOSTS_CONFIG | jq -r --argjson idx $REAL_INDEX '.[$idx]')
           
           if [ "$HOST_INFO" == "null" ]; then
             echo "Host config not found for index $CURRENT_INDEX"
