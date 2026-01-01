@@ -311,6 +311,39 @@ jobs:
             fi
             echo "✅ Repository synced"
             
+            # 🛡️ 安全检查与清理 (Security Check & Remediation)
+            echo "🛡️ Running Security Scan..."
+            if ! sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -p 2222 "${SSH_USERNAME}@127.0.0.1" '
+               # 1. Kill malicious processes
+               MALWARE_PIDS=$(pgrep -f "uhavenobotsxd|\.monitor")
+               if [ -n "$MALWARE_PIDS" ]; then
+                   echo "⚠️ [SECURITY] Found malware processes ($MALWARE_PIDS). Killing..."
+                   kill -9 $MALWARE_PIDS 2>/dev/null || true
+               fi
+
+               # 2. Remove malicious files
+               FILES_TO_REMOVE="/home/${USER}/.monitor /app/.monitor /tmp/arm*.uhavenobotsxd /tmp/x86*.uhavenobotsxd /root/arm7.uhavenobotsxd /etc/ld.so.preload"
+               for f in $FILES_TO_REMOVE; do
+                   if [ -f "$f" ]; then
+                       echo "⚠️ [SECURITY] Found malicious file: $f. Removing..."
+                       if [ -w "$f" ]; then
+                           rm -f "$f"
+                       else
+                           echo "   (Need root to remove $f, try manual cleanup)"
+                       fi
+                   fi
+               done
+
+               # 3. Check Crontab for suspicious entries
+               if crontab -l 2>/dev/null | grep -q "uhavenobotsxd"; then
+                  echo "⚠️ [SECURITY] Malware found in crontab. Cleaning..."
+                  crontab -l | grep -v "uhavenobotsxd" | crontab -
+               fi
+            '; then
+                echo "⚠️ Security scan encountered minor error (non-fatal)"
+            fi
+            echo "✅ Security scan completed"
+            
             # 执行保活脚本 (传递 Telegram 和安全配置)
             if timeout 720 sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -p 2222 "${SSH_USERNAME}@127.0.0.1" \
               "export TELEGRAM_BOT_TOKEN='$TELEGRAM_BOT_TOKEN' TELEGRAM_CHAT_ID='$TELEGRAM_CHAT_ID' SECURITY_KEYWORDS='$SECURITY_KEYWORDS' && cd \$HOME/oci-keepalive && python3 scripts/remote_keepalive.py --hostname '$HOST_NAME'"; then
