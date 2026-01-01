@@ -15,65 +15,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  define-matrix:
-    runs-on: ubuntu-latest
-    outputs:
-      ids: ${{ steps.set-matrix.outputs.ids }}
-    steps:
-      - name: Filter AMD64 Hosts
-        id: set-matrix
-        env:
-          HOSTS_CONFIG: ${{ secrets.HOSTS_CONFIG }}
-          TARGET_INDEX: ${{ inputs.target_index }}
-        run: |
-          cat > parse_matrix.py << 'EOF'
-          import os, json
-          
-          try:
-              config_str = os.environ.get("HOSTS_CONFIG", "[]")
-              hosts = json.loads(config_str)
-              
-              indices = []
-              target_index_str = os.environ.get("TARGET_INDEX", "")
-              
-              if target_index_str:
-                  idx = int(target_index_str)
-                  if 0 <= idx < len(hosts):
-                      ctype = hosts[idx].get("cpu_type", "unknown")
-                      if str(ctype).lower() == "amd64":
-                          indices = [idx]
-                  else:
-                       print(f"Target {idx} out of range.")
-              else:
-                  # Filter all AMD64 (Case Insensitive)
-                  for i, h in enumerate(hosts):
-                      ctype = h.get("cpu_type", "unknown")
-                      if str(ctype).lower() == "amd64":
-                          indices.append(i)
-              
-              print(f"Found AMD64 indices: {indices}")
-              
-              # Output JSON string for matrix
-              # Base64 encode IDs to avoid matching secrets (GitHub Actions false positive on "0", "1" etc)
-              import base64
-              b64_indices = [base64.b64encode(str(i).encode()).decode() for i in indices]
-              ids_json = json.dumps(b64_indices)
-              with open(os.environ["GITHUB_OUTPUT"], "a") as f:
-                  f.write(f"ids={ids_json}\n")
-                  
-          except Exception as e:
-              print(f"Error parsing config: {e}")
-              with open(os.environ["GITHUB_OUTPUT"], "a") as f:
-                  f.write("ids=[]\n")
-          EOF
-          
-          python3 parse_matrix.py
-
   keepalive-matrix:
-    needs: define-matrix
-    # 如果 ID 列表为空 (即 "[]")，fromJson 解析后长度为 0，但这很难判断
-    # 简单判断字符串是否为 "[]"
-    if: ${{ needs.define-matrix.outputs.ids != '[]' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -81,13 +23,51 @@ jobs:
       fail-fast: false
       max-parallel: 3
       matrix: 
-        host_id: ${{ fromJson(needs.define-matrix.outputs.ids || '[]') }}
+        host_id: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29]
 
     steps:
+      - name: Check Host Configuration
+        id: host
+        env:
+          HOSTS_CONFIG: ${{ secrets.HOSTS_CONFIG }}
+          TARGET_INDEX: ${{ inputs.target_index }}
+          CURRENT_INDEX: ${{ matrix.host_id }}
+        run: |
+          # 提取主机信息
+          HOST_INFO=$(echo $HOSTS_CONFIG | jq -r --argjson idx $CURRENT_INDEX '.[$idx]')
+
+          # 检查是否存在
+          if [ "$HOST_INFO" == "null" ] || [ -z "$HOST_INFO" ]; then
+            echo "skip=true" >> $GITHUB_OUTPUT
+            echo "No host config at index $CURRENT_INDEX"
+            exit 0
+          fi
+
+          # 检查是否为 AMD64
+          CPU_TYPE=$(echo "$HOST_INFO" | jq -r '.cpu_type')
+          if [ "${CPU_TYPE,,}" != "amd64" ]; then
+            echo "skip=true" >> $GITHUB_OUTPUT
+            echo "Skipping non-AMD64 host (Type: $CPU_TYPE) at index $CURRENT_INDEX"
+            exit 0
+          fi
+
+          # 检查是否指定了 Target Index
+          if [ -n "$TARGET_INDEX" ] && [ "$TARGET_INDEX" != "$CURRENT_INDEX" ]; then
+            echo "skip=true" >> $GITHUB_OUTPUT
+            echo "Skipping index $CURRENT_INDEX (Target is $TARGET_INDEX)"
+            exit 0
+          fi
+
+          echo "skip=false" >> $GITHUB_OUTPUT
+          echo "Found AMD64 host at index $CURRENT_INDEX"
+
+
       - name: Checkout
+        if: steps.host.outputs.skip != 'true'
         uses: actions/checkout@v4
 
       - name: Set Random Delay
+        if: steps.host.outputs.skip != 'true'
         run: |
           # AMD64 实例较少，减少延迟以提高效率
           DELAY=$((RANDOM % 120 + 30))
@@ -95,6 +75,7 @@ jobs:
           sleep $DELAY
 
       - name: Install Dependencies
+        if: steps.host.outputs.skip != 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y sshpass jq unzip
@@ -105,6 +86,7 @@ jobs:
           cloudflared --version
           
       - name: Setup SSH
+        if: steps.host.outputs.skip != 'true'
         run: |
           mkdir -p ~/.ssh
           echo "StrictHostKeyChecking no" > ~/.ssh/config
@@ -119,12 +101,11 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO_OWNER: ${{ github.repository_owner }}
           REPO_NAME: ${{ github.event.repository.name }}
+        if: steps.host.outputs.skip != 'true'
         run: |
           # 解析配置
-          # Decode Base64 index
-          REAL_INDEX=$(echo "$CURRENT_INDEX" | base64 -d)
-          echo "Decoded Target Index: $REAL_INDEX"
-          HOST_INFO=$(echo $HOSTS_CONFIG | jq -r --argjson idx $REAL_INDEX '.[$idx]')
+          # No decoding needed for static matrix
+          HOST_INFO=$(echo $HOSTS_CONFIG | jq -r --argjson idx $CURRENT_INDEX '.[$idx]')
           
           if [ "$HOST_INFO" == "null" ]; then
             echo "Host config not found for index $CURRENT_INDEX"
