@@ -359,8 +359,8 @@ jobs:
               
               kill $TUNNEL_PID 2>/dev/null || true
               
-              # 实例间随机延迟 (5-8分钟，避免触发 DDoS 保护)
-              DELAY=$((300 + RANDOM % 181))  # 300-480 seconds
+              # 实例间随机延迟 (1-3分钟，避免触发 DDoS 保护)
+              DELAY=$((60 + RANDOM % 121))  # 60-180 seconds
               echo ""
               echo "⏳ Instance completed. Waiting $DELAY seconds before next instance..."
               echo "   (This delay prevents Cloudflare DDoS detection)"
