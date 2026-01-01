@@ -107,7 +107,13 @@ jobs:
         
         # 发送并执行脚本
         # 注意：AMD64 实例通常默认使用 root 或此时已配置为 root
-        USER_NAME="${SSH_USERNAME:-root}"
+        USER_NAME="${SSH_USERNAME}"
+        if [ -z "$USER_NAME" ]; then
+            USER_NAME="root"
+            echo "⚠️ SSH_USERNAME secret is empty, defaulting to 'root'"
+        fi
+        
+        echo "Using SSH User: $USER_NAME"
         
         echo "Copying scripts to $NAME..."
         sshpass -p "$SSH_PASSWORD" scp -P 2222 -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no scripts/remote_keepalive.py $USER_NAME@localhost:~/
