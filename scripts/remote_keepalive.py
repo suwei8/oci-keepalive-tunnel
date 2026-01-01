@@ -606,8 +606,8 @@ def main(hostname: str = None):
     
     # 策略决策: 多进程策略 (避免过高或过低)
     # 目标: 让 CPU 达到 50-75%，既满足保活要求又避免触发风控
-    if cpu_count >= 4:
-        training_processes = cpu_count - 1  # 4核用3进程 (75%)
+    if cpu_count >= 3:
+        training_processes = cpu_count - 1  # 3核用2进程(66%), 4核用3进程(75%)
     else:
         training_processes = 1  # 2核用1进程 (50%)，避免100%触发风控
     
