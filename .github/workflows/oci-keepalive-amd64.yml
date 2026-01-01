@@ -17,6 +17,8 @@ concurrency:
 jobs:
   keepalive-matrix:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write  # 为 GITHUB_TOKEN 授予 Release 操作权限
     strategy:
       fail-fast: false
       max-parallel: 3
@@ -37,7 +39,7 @@ jobs:
     - name: Install Dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y sshpass cloudflared jq
+        sudo apt-get install -y sshpass cloudflared jq unzip
         
     - name: Setup SSH
       run: |
@@ -94,13 +96,13 @@ jobs:
         cat > setup_env.sh << 'EOF'
         export LC_ALL=C.UTF-8
         export LANG=C.UTF-8
-        # 检查 python3
-        if ! command -v python3 &> /dev/null; then
-            echo "Installing Python3..."
+        # 检查 python3 和 unzip
+        if ! command -v python3 &> /dev/null || ! command -v unzip &> /dev/null; then
+            echo "Installing Dependencies..."
             if command -v apt-get &> /dev/null; then
-                sudo apt-get update && sudo apt-get install -y python3 python3-pip
+                sudo apt-get update && sudo apt-get install -y python3 python3-pip unzip
             elif command -v yum &> /dev/null; then
-                sudo yum install -y python3
+                sudo yum install -y python3 unzip
             fi
         fi
         EOF
