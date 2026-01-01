@@ -750,10 +750,355 @@ def memory_activity_run(size, duration):
         print(f"[缓存] ❌ 矩阵运算出错: {e}")
 
 
+# ============================================
+# 福彩3D 数据分析任务 (AMD64 专用 - Micro Mode)
+# ============================================
+
+class LotteryTask:
+    """
+    福彩3D 数据分析与发布任务
+    - 下载/解压/解析 2GB SQL 文件
+    - 流式处理防止 OOM
+    - 生成统计报表
+    """
+    def __init__(self, work_dir="/tmp/lottery_task"):
+        self.work_dir = Path(work_dir)
+        self.work_dir.mkdir(exist_ok=True, parents=True)
+        self.password = "sw@63828".encode('utf-8')
+        
+    def run(self, hostname=None):
+        print("\n" + "=" * 40)
+        print("🦄 启动 Micro Mode: 福彩3D 数据分析任务")
+        print("=" * 40)
+        
+        try:
+            # 1. 获取最新 Release 下载地址
+            print("[Lottery] 正在获取最新数据库备份地址...")
+            import json
+            import urllib.request
+            
+            api_url = "https://api.github.com/repos/suwei8/lotto_ai3_v2-Backup_data/releases/latest"
+            try:
+                with urllib.request.urlopen(api_url) as response:
+                    data = json.loads(response.read().decode())
+                    assets = data.get("assets", [])
+                    if not assets:
+                        print("[Lottery] ❌ 未找到 Release Assets")
+                        return False
+                    download_url = assets[0]["browser_download_url"]
+                    file_name = assets[0]["name"]
+                    print(f"[Lottery] 目标文件: {file_name}")
+            except Exception as e:
+                print(f"[Lottery] API 请求失败: {e} (使用默认备份)")
+                # Fallback to hardcoded example if API fails
+                download_url = "https://github.com/suwei8/lotto_ai3_v2-Backup_data/releases/download/backup-20251213/lotto_20251213_backup.zip"
+                file_name = "lotto_20251213_backup.zip"
+
+            zip_path = self.work_dir / file_name
+            
+            # 2. 下载 (大流量)
+            print(f"[Lottery] 开始下载 (制造网络负载): {download_url}")
+            start_t = time.time()
+            subprocess.run(["curl", "-L", "-o", str(zip_path), download_url], check=True)
+            dl_time = time.time() - start_t
+            size_mb = zip_path.stat().st_size / 1024 / 1024
+            print(f"[Lottery] ✅ 下载完成: {size_mb:.2f}MB, 耗时 {dl_time:.1f}s, Speed: {size_mb/dl_time:.2f}MB/s")
+            
+            # 3. 解压 (CPU 密集)
+            print("[Lottery] 开始解密与解压 (CPU 密集)...")
+            # 使用系统 unzip (Python zipfile 处理加密可能有兼容问题)
+            # 注意: 如果是 7z 格式的 zip，unzip 可能不行。这里假设是标准 zip。
+            # 如果 unzip 不支持 AES，则可能失败。尝试使用 python zipfile。
+            extracted_sql = None
+            
+            try:
+                import zipfile
+                with zipfile.ZipFile(zip_path, 'r') as zf:
+                    # 寻找最大的 .sql 文件
+                    sql_files = [f for f in zf.namelist() if f.endswith('.sql')]
+                    if not sql_files:
+                        print("[Lottery] ❌ 未找到 .sql 文件")
+                        return False
+                    
+                    target_sql = sql_files[0] 
+                    print(f"[Lottery] 正在解压: {target_sql} (密码保护)")
+                    # ZipFile setpassword 需要 bytes
+                    zf.setpassword(self.password)
+                    zf.extract(target_sql, path=self.work_dir)
+                    extracted_sql = self.work_dir / target_sql
+            except RuntimeError as e: # Bad password or encryption
+                 print(f"[Lottery] Python解压失败 (可能是AES加密): {e}. 尝试系统 7z/unzip...")
+                 # try 7z if available
+                 if subprocess.run(["which", "7z"], capture_output=True).returncode == 0:
+                     subprocess.run(["7z", "x", f"-p{self.password.decode()}", "-y", f"-o{self.work_dir}", str(zip_path)], check=True)
+                     # Find sql again
+                     for f in self.work_dir.glob("*.sql"):
+                         extracted_sql = f
+                         break
+                 elif subprocess.run(["which", "unzip"], capture_output=True).returncode == 0:
+                      subprocess.run(["unzip", "-P", self.password.decode(), "-o", str(zip_path), "-d", str(self.work_dir)], check=True)
+                      for f in self.work_dir.glob("*.sql"):
+                         extracted_sql = f
+                         break
+            
+            if not extracted_sql or not extracted_sql.exists():
+                print("[Lottery] ❌ 解压失败，跳过后续分析")
+                return False
+                
+            print(f"[Lottery] ✅ 解压完成: {extracted_sql.name} ({extracted_sql.stat().st_size/1024/1024:.2f} MB)")
+            
+            # 4.5. Release 流量循环 (Upload -> Sleep -> Delete)
+            print("[Lottery] 执行 GitHub Release 流量模拟...")
+            # CSV 必须存在
+            csv_path = Path("/tmp/lottery_stats.csv") 
+            if csv_path.exists():
+                self.release_ops(zip_path, csv_path, hostname=hostname)
+            
+            # 5. 清理 (保持环境整洁)
+            try:
+                if zip_path.exists(): os.remove(zip_path)
+                if extracted_sql and extracted_sql.exists(): os.remove(extracted_sql)
+                if csv_path.exists(): os.remove(csv_path)
+                print("[Lottery] 🧹 临时文件已清理")
+            except: pass
+            
+            return True
+            
+        except Exception as e:
+            print(f"[Lottery] ❌ 任务执行出错: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+
+    def release_ops(self, zip_file, csv_file, hostname=None):
+        """执行 Release 上传与删除循环 (模拟上传流量)"""
+        token = os.environ.get("GITHUB_TOKEN")
+        owner = os.environ.get("REPO_OWNER")
+        repo = os.environ.get("REPO_NAME")
+        
+        if not token or not owner or not repo:
+            print("[Lottery] ⚠️ 缺少 GITHUB_TOKEN/REPO 信息，跳过 Release 操作")
+            return
+            
+        print("\n" + "-" * 30)
+        print("[Lottery] 启动 Release 流量模拟循环 (Upload -> Sleep -> Delete)")
+        print("-" * 30)
+        
+        # 确保 urllib/json 可用
+        import json
+        import urllib.request
+        
+        tag_name = f"lottery-ops-{hostname or 'unknown'}-{int(time.time())}"
+        release_name = f"Lottery Data Backup - {hostname}"
+        
+        try:
+            # 1. 创建 Release
+            print(f"[Lottery] 创建 Release: {tag_name}")
+            create_url = f"https://api.github.com/repos/{owner}/{repo}/releases"
+            data = {
+                "tag_name": tag_name,
+                "target_commitish": "main",
+                "name": release_name,
+                "body": f"Temporary release for traffic simulation. Host: {hostname}",
+                "draft": False,
+                "prerelease": True
+            }
+            
+            req = urllib.request.Request(create_url, data=json.dumps(data).encode(), headers={
+                "Authorization": f"token {token}",
+                "Accept": "application/vnd.github.v3+json",
+                "Content-Type": "application/json"
+            })
+            
+            release_id = None
+            upload_url_template = ""
+            
+            try:
+                with urllib.request.urlopen(req) as resp:
+                    release_info = json.loads(resp.read().decode())
+                    upload_url_template = release_info["upload_url"] 
+                    release_id = release_info["id"]
+            except urllib.error.HTTPError as e:
+                print(f"[Lottery] 创建 Release 失败: {e.code} {e.read().decode()}")
+                return
+
+            upload_base = upload_url_template.split('{')[0]
+            
+            # 2. 上传文件 (CSV & Large Zip)
+            files_to_upload = [csv_file]
+            if zip_file and zip_file.exists():
+                files_to_upload.append(zip_file)
+                
+            for fpath in files_to_upload:
+                if not fpath.exists(): continue
+                
+                print(f"[Lottery] 正在上传: {fpath.name} ({fpath.stat().st_size/1024/1024:.2f} MB)...")
+                # Header: Content-Type: application/octet-stream
+                dest_url = f"{upload_base}?name={fpath.name}"
+                
+                # curl call
+                cmd = [
+                    "curl", "-s", "-S", "-X", "POST",
+                    "-H", f"Authorization: token {token}",
+                    "-H", "Content-Type: application/octet-stream",
+                    "--data-binary", f"@{str(fpath)}",
+                    dest_url
+                ]
+                # 允许上传耗时较长
+                p = subprocess.run(cmd, capture_output=True, text=True)
+                if p.returncode == 0:
+                    print(f"[Lottery] ✅ 上传成功: {fpath.name}")
+                else:
+                    print(f"[Lottery] ❌ 上传失败: {p.stderr}")
+
+            # 3. 停留 (保持 Release 存在)
+            print("[Lottery] ⏳ 保持 Release 存在 5 分钟 (流量模拟)...")
+            time.sleep(300)
+            
+            # 4. 删除 Release & Tag
+            print("[Lottery] 清理 Release...")
+            if release_id:
+                del_url = f"https://api.github.com/repos/{owner}/{repo}/releases/{release_id}"
+                req_del = urllib.request.Request(del_url, method="DELETE", headers={
+                    "Authorization": f"token {token}"
+                })
+                try:
+                    with urllib.request.urlopen(req_del):
+                        print(f"[Lottery] Release {release_id} 已删除")
+                except Exception as e:
+                    print(f"[Lottery] Release 删除失败: {e}")
+                
+            # 删除 Tag
+            print(f"[Lottery] 清理 Tag: {tag_name}")
+            tag_url = f"https://api.github.com/repos/{owner}/{repo}/git/refs/tags/{tag_name}"
+            req_tag = urllib.request.Request(tag_url, method="DELETE", headers={
+                "Authorization": f"token {token}"
+            })
+            try:
+                with urllib.request.urlopen(req_tag):
+                    print(f"[Lottery] Tag {tag_name} 已删除")
+            except:
+                print(f"[Lottery] Tag 删除可能有延迟或失败 (非致命)")
+                
+        except Exception as e:
+            print(f"[Lottery] ❌ Release 操作流程异常: {e}")
+
+    def stream_parse_and_stats(self, sql_file):
+        """流式解析 SQL 并统计福彩3D数据"""
+        stats_cnt = 0
+        target_table = "lottery_results_3d"
+        # 仅保留最近 200 条数据用于分析
+        recent_data = []
+        
+        start_t = time.time()
+        
+        # 逐行读取，防止 OOM
+        with open(sql_file, 'r', encoding='utf-8', errors='ignore') as f:
+            for line in f:
+                if target_table in line and "INSERT INTO" in line:
+                    # 粗略解析 VALUES
+                    # 假设格式: VALUES (id, 'issue', 'd1', 'd2', 'd3', ...)
+                    try:
+                        # 查找第一个 ( 和最后一个 )
+                        start = line.find('(')
+                        end = line.rfind(')')
+                        if start != -1 and end != -1:
+                            values = line[start+1:end].split(',')
+                            if len(values) >= 5: # 至少包含期号和三个球
+                                # 清洗引号
+                                row = [v.strip().strip("'").strip('"') for v in values]
+                                # 假设 1=issue, 2=d1, 3=d2, 4=d3 (根据实际结构可能调整，这里做盲猜解析)
+                                # 也可以通过正则更精确提取，这里为了 CPU 负载，用 split 足够
+                                # 简单的有效性检查: d1/d2/d3 应该是 0-9
+                                if row[2].isdigit() and row[3].isdigit() and row[4].isdigit():
+                                    recent_data.append({
+                                        "issue": row[1],
+                                        "d1": int(row[2]),
+                                        "d2": int(row[3]),
+                                        "d3": int(row[4])
+                                    })
+                                    if len(recent_data) > 200:
+                                        recent_data.pop(0) # 保持窗口大小
+                                    stats_cnt += 1
+                    except:
+                        pass
+                
+                # 每 10000 行 插入微小 sleep 模拟 CPU 呼吸
+                if stats_cnt % 5000 == 0 and stats_cnt > 0:
+                     time.sleep(0.001)
+
+        print(f"[Lottery] ✅ 解析完成，提取记录: {stats_cnt} 条, 耗时 {time.time()-start_t:.1f}s")
+        
+        if recent_data:
+            print("[Lottery] 执行 200 期形态分析...")
+            # 统计组三/组六/豹子
+            z3, z6, bz = 0, 0, 0
+            for item in recent_data:
+                nums = sorted([item["d1"], item["d2"], item["d3"]])
+                if nums[0] == nums[1] == nums[2]:
+                    bz += 1
+                elif nums[0] == nums[1] or nums[1] == nums[2]:
+                    z3 += 1
+                else:
+                    z6 += 1
+            
+            print(f"[Lottery] 统计结果 (近 {len(recent_data)} 期):")
+            print(f"   豹子: {bz} ({bz/len(recent_data)*100:.1f}%)")
+            print(f"   组三: {z3} ({z3/len(recent_data)*100:.1f}%)")
+            print(f"   组六: {z6} ({z6/len(recent_data)*100:.1f}%)")
+            
+            # 保存到 CSV (Micro Mode 结果)
+            csv_path = Path("/tmp/lottery_stats.csv")
+            with open(csv_path, 'w') as f:
+                f.write("timestamp,bz_count,z3_count,z6_count,sample_size\n")
+                f.write(f"{datetime.now()},{bz},{z3},{z6},{len(recent_data)}\n")
+            print(f"[Lottery] 统计报表已生成: {csv_path}")
+
+
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description='福彩3D BPNN 预测保活脚本')
     parser.add_argument('--hostname', '-n', type=str, default=None,
                         help='主机名称 (用于预测结果记录)')
     args = parser.parse_args()
-    main(hostname=args.hostname)
+
+    # 硬件检测
+    mem_total_kb = 0
+    with open("/proc/meminfo") as f:
+        for line in f:
+            if line.startswith("MemTotal:"):
+                mem_total_kb = int(line.split()[1])
+                break
+    mem_total_gb = mem_total_kb / 1024 / 1024
+    
+    # Micro Mode 判定 (内存小于 2GB)
+    if mem_total_gb < 2.0:
+        print("\n" + "*" * 50)
+        print(f"🚀 检测到低配实例 ({mem_total_gb:.1f}GB < 2.0GB)")
+        print("🚀 自动切换至 Micro Mode (微创保活模式)")
+        print("*" * 50)
+        
+        # 1. 内存占位 (静态引擎) - 40% Available
+        mem_avail_kb = 0
+        with open("/proc/meminfo") as f:
+            for line in f:
+                if line.startswith("MemAvailable:"):
+                    mem_avail_kb = int(line.split()[1])
+                    break
+        target_size = int(mem_avail_kb * 1024 * 0.40) # 40%
+        print(f"[Micro] 分配基础内存底座: {target_size/1024/1024:.0f} MB (40%)")
+        # 申请并保持内存
+        buffer = bytearray(target_size)
+        for i in range(0, len(buffer), 4096): buffer[i] = 1 # 触碰以实际分配
+        
+        # 2. 执行 Lottery 任务 (动态引擎)
+        task = LotteryTask()
+        task.run(hostname=args.hostname)
+        
+        # 3. 释放内存
+        del buffer
+        print("[Micro] ✅ 任务完成，资源释放")
+        
+    else:
+        # 正常模式 (High Spec)
+        main(hostname=args.hostname)
