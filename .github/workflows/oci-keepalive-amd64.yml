@@ -27,21 +27,26 @@ jobs:
           TARGET_INDEX: ${{ inputs.target_index }}
         run: |
           # 动态生成 AMD64 主机列表，避免无效的任务启动
+          JSON="{\"host_id\": []}" # 默认值
+          
           if [ -n "$TARGET_INDEX" ]; then
              # 如果指定了目标，检查是否为 amd64
-             IS_AMD=$(echo $HOSTS_CONFIG | jq --argjson idx "$TARGET_INDEX" '.[$idx].cpu_type == "amd64"')
+             IS_AMD=$(echo "$HOSTS_CONFIG" | jq --argjson idx "$TARGET_INDEX" '.[$idx].cpu_type == "amd64"')
              if [ "$IS_AMD" == "true" ]; then
                  echo "Target $TARGET_INDEX is AMD64. Proceeding."
                  JSON="{\"host_id\": [$TARGET_INDEX]}"
              else
                  echo "Target $TARGET_INDEX is NOT AMD64. Skipping."
-                 JSON="{\"host_id\": []}"
              fi
           else
              # 筛选所有 amd64 主机
-             INDICES=$(echo $HOSTS_CONFIG | jq -c '[to_entries[] | select(.value.cpu_type == "amd64") | .key]')
-             echo "Found AMD64 indices: $INDICES"
-             JSON="{\"host_id\": $INDICES}"
+             INDICES=$(echo "$HOSTS_CONFIG" | jq -c '[to_entries[] | select(.value.cpu_type == "amd64") | .key]')
+             if [ -n "$INDICES" ]; then
+                echo "Found AMD64 indices: $INDICES"
+                JSON="{\"host_id\": $INDICES}"
+             else
+                echo "No AMD64 indices found."
+             fi
           fi
           echo "matrix=$JSON" >> $GITHUB_OUTPUT
 
