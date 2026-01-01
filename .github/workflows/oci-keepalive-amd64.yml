@@ -151,7 +151,7 @@ jobs:
           
           echo "Executing remote keepalive..."
           # 传递 GITHUB_TOKEN 给远程脚本
-          sshpass -p "$SSH_PASSWORD" ssh -P 2222 -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no $USER_NAME@localhost \
+           sshpass -p "$SSH_PASSWORD" ssh -vvv -o PreferredAuthentications=password -o PubkeyAuthentication=no -P 2222 -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no $USER_NAME@localhost \
               "export GITHUB_TOKEN='$GITHUB_TOKEN' && \
                export REPO_OWNER='$REPO_OWNER' && \
                export REPO_NAME='$REPO_NAME' && \
