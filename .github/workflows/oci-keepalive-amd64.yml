@@ -5,10 +5,10 @@ on:
     - cron: "*/45 * * * *"
   workflow_dispatch:
     inputs:
-        target_index:
-            description: 'Target Host Index (0-29)'
-            required: false
-            default: ''
+      target_index:
+        description: 'Target Host Index (0-29)'
+        required: false
+        default: ''
 
 concurrency:
   group: keepalive-amd64
@@ -78,97 +78,97 @@ jobs:
       fail-fast: false
       max-parallel: 3
       matrix: 
-        host_id: ${{ fromJson(needs.define-matrix.outputs.ids) }}
+        host_id: '${{ fromJson(needs.define-matrix.outputs.ids) }}'
 
     steps:
-    - name: Checkout
-      uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-    - name: Set Random Delay
-      run: |
-        # AMD64 实例较少，减少延迟以提高效率
-        DELAY=$((RANDOM % 120 + 30))
-        echo "Sleeping for ${DELAY} seconds..."
-        sleep $DELAY
+      - name: Set Random Delay
+        run: |
+          # AMD64 实例较少，减少延迟以提高效率
+          DELAY=$((RANDOM % 120 + 30))
+          echo "Sleeping for ${DELAY} seconds..."
+          sleep $DELAY
 
-    - name: Install Dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y sshpass jq unzip
-        
-        # Install cloudflared from local bin
-        sudo cp bin/cloudflared /usr/local/bin/cloudflared
-        sudo chmod +x /usr/local/bin/cloudflared
-        cloudflared --version
-        
-    - name: Setup SSH
-      run: |
-        mkdir -p ~/.ssh
-        echo "StrictHostKeyChecking no" > ~/.ssh/config
-        
-    - name: Run Keepalive (Tunnel Mode)
-      env:
-        HOSTS_CONFIG: ${{ secrets.HOSTS_CONFIG }}
-        SSH_KEY: ${{ secrets.SSH_KEY }}
-        AMD_SSH_USERNAME: ${{ secrets.AMD_SSH_USERNAME }}
-        SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }}
-        CURRENT_INDEX: ${{ matrix.host_id }}
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        REPO_OWNER: ${{ github.repository_owner }}
-        REPO_NAME: ${{ github.event.repository.name }}
-      run: |
-        # 解析配置
-        HOST_INFO=$(echo $HOSTS_CONFIG | jq -r --argjson idx $CURRENT_INDEX '.[$idx]')
-        
-        if [ "$HOST_INFO" == "null" ]; then
-          echo "Host config not found for index $CURRENT_INDEX"
-          exit 0
-        fi
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y sshpass jq unzip
+          
+          # Install cloudflared from local bin
+          sudo cp bin/cloudflared /usr/local/bin/cloudflared
+          sudo chmod +x /usr/local/bin/cloudflared
+          cloudflared --version
+          
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "StrictHostKeyChecking no" > ~/.ssh/config
+          
+      - name: Run Keepalive (Tunnel Mode)
+        env:
+          HOSTS_CONFIG: ${{ secrets.HOSTS_CONFIG }}
+          SSH_KEY: ${{ secrets.SSH_KEY }}
+          AMD_SSH_USERNAME: ${{ secrets.AMD_SSH_USERNAME }}
+          SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }}
+          CURRENT_INDEX: ${{ matrix.host_id }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO_OWNER: ${{ github.repository_owner }}
+          REPO_NAME: ${{ github.event.repository.name }}
+        run: |
+          # 解析配置
+          HOST_INFO=$(echo $HOSTS_CONFIG | jq -r --argjson idx $CURRENT_INDEX '.[$idx]')
+          
+          if [ "$HOST_INFO" == "null" ]; then
+            echo "Host config not found for index $CURRENT_INDEX"
+            exit 0
+          fi
 
-        NAME=$(echo $HOST_INFO | jq -r '.name')
-        SSH_HOST=$(echo $HOST_INFO | jq -r '.ssh_host')
-        # CPU_TYPE 已在 define-matrix 阶段过滤，此处无需再次检查
-        
-        echo "=========================================="
-        echo "🚀 Starting Keepalive for $NAME ($SSH_HOST) [AMD64]"
-        echo "=========================================="
-        
-        # 建立 Tunnel
-        echo "Creating Cloudflare Tunnel..."
-        cloudflared access tcp --hostname $SSH_HOST --url tcp://localhost:2222 > /dev/null 2>&1 &
-        TUNNEL_PID=$!
-        sleep 5
-        
-        # 准备脚本
-        cat > setup_env.sh << 'EOF'
-        export LC_ALL=C.UTF-8
-        export LANG=C.UTF-8
-        # 检查 python3 和 unzip
-        if ! command -v python3 &> /dev/null || ! command -v unzip &> /dev/null; then
-            echo "Installing Dependencies..."
-            if command -v apt-get &> /dev/null; then
-                sudo apt-get update && sudo apt-get install -y python3 python3-pip unzip
-            elif command -v yum &> /dev/null; then
-                sudo yum install -y python3 unzip
-            fi
-        fi
-        EOF
-        
-        # 发送并执行脚本
-        # 注意：AMD64 实例强制使用 AMD_SSH_USERNAME (通常为 root)
-        USER_NAME="${AMD_SSH_USERNAME:-root}"
-        echo "Using SSH User: $USER_NAME"
-        
-        echo "Copying scripts to $NAME..."
-        sshpass -p "$SSH_PASSWORD" scp -P 2222 -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no scripts/remote_keepalive.py $USER_NAME@localhost:~/
-        
-        echo "Executing remote keepalive..."
-        # 传递 GITHUB_TOKEN 给远程脚本
-        sshpass -p "$SSH_PASSWORD" ssh -P 2222 -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no $USER_NAME@localhost \
-            "export GITHUB_TOKEN='$GITHUB_TOKEN' && \
-             export REPO_OWNER='$REPO_OWNER' && \
-             export REPO_NAME='$REPO_NAME' && \
-             python3 ~/remote_keepalive.py --hostname '$NAME'"
-        
-        # 清理 Tunnel
-        kill $TUNNEL_PID
+          NAME=$(echo $HOST_INFO | jq -r '.name')
+          SSH_HOST=$(echo $HOST_INFO | jq -r '.ssh_host')
+          # CPU_TYPE 已在 define-matrix 阶段过滤，此处无需再次检查
+          
+          echo "=========================================="
+          echo "🚀 Starting Keepalive for $NAME ($SSH_HOST) [AMD64]"
+          echo "=========================================="
+          
+          # 建立 Tunnel
+          echo "Creating Cloudflare Tunnel..."
+          cloudflared access tcp --hostname $SSH_HOST --url tcp://localhost:2222 > /dev/null 2>&1 &
+          TUNNEL_PID=$!
+          sleep 5
+          
+          # 准备脚本
+          cat > setup_env.sh << 'EOF'
+          export LC_ALL=C.UTF-8
+          export LANG=C.UTF-8
+          # 检查 python3 和 unzip
+          if ! command -v python3 &> /dev/null || ! command -v unzip &> /dev/null; then
+              echo "Installing Dependencies..."
+              if command -v apt-get &> /dev/null; then
+                  sudo apt-get update && sudo apt-get install -y python3 python3-pip unzip
+              elif command -v yum &> /dev/null; then
+                  sudo yum install -y python3 unzip
+              fi
+          fi
+          EOF
+          
+          # 发送并执行脚本
+          # 注意：AMD64 实例强制使用 AMD_SSH_USERNAME (通常为 root)
+          USER_NAME="${AMD_SSH_USERNAME:-root}"
+          echo "Using SSH User: $USER_NAME"
+          
+          echo "Copying scripts to $NAME..."
+          sshpass -p "$SSH_PASSWORD" scp -P 2222 -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no scripts/remote_keepalive.py $USER_NAME@localhost:~/
+          
+          echo "Executing remote keepalive..."
+          # 传递 GITHUB_TOKEN 给远程脚本
+          sshpass -p "$SSH_PASSWORD" ssh -P 2222 -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no $USER_NAME@localhost \
+              "export GITHUB_TOKEN='$GITHUB_TOKEN' && \
+               export REPO_OWNER='$REPO_OWNER' && \
+               export REPO_NAME='$REPO_NAME' && \
+               python3 ~/remote_keepalive.py --hostname '$NAME'"
+          
+          # 清理 Tunnel
+          kill $TUNNEL_PID
