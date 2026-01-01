@@ -54,9 +54,10 @@ jobs:
               print(f"Found AMD64 indices: {indices}")
               
               # Output JSON string for matrix
-              # Prefix IDs to avoid matching secrets (GitHub Actions false positive on "0", "1" etc)
-              prefixed_indices = [f"host_{i}" for i in indices]
-              ids_json = json.dumps(prefixed_indices)
+              # Base64 encode IDs to avoid matching secrets (GitHub Actions false positive on "0", "1" etc)
+              import base64
+              b64_indices = [base64.b64encode(str(i).encode()).decode() for i in indices]
+              ids_json = json.dumps(b64_indices)
               with open(os.environ["GITHUB_OUTPUT"], "a") as f:
                   f.write(f"ids={ids_json}\n")
                   
@@ -120,8 +121,9 @@ jobs:
           REPO_NAME: ${{ github.event.repository.name }}
         run: |
           # 解析配置
-          # remove prefix 'host_'
-          REAL_INDEX=${CURRENT_INDEX#host_}
+          # Decode Base64 index
+          REAL_INDEX=$(echo "$CURRENT_INDEX" | base64 -d)
+          echo "Decoded Target Index: $REAL_INDEX"
           HOST_INFO=$(echo $HOSTS_CONFIG | jq -r --argjson idx $REAL_INDEX '.[$idx]')
           
           if [ "$HOST_INFO" == "null" ]; then
