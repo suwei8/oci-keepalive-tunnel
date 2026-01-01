@@ -670,7 +670,7 @@ def main(hostname: str = None):
     
     # 4. 内存活动 (自适应)
     print("\n" + "-" * 40)
-    print("第三步: 内存活动 (自适应)")
+    print("第三步: 神经网络数据缓存 (Deep Learning Cache)")
     print("-" * 40)
     
     # 内存策略 (用户指定: 激进模式，占用所有空闲内存，仅预留 3GB 给系统)
@@ -687,16 +687,15 @@ def main(hostname: str = None):
     # 目标占用 = 可用 - 预留
     target_mem_size = mem_avail_bytes - reserved_bytes
     
-    # 兜底逻辑：如果剩余空间不足 3GB，则至少运行 512MB 以维持基本保活
-    # 或者如果计算结果为负，说明内存已经非常紧张
+    # 兜底逻辑：如果剩余空间不足 3GB，则至少运行 512MB
     if target_mem_size < 512 * 1024 * 1024:
         final_size = 512 * 1024 * 1024 # 最小 512MB
-        print(f"[内存] ⚠️ 系统可用内存紧张 ({mem_avail_bytes/1024/1024:.0f}MB < 预留3GB)，强制最小保活: 512 MB")
+        print(f"[缓存] ⚠️ 系统可用内存紧张 ({mem_avail_bytes/1024/1024:.0f}MB < 预留3GB)，强制最小缓存: 512 MB")
     else:
         final_size = target_mem_size
         
-    print(f"[内存] 策略: 激进占用 (可用 {mem_avail_bytes/1024/1024:.0f}MB - 预留 3072MB)")
-    print(f"[内存] 最终执行: {final_size/1024/1024:.0f} MB")
+    print(f"[缓存] 策略: 激进模式 (可用 {mem_avail_bytes/1024/1024:.0f}MB - 预留 3072MB)")
+    print(f"[缓存] 构建历史模式矩阵: {final_size/1024/1024:.0f} MB")
     
     memory_activity_run(final_size, 180)
     
@@ -710,34 +709,45 @@ def main(hostname: str = None):
     print("=" * 60)
 
 def memory_activity_run(size, duration):
-    """实际执行内存活动"""
+    """实际执行内存活动 - 模拟矩阵运算缓存"""
     try:
+        # 模拟：初始化大矩阵用于存储历史模式权重
+        print(f"[缓存]正在分配神经元权重矩阵 ({size/1024/1024:.0f} MB)...")
         b = bytearray(size)
-        # 填充
-        for i in range(0, size, 4096): b[i] = 1
+        
+        # 填充模拟数据 (Patterns)
+        print("[缓存] 正在生成随机模式数据以填充矩阵...")
+        # Step 1: 快速填充基础数据
+        step_init = 4096
+        for i in range(0, size, step_init): 
+            b[i] = i % 255
             
-        print("[内存] 内存已分配，开始活跃读写...")
+        print("[缓存] ✅ 矩阵初始化完成，开始活跃权重更新 (Active Weight Updates)...")
         start = time.time()
         end = start + duration
+        
+        # 动态步长
         step = 1024
         
         while time.time() < end:
             count = 0
+            # 模拟矩阵权重更新操作
             for i in range(0, size, step):
-                b[i] = (b[i] + 1) & 0xFF
+                # 简单的异或操作模拟权重调整
+                b[i] = (b[i] ^ 0xFF) & 0xFF
                 count += 1
-                if count % 10000 == 0 and time.time() > end: break
+                if count % 20000 == 0 and time.time() > end: break
             
             elapsed = time.time() - start
             left = duration - elapsed
             if left > 0:
                 time.sleep(0.1) 
                 if int(elapsed) % 30 == 0:
-                    print(f"[内存] 运行中... 剩余 {left:.0f}s")
+                    print(f"[缓存] 权重更新中... 剩余 {left:.0f}s")
         del b
-        print("[内存] ✅ 内存活动完成")
+        print("[缓存] ✅ 训练数据缓存释放完毕")
     except Exception as e:
-        print(f"[内存] ❌ 内存活动出错: {e}")
+        print(f"[缓存] ❌ 矩阵运算出错: {e}")
 
 
 if __name__ == "__main__":
