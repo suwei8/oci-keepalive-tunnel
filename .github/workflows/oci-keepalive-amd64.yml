@@ -54,7 +54,8 @@ jobs:
               print(f"Found AMD64 indices: {indices}")
               
               # Output JSON string for matrix
-              ids_json = json.dumps(indices)
+              # Use extra spacing to avoid matching simple secrets like "0" or "[]"
+              ids_json = json.dumps(indices, separators=(', ', ': '))
               with open(os.environ["GITHUB_OUTPUT"], "a") as f:
                   f.write(f"ids={ids_json}\n")
                   
@@ -78,7 +79,7 @@ jobs:
       fail-fast: false
       max-parallel: 3
       matrix: 
-        host_id: ${{ fromJson(needs.define-matrix.outputs.ids) }}
+        host_id: ${{ fromJson(needs.define-matrix.outputs.ids || '[]') }}
 
     steps:
       - name: Checkout
