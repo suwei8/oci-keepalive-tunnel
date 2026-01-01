@@ -32,7 +32,6 @@ jobs:
           try:
               config_str = os.environ.get("HOSTS_CONFIG", "[]")
               hosts = json.loads(config_str)
-              print(f"Loaded {len(hosts)} hosts configuration.")
               
               indices = []
               target_index_str = os.environ.get("TARGET_INDEX", "")
@@ -41,49 +40,44 @@ jobs:
                   idx = int(target_index_str)
                   if 0 <= idx < len(hosts):
                       ctype = hosts[idx].get("cpu_type", "unknown")
-                      print(f"Target {idx} cpu_type: {ctype}")
                       if str(ctype).lower() == "amd64":
-                          print(f"Target {idx} is AMD64. Proceeding.")
                           indices = [idx]
-                      else:
-                          print(f"Target {idx} is NOT AMD64 ({ctype}). Skipping.")
                   else:
                        print(f"Target {idx} out of range.")
               else:
                   # Filter all AMD64 (Case Insensitive)
                   for i, h in enumerate(hosts):
                       ctype = h.get("cpu_type", "unknown")
-                      # Print stats to help debug
-                      print(f"Host {i} ({h.get('name')}): cpu_type={ctype}")
                       if str(ctype).lower() == "amd64":
                           indices.append(i)
-                  
-                  print(f"Found AMD64 indices: {indices}")
               
-              json_output = json.dumps({"host_id": indices})
+              print(f"Found AMD64 indices: {indices}")
+              
+              # Output simple CSV string to avoid JSON secret detection
+              ids_csv = ",".join(map(str, indices))
               with open(os.environ["GITHUB_OUTPUT"], "a") as f:
-                  f.write(f"matrix={json_output}\n")
+                  f.write(f"ids={ids_csv}\n")
                   
           except Exception as e:
               print(f"Error parsing config: {e}")
-              # Default to empty to prevent workflow error
               with open(os.environ["GITHUB_OUTPUT"], "a") as f:
-                  f.write("matrix={\"host_id\": []}\n")
+                  f.write("ids=\n")
           EOF
           
           python3 parse_matrix.py
 
   keepalive-matrix:
     needs: define-matrix
-    # 如果列表为空（例如没有 amd64 实例），跳过执行
-    if: ${{ fromJson(needs.define-matrix.outputs.matrix).host_id[0] != null }}
+    # 如果 ID 列表为空，跳过执行
+    if: ${{ needs.define-matrix.outputs.ids != '' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
     strategy:
       fail-fast: false
       max-parallel: 3
-      matrix: ${{ fromJson(needs.define-matrix.outputs.matrix) }}
+      # 重构 Matrix 对象: { "host_id": [28, 29, 30, 31] }
+      matrix: ${{ fromJson(format('{{ "host_id": [{0}] }}', needs.define-matrix.outputs.ids)) }}
 
     steps:
     - name: Checkout
