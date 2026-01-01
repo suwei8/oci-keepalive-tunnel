@@ -26,29 +26,38 @@ jobs:
           HOSTS_CONFIG: ${{ secrets.HOSTS_CONFIG }}
           TARGET_INDEX: ${{ inputs.target_index }}
         run: |
-          # 动态生成 AMD64 主机列表，避免无效的任务启动
-          JSON="{\"host_id\": []}" # 默认值
+          python3 -c '
+          import os, json
           
-          if [ -n "$TARGET_INDEX" ]; then
-             # 如果指定了目标，检查是否为 amd64
-             IS_AMD=$(echo "$HOSTS_CONFIG" | jq --argjson idx "$TARGET_INDEX" '.[$idx].cpu_type == "amd64"')
-             if [ "$IS_AMD" == "true" ]; then
-                 echo "Target $TARGET_INDEX is AMD64. Proceeding."
-                 JSON="{\"host_id\": [$TARGET_INDEX]}"
-             else
-                 echo "Target $TARGET_INDEX is NOT AMD64. Skipping."
-             fi
-          else
-             # 筛选所有 amd64 主机
-             INDICES=$(echo "$HOSTS_CONFIG" | jq -c '[to_entries[] | select(.value.cpu_type == "amd64") | .key]')
-             if [ -n "$INDICES" ]; then
-                echo "Found AMD64 indices: $INDICES"
-                JSON="{\"host_id\": $INDICES}"
-             else
-                echo "No AMD64 indices found."
-             fi
-          fi
-          echo "matrix=$JSON" >> $GITHUB_OUTPUT
+          try:
+              config_str = os.environ.get("HOSTS_CONFIG", "[]")
+              target_index_str = os.environ.get("TARGET_INDEX", "")
+              hosts = json.loads(config_str)
+              
+              indices = []
+              
+              if target_index_str:
+                  idx = int(target_index_str)
+                  if 0 <= idx < len(hosts) and hosts[idx].get("cpu_type") == "amd64":
+                      print(f"Target {idx} is AMD64. Proceeding.")
+                      indices = [idx]
+                  else:
+                      print(f"Target {idx} is not AMD64 or out of range. Skipping.")
+              else:
+                  # Filter all AMD64
+                  indices = [i for i, h in enumerate(hosts) if h.get("cpu_type") == "amd64"]
+                  print(f"Found AMD64 indices: {indices}")
+              
+              json_output = json.dumps({"host_id": indices})
+              with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+                  f.write(f"matrix={json_output}\n")
+                  
+          except Exception as e:
+              print(f"Error parsing config: {e}")
+              # Default to empty to prevent workflow error
+              with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+                  f.write("matrix={\"host_id\": []}\n")
+          '
 
   keepalive-matrix:
     needs: define-matrix
