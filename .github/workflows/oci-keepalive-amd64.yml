@@ -53,31 +53,32 @@ jobs:
               
               print(f"Found AMD64 indices: {indices}")
               
-              # Output simple CSV string to avoid JSON secret detection
-              ids_csv = ",".join(map(str, indices))
+              # Output JSON string for matrix
+              ids_json = json.dumps(indices)
               with open(os.environ["GITHUB_OUTPUT"], "a") as f:
-                  f.write(f"ids={ids_csv}\n")
+                  f.write(f"ids={ids_json}\n")
                   
           except Exception as e:
               print(f"Error parsing config: {e}")
               with open(os.environ["GITHUB_OUTPUT"], "a") as f:
-                  f.write("ids=\n")
+                  f.write("ids=[]\n")
           EOF
           
           python3 parse_matrix.py
 
   keepalive-matrix:
     needs: define-matrix
-    # 如果 ID 列表为空，跳过执行
-    if: ${{ needs.define-matrix.outputs.ids != '' }}
+    # 如果 ID 列表为空 (即 "[]")，fromJson 解析后长度为 0，但这很难判断
+    # 简单判断字符串是否为 "[]"
+    if: ${{ needs.define-matrix.outputs.ids != '[]' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
     strategy:
       fail-fast: false
       max-parallel: 3
-      # 重构 Matrix 对象: { "host_id": [28, 29, 30, 31] }
-      matrix: ${{ fromJson(format('{{ "host_id": [{0}] }}', needs.define-matrix.outputs.ids)) }}
+      matrix: 
+        host_id: ${{ fromJson(needs.define-matrix.outputs.ids) }}
 
     steps:
     - name: Checkout
