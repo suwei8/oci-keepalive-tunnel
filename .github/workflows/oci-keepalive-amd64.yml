@@ -48,7 +48,7 @@ jobs:
       env:
         HOSTS_CONFIG: ${{ secrets.HOSTS_CONFIG }}
         SSH_KEY: ${{ secrets.SSH_KEY }}
-        SSH_USERNAME: ${{ secrets.AMD_SSH_USERNAME }}
+        AMD_SSH_USERNAME: ${{ secrets.AMD_SSH_USERNAME }}
         SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }}
         TARGET_INDEX: ${{ inputs.target_index }}
         CURRENT_INDEX: ${{ matrix.host_id }}
@@ -106,13 +106,8 @@ jobs:
         EOF
         
         # 发送并执行脚本
-        # 注意：AMD64 实例通常默认使用 root 或此时已配置为 root
-        USER_NAME="${SSH_USERNAME}"
-        if [ -z "$USER_NAME" ]; then
-            USER_NAME="root"
-            echo "⚠️ SSH_USERNAME secret is empty, defaulting to 'root'"
-        fi
-        
+        # 注意：AMD64 实例强制使用 AMD_SSH_USERNAME (通常为 root)
+        USER_NAME="${AMD_SSH_USERNAME:-root}"
         echo "Using SSH User: $USER_NAME"
         
         echo "Copying scripts to $NAME..."
