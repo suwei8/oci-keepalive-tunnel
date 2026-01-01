@@ -39,7 +39,13 @@ jobs:
     - name: Install Dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y sshpass cloudflared jq unzip
+        sudo apt-get install -y sshpass jq unzip
+        
+        # Install cloudflared manually
+        sudo mkdir -p /usr/local/bin
+        wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -O /usr/local/bin/cloudflared
+        sudo chmod +x /usr/local/bin/cloudflared
+        cloudflared --version
         
     - name: Setup SSH
       run: |
