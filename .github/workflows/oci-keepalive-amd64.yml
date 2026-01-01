@@ -18,7 +18,7 @@ jobs:
   define-matrix:
     runs-on: ubuntu-latest
     outputs:
-      matrix: ${{ steps.set-matrix.outputs.matrix }}
+      ids: ${{ steps.set-matrix.outputs.ids }}
     steps:
       - name: Filter AMD64 Hosts
         id: set-matrix
