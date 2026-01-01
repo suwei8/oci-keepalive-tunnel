@@ -1,0 +1,122 @@
+name: Security Remediation (ARM64) - Kill Malware
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_host:
+        description: '指定主机 (留空=全部)'
+        required: false
+        default: ''
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  remediation-loop:
+    name: "Security Cleanup"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install cloudflared
+        run: |
+          mkdir -p bin
+          wget -q -O bin/cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
+          chmod +x bin/cloudflared
+          sudo cp bin/cloudflared /usr/local/bin/cloudflared
+          cloudflared --version
+
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          cat >> ~/.ssh/config << 'EOF'
+          Host *
+            StrictHostKeyChecking no
+            UserKnownHostsFile /dev/null
+            LogLevel ERROR
+          EOF
+          sudo apt-get update -qq && sudo apt-get install -y -qq sshpass jq
+
+      - name: Run Remediation Loop
+        env:
+          HOSTS_CONFIG: ${{ secrets.HOSTS_CONFIG }}
+          SSH_USERNAME: ${{ secrets.SSH_USERNAME }}
+          SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }}
+          TARGET_HOST_INPUT: ${{ github.event.inputs.target_host }}
+        run: |
+          SSH_OPTS="-o ConnectTimeout=20 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ServerAliveInterval=30"
+          
+          HOST_COUNT=$(echo "$HOSTS_CONFIG" | jq '. | length')
+          echo "Total hosts: $HOST_COUNT"
+          
+          for INDEX in $(seq 0 $((HOST_COUNT - 1))); do
+            host_item=$(echo "$HOSTS_CONFIG" | jq -c ".[$INDEX]")
+            HOST_NAME=$(echo "$host_item" | jq -r '.name')
+            SSH_HOST=$(echo "$host_item" | jq -r '.ssh_host')
+            CPU_TYPE=$(echo "$host_item" | jq -r '.cpu_type')
+            
+            if [ "$HOST_NAME" = "null" ] || [ -z "$HOST_NAME" ]; then continue; fi
+            if [ "$CPU_TYPE" != "arm64" ]; then continue; fi
+            
+            if [ -n "$TARGET_HOST_INPUT" ] && [ "$HOST_NAME" != "$TARGET_HOST_INPUT" ]; then
+                continue
+            fi
+            
+            echo ""
+            echo "==========================================="
+            echo "Processing: $HOST_NAME ($SSH_HOST)"
+            echo "==========================================="
+            
+            # Tunnel
+            pkill -f "cloudflared.*2222" 2>/dev/null || true
+            sleep 2
+            cloudflared access ssh --hostname "$SSH_HOST" --url "ssh://127.0.0.1:2222" &
+            TUNNEL_PID=$!
+            sleep 5
+            
+            if ! kill -0 $TUNNEL_PID 2>/dev/null; then
+              echo "❌ Tunnel 连接失败"
+              continue
+            fi
+            
+            # Remediation Command
+            echo ">>> 执行清理命令..."
+            sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -p 2222 "${SSH_USERNAME}@127.0.0.1" '
+              # 1. Kill potentially malicious processes
+              echo "  -> Scanning for malicious processes..."
+              MALWARE_PIDS=$(pgrep -f "uhavenobotsxd|\.monitor")
+              if [ -n "$MALWARE_PIDS" ]; then
+                  echo "     ⚠️ Found PIDs: $MALWARE_PIDS. Killing..."
+                  kill -9 $MALWARE_PIDS 2>/dev/null || true
+              else
+                  echo "     ✅ No active malware processes found."
+              fi
+              
+              # 2. Remove files
+              echo "  -> searching and removing malware files..."
+              # Known paths based on alert
+              rm -f /arm7.uhavenobotsxd 2>/dev/null || true
+              rm -f /root/arm7.uhavenobotsxd 2>/dev/null || true
+              rm -f .monitor 2>/dev/null || true
+              
+              # 3. Check Crontab
+              echo "  -> Checking Crontab..."
+              if crontab -l 2>/dev/null | grep -q "uhavenobotsxd"; then
+                  echo "     ⚠️ Found malware in crontab. Cleaning..."
+                  crontab -l | grep -v "uhavenobotsxd" | crontab -
+              else
+                  echo "     ✅ Crontab legitimate."
+              fi
+              
+              # 4. Check Systemd (Basic check)
+              # List units, check for suspicious ones. 
+              # (Manual review better, but we can look for "monitor.service" if created)
+              
+              echo "  -> Current Top Processes:"
+              ps -eo pid,ppid,cmd,%mem,%cpu --sort=-%cpu | head -6
+            '
+            
+            kill $TUNNEL_PID 2>/dev/null || true
+          done
