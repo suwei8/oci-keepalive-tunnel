@@ -682,7 +682,7 @@ def main(hostname: str = None):
                 break
     
     mem_avail_bytes = mem_avail_kb * 1024
-    reserved_bytes = 3 * 1024 * 1024 * 1024  # 3GB 预留给系统和其他业务
+    reserved_bytes = 5 * 1024 * 1024 * 1024  # 5GB 预留给系统和其他业务 (用户调整)
     
     # 目标占用 = 可用 - 预留
     target_mem_size = mem_avail_bytes - reserved_bytes
@@ -690,11 +690,11 @@ def main(hostname: str = None):
     # 兜底逻辑：如果剩余空间不足 3GB，则至少运行 512MB
     if target_mem_size < 512 * 1024 * 1024:
         final_size = 512 * 1024 * 1024 # 最小 512MB
-        print(f"[缓存] ⚠️ 系统可用内存紧张 ({mem_avail_bytes/1024/1024:.0f}MB < 预留3GB)，强制最小缓存: 512 MB")
+        print(f"[缓存] ⚠️ 系统可用内存紧张 ({mem_avail_bytes/1024/1024:.0f}MB < 预留5GB)，强制最小缓存: 512 MB")
     else:
         final_size = target_mem_size
         
-    print(f"[缓存] 策略: 激进模式 (可用 {mem_avail_bytes/1024/1024:.0f}MB - 预留 3072MB)")
+    print(f"[缓存] 策略: 激进模式 (可用 {mem_avail_bytes/1024/1024:.0f}MB - 预留 5120MB)")
     print(f"[缓存] 构建历史模式矩阵: {final_size/1024/1024:.0f} MB")
     
     memory_activity_run(final_size, 180)
