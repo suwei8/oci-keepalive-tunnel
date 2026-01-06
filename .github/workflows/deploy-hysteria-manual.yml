@@ -1,0 +1,379 @@
+name: Deploy Hysteria v2 (Manual)
+
+on:
+  workflow_dispatch:
+    inputs:
+      ssh_ip:
+        description: 'SSH 连接 IP 地址'
+        required: true
+      ssh_user:
+        description: 'SSH 用户名'
+        required: true
+        default: 'root'
+      ssh_password:
+        description: 'SSH 密码'
+        required: true
+      hy2_domain:
+        description: 'Hysteria2 域名'
+        required: true
+      force_redeploy:
+        description: '强制重新部署 (即使服务运行正常)'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+      update_binary:
+        description: '更新 Hysteria 程序 (下载最新版)'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: "Deploy Hysteria (Manual)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install cloudflared
+        run: |
+          sudo cp bin/cloudflared /usr/local/bin/cloudflared
+          cloudflared --version
+
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          cat >> ~/.ssh/config << 'EOF'
+          Host *
+            StrictHostKeyChecking no
+            UserKnownHostsFile /dev/null
+            LogLevel ERROR
+          EOF
+          sudo apt-get update -qq && sudo apt-get install -y -qq sshpass jq
+
+      - name: Deploy to Host
+        id: deploy
+        env:
+          SSH_HOST: ${{ github.event.inputs.ssh_ip }}
+          SSH_USERNAME: ${{ github.event.inputs.ssh_user }}
+          SSH_PASSWORD: ${{ github.event.inputs.ssh_password }}
+          PROXY_DOMAIN: ${{ github.event.inputs.hy2_domain }}
+          
+          CF_API_EMAIL: ${{ secrets.CF_API_EMAIL }}
+          CF_API_KEY: ${{ secrets.CF_API_KEY }}
+          CF_ZONE_ID: ${{ secrets.CF_ZONE_ID }}
+          HYSTERIA_PASSWORD: ${{ secrets.HYSTERIA_PASSWORD }}
+          
+          FORCE_REDEPLOY: ${{ github.event.inputs.force_redeploy }}
+          UPDATE_BINARY: ${{ github.event.inputs.update_binary }}
+        run: |
+          # 🎭 Mask SSH Password in logs
+          echo "::add-mask::$SSH_PASSWORD"
+          
+          SSH_OPTS="-o ConnectTimeout=30 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ServerAliveInterval=30"
+          
+          NODES_INFO=""
+          
+          echo "==========================================="
+          echo "Processing Host: $SSH_HOST ($PROXY_DOMAIN)"
+          echo "==========================================="
+          
+          # Since we are not using a tunnel for the initial connection in manual mode? 
+          # WAIT, the original workflow uses cloudflared tunnel to connect to localhost:2222 mapped to remote.
+          # BUT the user said "ssh connection ip address". This usually implies DIRECT connection.
+          # HOWEVER, the original workflow does: `cloudflared access ssh --hostname "$SSH_HOST" --url "ssh://127.0.0.1:2222" &`
+          # IF the user provides an IP, they likely want a DIRECT SSH connection, NOT via Cloudflare Tunnel.
+          # Cloudflare Tunnel usually requires a hostname configured in Cloudflare Zero Trust.
+          # If the user gives an IP, we cannot use `cloudflared access ssh` with it unless it's a hostname routed through CF.
+          #
+          # LET'S ASSUME DIRECT SSH CONNECTION since "IP Address" was requested.
+          # If so, I need to remove cloudflared tunnel setup for instructions.
+          
+          # DIRECT SSH LOGIC:
+          TARGET_HOST_IP="$SSH_HOST"
+          TARGET_SSH_PORT="22" # Default to 22 for direct IP
+          
+          # ----------------------------------------------------------------
+          # IMPORTANT: Modifying logic for Direct IP connection based on inputs
+          # ----------------------------------------------------------------
+          
+          # Function to run remote command
+          run_remote() {
+            sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -p $TARGET_SSH_PORT "${SSH_USERNAME}@${TARGET_HOST_IP}" "$1"
+          }
+          
+          # Check connection
+          if ! run_remote "echo 'Connection OK'" >/dev/null 2>&1; then
+             echo "❌ SSH 连接失败: ${SSH_USERNAME}@${TARGET_HOST_IP}"
+             exit 1
+          fi
+          
+          # Get Public IP (might be same as input, but good to verify from inside)
+          PUBLIC_IP=$(run_remote 'curl -4 -s ip.sb' 2>&1) || true
+          if [ -z "$PUBLIC_IP" ]; then
+            # If curl fails, fallback to input IP
+            PUBLIC_IP=$SSH_HOST
+          fi
+          
+          echo "::add-mask::$PUBLIC_IP"
+          MASKED_IP=$(echo "$PUBLIC_IP" | awk -F. '{print $1"."$2".*.*"}')
+          echo "✅ 公网 IP: $MASKED_IP"
+          
+          # DNS 配置
+          echo ">>> 检查 DNS..."
+          DNS_RECORD=$(curl -s "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records?name=${PROXY_DOMAIN}" -H "X-Auth-Email: ${CF_API_EMAIL}" -H "X-Auth-Key: ${CF_API_KEY}" | jq -r '.result[0].content // empty')
+          
+          if [ -z "$DNS_RECORD" ]; then
+            echo ">>> 创建 DNS A 记录: ${PROXY_DOMAIN} -> ${MASKED_IP}"
+            DNS_RESULT=$(curl -s -X POST "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records" -H "X-Auth-Email: ${CF_API_EMAIL}" -H "X-Auth-Key: ${CF_API_KEY}" -H "Content-Type: application/json" -d "{\"type\":\"A\",\"name\":\"${PROXY_DOMAIN}\",\"content\":\"${PUBLIC_IP}\",\"proxied\":false,\"ttl\":1}")
+            if echo "$DNS_RESULT" | jq -e '.success' > /dev/null; then
+              echo "✅ DNS 记录已创建"
+            else
+              echo "❌ DNS 创建失败"
+              echo "$DNS_RESULT" | jq '.errors'
+            fi
+          elif [ "$DNS_RECORD" != "$PUBLIC_IP" ]; then
+            echo ">>> 更新 DNS A 记录: ${PROXY_DOMAIN} -> ${MASKED_IP}"
+            RECORD_ID=$(curl -s "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records?name=${PROXY_DOMAIN}" -H "X-Auth-Email: ${CF_API_EMAIL}" -H "X-Auth-Key: ${CF_API_KEY}" | jq -r '.result[0].id')
+            curl -s -X PUT "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records/${RECORD_ID}" -H "X-Auth-Email: ${CF_API_EMAIL}" -H "X-Auth-Key: ${CF_API_KEY}" -H "Content-Type: application/json" -d "{\"type\":\"A\",\"name\":\"${PROXY_DOMAIN}\",\"content\":\"${PUBLIC_IP}\",\"proxied\":false,\"ttl\":1}" > /dev/null
+            echo "✅ DNS 记录已更新"
+          else
+            echo "✅ DNS 记录已存在且正确"
+          fi
+          
+          # 检查 iptables 端口
+          echo ">>> 检查 iptables 端口..."
+          run_remote "
+            export DEBIAN_FRONTEND=noninteractive
+            sudo apt-get update -qq 2>/dev/null || true
+            echo 'iptables-persistent iptables-persistent/autosave_v4 boolean true' | sudo debconf-set-selections 2>/dev/null || true
+            echo 'iptables-persistent iptables-persistent/autosave_v6 boolean true' | sudo debconf-set-selections 2>/dev/null || true
+            sudo apt-get install -y -qq iptables iptables-persistent netfilter-persistent wget 2>/dev/null || true
+
+            if ! sudo iptables -C INPUT -p tcp --dport 80 -j ACCEPT 2>/dev/null; then
+              sudo iptables -I INPUT -p tcp --dport 80 -j ACCEPT
+            fi
+            if ! sudo iptables -C INPUT -p tcp --dport 2443 -j ACCEPT 2>/dev/null; then
+              sudo iptables -I INPUT -p tcp --dport 2443 -j ACCEPT
+            fi
+            if ! sudo iptables -C INPUT -p udp --dport 2443 -j ACCEPT 2>/dev/null; then
+              sudo iptables -I INPUT -p udp --dport 2443 -j ACCEPT
+            fi
+            sudo netfilter-persistent save 2>/dev/null || true
+          " 2>&1 || true
+          echo "✅ iptables 端口检查完成"
+          
+          # 检查服务状态
+          SERVICE_ACTIVE=$(run_remote 'sudo systemctl is-active hysteria-server 2>/dev/null || echo "inactive"' 2>&1 | tail -1) || true
+          
+          # 检查配置匹配情况
+          if [ "$SERVICE_ACTIVE" = "active" ]; then
+              CONFIG_DOMAIN=$(run_remote "grep -oP 'cert: /etc/letsencrypt/live/\K[^/]+' /etc/hysteria/config.yaml 2>/dev/null || echo 'UNKNOWN'" 2>&1 | tail -1) || true
+              if [ "$CONFIG_DOMAIN" != "$PROXY_DOMAIN" ]; then
+                  echo "⚠️ 配置域名不匹配: 当前='$CONFIG_DOMAIN', 应为='$PROXY_DOMAIN'"
+                  CONFIG_VALID="no"
+              else
+                  CONFIG_VALID="yes"
+              fi
+          else
+              CONFIG_VALID="no"
+          fi
+
+          SHOULD_DEPLOY="false"
+          if [ "$CONFIG_VALID" = "no" ] || [ "$FORCE_REDEPLOY" = "true" ]; then
+              SHOULD_DEPLOY="true"
+          elif [ "$UPDATE_BINARY" = "true" ]; then
+              SHOULD_DEPLOY="true"
+          fi
+          
+          if [ "$SHOULD_DEPLOY" = "false" ]; then
+            echo "⏭️ 服务运行中且配置正确，跳过部署"
+            echo "hysteria2://${HYSTERIA_PASSWORD}@${PROXY_DOMAIN}:2443?insecure=0&sni=${PROXY_DOMAIN}#${PROXY_DOMAIN}" > /tmp/nodes_info.txt
+            exit 0
+          fi
+          
+          echo ">>> 开始部署..."
+          
+          # --- SSL 证书逻辑 ---
+          echo ">>> 检查 SSL..."
+          CERT_EXISTS=$(run_remote "sudo test -f /etc/letsencrypt/live/${PROXY_DOMAIN}/fullchain.pem && echo CERT_FOUND || echo CERT_MISSING" 2>/dev/null | tail -1) || true
+          
+          if [ "$CERT_EXISTS" != "CERT_FOUND" ]; then
+            echo ">>> 申请 SSL 证书..."
+            run_remote "
+              which certbot > /dev/null 2>&1 || (sudo apt-get update -qq && sudo apt-get install -y -qq certbot)
+              sudo systemctl stop nginx 2>/dev/null || true
+              sudo fuser -k 80/tcp 2>/dev/null || true
+              sleep 2
+              sudo certbot certonly --standalone -d ${PROXY_DOMAIN} --non-interactive --agree-tos --email ${CF_API_EMAIL} --http-01-port 80 || true
+              sudo systemctl start nginx 2>/dev/null || true
+            " 2>&1
+            
+             if run_remote "sudo test -f /etc/letsencrypt/live/${PROXY_DOMAIN}/fullchain.pem" 2>/dev/null; then
+                 echo "✅ SSL 证书获取成功"
+             else
+                 echo "❌ SSL 证书获取失败"
+                 exit 1
+             fi
+          else
+              echo "✅ SSL 证书已存在"
+          fi
+                      
+          # --- 安装/更新 Hysteria ---
+          echo ">>> 检查/安装 Hysteria..."
+          run_remote "
+              NEED_INSTALL=false
+              if [ ! -f /usr/local/bin/hysteria-server ]; then
+                  NEED_INSTALL=true
+              elif [ \"$UPDATE_BINARY\" = \"true\" ]; then
+                  NEED_INSTALL=true
+              fi
+              
+              if [ \"\$NEED_INSTALL\" = \"true\" ]; then
+                  echo '>>> 下载 Hysteria (AMD64)...'
+                  cd /tmp
+                  wget -q -O hysteria-server https://github.com/apernet/hysteria/releases/latest/download/hysteria-linux-amd64
+                  chmod +x hysteria-server
+                  sudo mv hysteria-server /usr/local/bin/hysteria-server
+                  echo '✅ Hysteria 二进制文件已安装'
+              else
+                   echo '✅ Hysteria 已安装'
+              fi
+          " 2>&1 || true
+
+           # --- 配置文件 ---
+          echo ">>> 更新配置文件..."
+          run_remote "sudo mkdir -p /etc/hysteria" 2>&1 || true
+          
+          run_remote "cat > /tmp/config.yaml << EOFHY
+          listen: :2443
+          tls:
+            cert: /etc/letsencrypt/live/${PROXY_DOMAIN}/fullchain.pem
+            key: /etc/letsencrypt/live/${PROXY_DOMAIN}/privkey.pem
+          auth:
+            type: password
+            password: ${HYSTERIA_PASSWORD}
+          disableUDP: false
+          bandwidth:
+            up: 1000 mbps
+            down: 1000 mbps
+          masquerade:
+            type: proxy
+            proxy:
+              url: https://www.kernel.org/
+              rewriteHost: true
+          resolver:
+            type: udp
+            udp:
+              addr: 1.1.1.1:53
+              timeout: 4s
+          EOFHY
+          sudo mv /tmp/config.yaml /etc/hysteria/config.yaml
+          " 2>&1 || true
+          
+          # --- Systemd 服务 ---
+          echo ">>> 更新 Systemd 服务..."
+          SYSTEMD_UNIT="[Unit]
+          Description=Hysteria Server
+          After=network.target
+
+          [Service]
+          Type=simple
+          ExecStart=/usr/local/bin/hysteria-server server -c /etc/hysteria/config.yaml
+          WorkingDirectory=/etc/hysteria
+          User=root
+          Group=root
+          Restart=always
+          RestartSec=3
+          LimitNOFILE=65535
+
+          [Install]
+          WantedBy=multi-user.target"
+          
+          UNIT_B64=$(echo "$SYSTEMD_UNIT" | base64 -w 0)
+          run_remote "echo '$UNIT_B64' | base64 -d | sudo tee /etc/systemd/system/hysteria-server.service > /dev/null && sudo systemctl daemon-reload" 2>&1 || true
+
+          # --- 启动/重启服务 ---
+          echo ">>> 启动服务..."
+          SERVICE_OK="no"
+          for RETRY in 1 2 3; do
+              run_remote "
+                  sudo systemctl enable hysteria-server
+                  sudo systemctl restart hysteria-server
+                  sleep 3
+                  if sudo systemctl is-active hysteria-server > /dev/null 2>&1; then
+                      echo 'SERVICE_HEALTHY'
+                  else
+                      sudo journalctl -u hysteria-server --no-pager | tail -5
+                  fi
+              " 2>&1 | tee /tmp/service_output.txt
+              
+              if grep -q "SERVICE_HEALTHY" /tmp/service_output.txt; then
+                  SERVICE_OK="yes"
+                  break
+              fi
+              echo ">>> 启动失败，等待重试..."
+              sleep 3
+          done
+          
+          if [ "$SERVICE_OK" = "yes" ]; then
+            echo "✅ 部署成功: $PROXY_DOMAIN"
+            echo "hysteria2://${HYSTERIA_PASSWORD}@${PROXY_DOMAIN}:2443?insecure=0&sni=${PROXY_DOMAIN}#${PROXY_DOMAIN}" > /tmp/nodes_info.txt
+          else
+            echo "❌ 部署失败"
+            exit 1
+          fi
+          
+      - name: Send Telegram notification
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          if [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$TELEGRAM_CHAT_ID" ]; then
+            echo "⚠️ Telegram 未配置"
+            exit 0
+          fi
+          
+          if [ ! -s /tmp/nodes_info.txt ]; then
+            echo "⚠️ 无节点信息"
+            exit 0
+          fi
+          
+          TIMESTAMP=$(date -u +'%Y-%m-%d %H:%M UTC')
+          NODES_FULL=$(cat /tmp/nodes_info.txt)
+          
+          FINAL_MSG=$(printf "🚀 *Hysteria v2 部署完成 (Manual)*\n\n📅 %s\n\n📋 *节点信息:*\n\`\`\`\n%s\n\`\`\`" "$TIMESTAMP" "$NODES_FULL")
+          
+          IFS=',' read -ra CHAT_IDS <<< "$TELEGRAM_CHAT_ID"
+          for chat_id in "${CHAT_IDS[@]}"; do
+            chat_id=$(echo "$chat_id" | xargs)
+            if [ -n "$chat_id" ]; then
+              curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+                -d chat_id="${chat_id}" \
+                -d parse_mode="Markdown" \
+                --data-urlencode "text=${FINAL_MSG}" > /dev/null
+            fi
+          done
+          
+      - name: Summary
+        run: |
+          echo "## 🚀 Hysteria v2 部署结果 (Manual)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ -s /tmp/nodes_info.txt ]; then
+            echo "### ✅ 节点信息" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            cat /tmp/nodes_info.txt >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          fi
