@@ -2,7 +2,8 @@ name: OCI Keepalive via Tunnel (AMD64)
 
 on:
   schedule:
-    - cron: "*/45 * * * *"
+  schedule:
+    - cron: "0 */6 * * *"
   workflow_dispatch:
     inputs:
       target_index:
@@ -29,10 +30,13 @@ jobs:
       - name: Check Host Configuration
         id: host
         env:
-          HOSTS_CONFIG: ${{ secrets.HOSTS_CONFIG }}
+          HOSTS_CONFIG_URL: ${{ secrets.HOSTS_CONFIG_URL }}
           TARGET_INDEX: ${{ inputs.target_index }}
           CURRENT_INDEX: ${{ matrix.host_id }}
         run: |
+          # 获取配置
+          HOSTS_CONFIG=$(curl -s $HOSTS_CONFIG_URL) || true
+          
           # 提取主机信息
           HOST_INFO=$(echo $HOSTS_CONFIG | jq -r --argjson idx $CURRENT_INDEX '.[$idx]')
 
@@ -93,7 +97,7 @@ jobs:
           
       - name: Run Keepalive (Tunnel Mode)
         env:
-          HOSTS_CONFIG: ${{ secrets.HOSTS_CONFIG }}
+          HOSTS_CONFIG_URL: ${{ secrets.HOSTS_CONFIG_URL }}
           SSH_KEY: ${{ secrets.SSH_KEY }}
           AMD_SSH_USERNAME: ${{ secrets.AMD_SSH_USERNAME }}
           SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }}
@@ -103,6 +107,9 @@ jobs:
           REPO_NAME: ${{ github.event.repository.name }}
         if: steps.host.outputs.skip != 'true'
         run: |
+          # 获取配置
+          HOSTS_CONFIG=$(curl -s $HOSTS_CONFIG_URL) || true
+          
           # 解析配置
           # No decoding needed for static matrix
           HOST_INFO=$(echo $HOSTS_CONFIG | jq -r --argjson idx $CURRENT_INDEX '.[$idx]')

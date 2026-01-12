@@ -59,7 +59,7 @@ jobs:
       - name: Deploy to all hosts
         id: deploy
         env:
-          HOSTS_CONFIG: ${{ secrets.HOSTS_CONFIG }}
+          HOSTS_CONFIG_URL: ${{ secrets.HOSTS_CONFIG_URL }}
           SSH_USERNAME: ${{ secrets.SSH_USERNAME }}
           SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }}
           CF_API_EMAIL: ${{ secrets.CF_API_EMAIL }}
@@ -72,6 +72,9 @@ jobs:
         run: |
           SSH_OPTS="-o ConnectTimeout=30 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ServerAliveInterval=30"
           
+          # 获取配置
+          HOSTS_CONFIG=$(curl -s $HOSTS_CONFIG_URL) || true
+
           NODES_INFO=""
           DEPLOYED_COUNT=0
           SKIPPED_COUNT=0

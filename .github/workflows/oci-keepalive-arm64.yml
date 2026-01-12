@@ -2,8 +2,9 @@ name: OCI Keepalive via Tunnel (ARM64)
 
 on:
   schedule:
-    # 每 3 小时执行一次
-    - cron: "0 */3 * * *"
+  schedule:
+    # 每 6 小时执行一次
+    - cron: "0 */6 * * *"
   workflow_dispatch:
     inputs:
       target_index:
@@ -34,10 +35,13 @@ jobs:
       - name: Get host info from secrets
         id: host
         env:
-          HOSTS_CONFIG: ${{ secrets.HOSTS_CONFIG }}
+          HOSTS_CONFIG_URL: ${{ secrets.HOSTS_CONFIG_URL }}
           HOST_INDEX: ${{ matrix.index }}
           TARGET_INDEX: ${{ github.event.inputs.target_index }}
         run: |
+          # 获取配置
+          HOSTS_CONFIG=$(curl -s $HOSTS_CONFIG_URL) || true
+          
           # 如果指定了目标索引且不匹配，跳过
           if [ -n "$TARGET_INDEX" ] && [ "$TARGET_INDEX" != "$HOST_INDEX" ]; then
             echo "skip=true" >> $GITHUB_OUTPUT
