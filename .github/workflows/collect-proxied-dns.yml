@@ -135,6 +135,9 @@ jobs:
           else
             TIMESTAMP=$(date -u +'%Y-%m-%d %H:%M UTC')
             git commit -m "Update proxied DNS records - $TIMESTAMP"
+            
+            # Pull latest changes to avoid conflicts
+            git pull --rebase
             git push
             echo "✅ 已推送到 CFST-HostsServer 仓库"
           fi
