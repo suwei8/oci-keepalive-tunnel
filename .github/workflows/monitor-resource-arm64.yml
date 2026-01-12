@@ -56,7 +56,9 @@ jobs:
           SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }}
           TARGET_HOST_INPUT: ${{ github.event.inputs.target_host }}
         run: |
-          SSH_OPTS="-o ConnectTimeout=30 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ServerAliveInterval=30"
+          # Add PreferredAuthentications=password and PubkeyAuthentication=no to avoid "Permission denied (publickey)" errors
+          # Add -vvv for debugging if needed (can be removed later if too verbose, but useful now)
+          SSH_OPTS="-o ConnectTimeout=30 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ServerAliveInterval=30 -o PreferredAuthentications=password -o PubkeyAuthentication=no"
           
           # CSV 文件
           mkdir -p csv
@@ -88,92 +90,118 @@ jobs:
             # 建立 Tunnel
             pkill -f "cloudflared.*2222" 2>/dev/null || true
             sleep 2
-            cloudflared access ssh --hostname "$SSH_HOST" --url "ssh://127.0.0.1:2222" &
+            # Use 'access tcp' instead of 'access ssh' to match AMD64 workflow, which is more reliable for port forwarding
+            cloudflared access tcp --hostname "$SSH_HOST" --url "tcp://127.0.0.1:2222" > /dev/null 2>&1 &
             TUNNEL_PID=$!
             sleep 5
             
-            if ! kill -0 $TUNNEL_PID 2>/dev/null; then
-              echo "❌ Tunnel 连接失败"
-              continue
-            fi
-            
-            # 执行监控脚本 (5分钟)
-            # 逻辑：每 10 秒采集一次，共 30 次。计算平均值。
-            # 使用 /proc/stat 计算 CPU, free 计算内存
-            echo ">>> 开始监控 (5分钟)..."
-            
-            STATS=$(sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" '
-              CPU_SUM=0
-              MEM_SUM=0
-              COUNT=0
-              MAX_LOOPS=30
+            # Wrapper to prevent "set -e" from stopping the loop on error
+            (
+              set +e
               
-              # 获取初始 CPU 状态
-              read cpu user nice system idle iowait irq softirq steal guest < /proc/stat
-              PREV_TOTAL=$((user+nice+system+idle+iowait+irq+softirq+steal))
-              PREV_IDLE=$((idle+iowait))
+              if ! kill -0 $TUNNEL_PID 2>/dev/null; then
+                echo "❌ Tunnel 连接失败"
+                return 1
+              fi
               
-              for i in $(seq 1 $MAX_LOOPS); do
-                sleep 10
-                
-                # ------ CPU 计算 ------
-                read cpu user nice system idle iowait irq softirq steal guest < /proc/stat
-                TOTAL=$((user+nice+system+idle+iowait+irq+softirq+steal))
-                IDLE=$((idle+iowait))
-                
-                DIFF_TOTAL=$((TOTAL-PREV_TOTAL))
-                DIFF_IDLE=$((IDLE-PREV_IDLE))
-                
-                if [ "$DIFF_TOTAL" -eq 0 ]; then DIFF_TOTAL=1; fi
-                CPU_USAGE=$((100 * (DIFF_TOTAL - DIFF_IDLE) / DIFF_TOTAL))
-                
-                PREV_TOTAL=$TOTAL
-                PREV_IDLE=$IDLE
-                
-                # ------ 内存 计算 (KB) ------
-                # MemTotal: 24000000 kB
-                # MemAvailable: ...
-                # Use MemAvailable for accurate "free" logic, or just (Total-Available)/Total
-                
-                MEM_INFO=$(grep -E "MemTotal|MemAvailable" /proc/meminfo)
-                TOTAL_KB=$(echo "$MEM_INFO" | grep "MemTotal" | awk "{print \$2}")
-                AVAIL_KB=$(echo "$MEM_INFO" | grep "MemAvailable" | awk "{print \$2}")
-                
-                if [ -z "$AVAIL_KB" ]; then
-                   # Fallback for old kernels without MemAvailable
-                   FREE_KB=$(grep "MemFree" /proc/meminfo | awk "{print \$2}")
-                   BUFF_KB=$(grep "Buffers" /proc/meminfo | awk "{print \$2}")
-                   CACH_KB=$(grep "^Cached" /proc/meminfo | awk "{print \$2}")
-                   AVAIL_KB=$((FREE_KB + BUFF_KB + CACH_KB))
-                fi
-                
-                MEM_USED_KB=$((TOTAL_KB - AVAIL_KB))
-                MEM_USAGE=$((100 * MEM_USED_KB / TOTAL_KB))
-                
-                CPU_SUM=$((CPU_SUM + CPU_USAGE))
-                MEM_SUM=$((MEM_SUM + MEM_USAGE))
-                COUNT=$((COUNT + 1))
+              # Check if port is listening (sometimes cloudflared runs but requires auth)
+              # Wait up to 10s for port
+              for i in {1..10}; do
+                if nc -z 127.0.0.1 2222; then break; fi
+                sleep 1
               done
               
-              AVG_CPU=$((CPU_SUM / COUNT))
-              AVG_MEM=$((MEM_SUM / COUNT))
+              if ! nc -z 127.0.0.1 2222; then
+                 echo "❌ Tunnel 端口未就绪 (可能是 Auth Challenge)"
+                 return 1
+              fi
               
-              echo "RESULT::$AVG_CPU::$AVG_MEM"
-            ' 2>&1)
+              # 执行监控脚本 (5分钟)
+              # 逻辑：每 10 秒采集一次，共 30 次。计算平均值。
+              # 使用 /proc/stat 计算 CPU, free 计算内存
+              echo ">>> 开始监控 (5分钟)..."
+              
+              STATS=$(sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" '
+                CPU_SUM=0
+                MEM_SUM=0
+                COUNT=0
+                MAX_LOOPS=30
+                
+                # 获取初始 CPU 状态
+                read cpu user nice system idle iowait irq softirq steal guest < /proc/stat
+                PREV_TOTAL=$((user+nice+system+idle+iowait+irq+softirq+steal))
+                PREV_IDLE=$((idle+iowait))
+                
+                for i in $(seq 1 $MAX_LOOPS); do
+                  sleep 10
+                  
+                  # ------ CPU 计算 ------
+                  read cpu user nice system idle iowait irq softirq steal guest < /proc/stat
+                  TOTAL=$((user+nice+system+idle+iowait+irq+softirq+steal))
+                  IDLE=$((idle+iowait))
+                  
+                  DIFF_TOTAL=$((TOTAL-PREV_TOTAL))
+                  DIFF_IDLE=$((IDLE-PREV_IDLE))
+                  
+                  if [ "$DIFF_TOTAL" -eq 0 ]; then DIFF_TOTAL=1; fi
+                  CPU_USAGE=$((100 * (DIFF_TOTAL - DIFF_IDLE) / DIFF_TOTAL))
+                  
+                  PREV_TOTAL=$TOTAL
+                  PREV_IDLE=$IDLE
+                  
+                  # ------ 内存 计算 (KB) ------
+                  # MemTotal: 24000000 kB
+                  # MemAvailable: ...
+                  # Use MemAvailable for accurate "free" logic, or just (Total-Available)/Total
+                  
+                  MEM_INFO=$(grep -E "MemTotal|MemAvailable" /proc/meminfo)
+                  TOTAL_KB=$(echo "$MEM_INFO" | grep "MemTotal" | awk "{print \$2}")
+                  AVAIL_KB=$(echo "$MEM_INFO" | grep "MemAvailable" | awk "{print \$2}")
+                  
+                  if [ -z "$AVAIL_KB" ]; then
+                     # Fallback for old kernels without MemAvailable
+                     FREE_KB=$(grep "MemFree" /proc/meminfo | awk "{print \$2}")
+                     BUFF_KB=$(grep "Buffers" /proc/meminfo | awk "{print \$2}")
+                     CACH_KB=$(grep "^Cached" /proc/meminfo | awk "{print \$2}")
+                     AVAIL_KB=$((FREE_KB + BUFF_KB + CACH_KB))
+                  fi
+                  
+                  MEM_USED_KB=$((TOTAL_KB - AVAIL_KB))
+                  MEM_USAGE=$((100 * MEM_USED_KB / TOTAL_KB))
+                  
+                  CPU_SUM=$((CPU_SUM + CPU_USAGE))
+                  MEM_SUM=$((MEM_SUM + MEM_USAGE))
+                  COUNT=$((COUNT + 1))
+                done
+                
+                AVG_CPU=$((CPU_SUM / COUNT))
+                AVG_MEM=$((MEM_SUM / COUNT))
+                
+                echo "RESULT::$AVG_CPU::$AVG_MEM"
+              ' 2>&1)
+              
+              RET_CODE=$?
+              if [ $RET_CODE -ne 0 ]; then
+                 echo "❌ SSH 连接或脚本执行失败 (Exit Code: $RET_CODE)"
+                 echo "Debug Output: $STATS"
+                 return 1
+              fi
+              
+              RESULT_LINE=$(echo "$STATS" | grep "RESULT::")
+              if [ -n "$RESULT_LINE" ]; then
+                 AVG_CPU=$(echo "$RESULT_LINE" | awk -F:: '{print $2}')
+                 AVG_MEM=$(echo "$RESULT_LINE" | awk -F:: '{print $3}')
+                 echo "✅ 监控完成: CPU=${AVG_CPU}%, MEM=${AVG_MEM}%"
+                 
+                 TIMESTAMP=$(date -u +"%Y-%m-%d %H:%M:%S")
+                 echo "${HOST_NAME},${AVG_CPU},${AVG_MEM},${TIMESTAMP}" >> "$CSV_FILE"
+              else
+                 echo "❌ 监控失败或无数据返回"
+                 echo "$STATS"
+              fi
+            ) || echo "⚠️  Skipping host due to error"
             
-            RESULT_LINE=$(echo "$STATS" | grep "RESULT::")
-            if [ -n "$RESULT_LINE" ]; then
-               AVG_CPU=$(echo "$RESULT_LINE" | awk -F:: '{print $2}')
-               AVG_MEM=$(echo "$RESULT_LINE" | awk -F:: '{print $3}')
-               echo "✅ 监控完成: CPU=${AVG_CPU}%, MEM=${AVG_MEM}%"
-               
-               TIMESTAMP=$(date -u +"%Y-%m-%d %H:%M:%S")
-               echo "${HOST_NAME},${AVG_CPU},${AVG_MEM},${TIMESTAMP}" >> "$CSV_FILE"
-            else
-               echo "❌ 监控失败或无数据返回"
-               echo "$STATS"
-            fi
-            
+            pkill -f "cloudflared.*2222" 2>/dev/null || true
             kill $TUNNEL_PID 2>/dev/null || true
           done
           

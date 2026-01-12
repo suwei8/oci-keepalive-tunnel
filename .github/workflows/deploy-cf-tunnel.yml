@@ -182,9 +182,9 @@ jobs:
           echo "::add-mask::$TUNNEL_ID"
           echo "::add-mask::$CF_ZONE_ID"
           
-          # SSH hostname 格式: {tunnel_tag_name}-ssh.ynshanghui.com
+          # SSH hostname 格式: {tunnel_tag_name}-ssh.hhwpxh.com
           SSH_HOSTNAME="${TUNNEL_TAG_NAME}-ssh"
-          FULL_HOSTNAME="${SSH_HOSTNAME}.ynshanghui.com"
+          FULL_HOSTNAME="${SSH_HOSTNAME}.hhwpxh.com"
           echo "::add-mask::$FULL_HOSTNAME"
           echo ">>> 配置 SSH Hostname: $FULL_HOSTNAME"
           
@@ -272,7 +272,7 @@ jobs:
         run: |
           echo "::add-mask::$SSH_PASSWORD"
           
-          FULL_HOSTNAME="${TUNNEL_TAG_NAME}-ssh.ynshanghui.com"
+          FULL_HOSTNAME="${TUNNEL_TAG_NAME}-ssh.hhwpxh.com"
           echo "::add-mask::$FULL_HOSTNAME"
           SSH_OPTS="-o ConnectTimeout=30 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR"
           
@@ -351,7 +351,7 @@ jobs:
           echo "::add-mask::$SSH_IP"
           
           TIMESTAMP=$(date -u +'%Y-%m-%d %H:%M UTC')
-          FULL_HOSTNAME="${TUNNEL_TAG_NAME}-ssh.ynshanghui.com"
+          FULL_HOSTNAME="${TUNNEL_TAG_NAME}-ssh.hhwpxh.com"
           echo "::add-mask::$FULL_HOSTNAME"
           
           if [ "$CONNECTION_OK" = "true" ]; then
@@ -389,7 +389,7 @@ jobs:
           TUNNEL_TAG_NAME: ${{ github.event.inputs.tunnel_tag_name }}
           CONNECTION_OK: ${{ steps.test.outputs.connection_ok }}
         run: |
-          FULL_HOSTNAME="${TUNNEL_TAG_NAME}-ssh.ynshanghui.com"
+          FULL_HOSTNAME="${TUNNEL_TAG_NAME}-ssh.hhwpxh.com"
           
           echo "## 🚀 Cloudflare Tunnel SSH 部署结果" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY

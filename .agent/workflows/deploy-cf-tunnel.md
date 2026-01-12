@@ -16,7 +16,7 @@ description: 通过SSH部署Cloudflare Tunnel并创建SSH隧道
 默认值：
 - **ssh_username**: `root`
 
-## Actions Secrets（使用 ynshanghui.com 域名账号的 secrets）
+## Actions Secrets（使用 hhwpxh.com 域名账号的 secrets）
 
 - `CF_ACCOUNT_ID`: Cloudflare 账户 ID
 - `CF_API_EMAIL`: Cloudflare API 邮箱
@@ -156,9 +156,9 @@ sshpass -p "${ssh_password}" ssh $SSH_OPTS ${ssh_username}@${ssh_ip} "
 ### 4.1 生成 Hostname
 
 ```bash
-# SSH hostname 格式: {tunnel_tag_name}-ssh.ynshanghui.com
+# SSH hostname 格式: {tunnel_tag_name}-ssh.hhwpxh.com
 SSH_HOSTNAME="${tunnel_tag_name}-ssh"
-FULL_HOSTNAME="${SSH_HOSTNAME}.ynshanghui.com"
+FULL_HOSTNAME="${SSH_HOSTNAME}.hhwpxh.com"
 echo "SSH Hostname: $FULL_HOSTNAME"
 ```
 

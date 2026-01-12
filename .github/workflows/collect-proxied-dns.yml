@@ -17,7 +17,7 @@ jobs:
 
       - name: Collect proxied DNS records
         env:
-          # ynshanghui.com
+          # hhwpxh.com
           CF_API_EMAIL: ${{ secrets.CF_API_EMAIL }}
           CF_API_KEY: ${{ secrets.CF_API_KEY }}
           CF_ZONE_ID: ${{ secrets.CF_ZONE_ID }}
@@ -41,7 +41,7 @@ jobs:
           > /tmp/proxied_domains.txt
           
           echo ">>> 收集第一个账户的 proxied DNS 记录..."
-          # ynshanghui.com
+          # hhwpxh.com
           RECORDS=$(curl -s "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records?per_page=500" \
             -H "X-Auth-Email: ${CF_API_EMAIL}" \
             -H "X-Auth-Key: ${CF_API_KEY}")

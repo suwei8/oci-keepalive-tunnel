@@ -68,7 +68,7 @@ jobs:
         run: |
           SSH_OPTS="-o ConnectTimeout=30 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ServerAliveInterval=30"
           
-          # 部分隐藏域名函数 (如: cf-bd3.ynshanghui.com -> cf-bd3.**hui.com)
+          # 部分隐藏域名函数 (如: cf-bd3.hhwpxh.com -> cf-bd3.**pxh.com)
           mask_domain() {
             local domain="$1"
             # 获取子域名前缀和主域名后7个字符
@@ -244,7 +244,7 @@ jobs:
               VLESS_CF_KEY="$CF_API_KEY"
               VLESS_CF_ACCOUNT="$CF_ACCOUNT_ID"
               VLESS_ZONE_ID="$CF_ZONE_ID"
-              VLESS_ACCOUNT_NAME="ynshanghui.com"
+              VLESS_ACCOUNT_NAME="hhwpxh.com"
             fi
             
             # 根据 ssh_host 域名选择账户 (用于查找 Tunnel)
@@ -257,7 +257,7 @@ jobs:
               TUNNEL_CF_EMAIL="$CF_API_EMAIL"
               TUNNEL_CF_KEY="$CF_API_KEY"
               TUNNEL_CF_ACCOUNT="$CF_ACCOUNT_ID"
-              TUNNEL_ACCOUNT_NAME="ynshanghui.com"
+              TUNNEL_ACCOUNT_NAME="hhwpxh.com"
             fi
             
             echo ">>> VLESS DNS 账户: $VLESS_ACCOUNT_NAME"

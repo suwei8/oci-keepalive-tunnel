@@ -117,7 +117,7 @@ jobs:
             API_EMAIL="$CF_API_EMAIL_555606"
             API_KEY="$CF_API_KEY_555606"
             ZONE_ID="$CF_ZONE_ID_555606"
-          elif [[ "$DOMAIN" == "ynshanghui.com" ]]; then
+          elif [[ "$DOMAIN" == "hhwpxh.com" ]]; then
             API_EMAIL="$CF_API_EMAIL"
             API_KEY="$CF_API_KEY"
             ZONE_ID="$CF_ZONE_ID"
