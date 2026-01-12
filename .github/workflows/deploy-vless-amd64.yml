@@ -539,7 +539,7 @@ jobs:
              NODE_COUNT="$NODE_COUNT (Tunnel) + $DIRECT_COUNT (Direct)"
           fi
           
-          FINAL_MSG=$(printf "🔐 *VLESS WS 部署完成 (AMD64)*\n\n📅 %s\n\n✅ *共 %s 个节点*\n\n%s\n\n🔗 *订阅地址:*\nCF-Tunnel\nhttps://v.555606.xyz/cf\_vless\_amd64.txt\n\n直连+免流\nhttps://v.555606.xyz/ml\_vless\_amd64.txt\n\n💡 复制上方链接导入客户端即可使用" "$TIMESTAMP" "$NODE_COUNT" "$NODES_FULL")
+          FINAL_MSG=$(printf "🔐 *VLESS WS 部署完成 (AMD64)*\n\n📅 %s\n\n✅ *共 %s 个节点*\n\n%s\n\n💡 复制上方链接导入客户端即可使用" "$TIMESTAMP" "$NODE_COUNT" "$NODES_FULL")
           
           # 支持多个 chat_id (逗号分隔)
           IFS=',' read -ra CHAT_IDS <<< "$TELEGRAM_CHAT_ID"
