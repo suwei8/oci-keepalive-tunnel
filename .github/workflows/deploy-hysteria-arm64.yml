@@ -469,6 +469,7 @@ jobs:
       - name: Push to blog repository
         env:
           BLOG_GITHUB_TOKEN: ${{ secrets.BLOG_GITHUB_TOKEN }}
+          BLOG_REPO_URL: ${{ secrets.BLOG_REPO_URL }}
         run: |
           if [ -z "$BLOG_GITHUB_TOKEN" ]; then
             echo "⚠️ BLOG_GITHUB_TOKEN 未配置"
@@ -480,7 +481,16 @@ jobs:
             exit 0
           fi
           
-          git clone "https://${BLOG_GITHUB_TOKEN}@github.com/suwei8/blog.git" /tmp/blog
+          # Inject token into URL if not already present
+          if [[ "$BLOG_REPO_URL" != *"@"* ]]; then
+             # Remove https:// prefix to inject token
+             CLEAN_URL="${BLOG_REPO_URL#https://}"
+             FINAL_URL="https://${BLOG_GITHUB_TOKEN}@${CLEAN_URL}"
+          else
+             FINAL_URL="$BLOG_REPO_URL"
+          fi
+          
+          git clone "$FINAL_URL" /tmp/blog
           cd /tmp/blog
           
           TIMESTAMP=$(date -u +'%Y-%m-%d %H:%M UTC')
