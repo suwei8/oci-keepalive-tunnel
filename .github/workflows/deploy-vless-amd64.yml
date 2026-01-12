@@ -175,7 +175,7 @@ jobs:
                   -H "X-Auth-Email: ${TUNNEL_CF_EMAIL}" \
                   -H "X-Auth-Key: ${TUNNEL_CF_KEY}")
                 
-                if echo "$CONFIG" | grep -q "$SSH_HOST"; then
+                if echo "$CONFIG" | grep -iq "$SSH_HOST"; then
                   TUNNEL_ID="$tid"
                   break
                 fi
@@ -275,7 +275,7 @@ jobs:
                 -H "X-Auth-Email: ${TUNNEL_CF_EMAIL}" \
                 -H "X-Auth-Key: ${TUNNEL_CF_KEY}")
               
-              if echo "$CONFIG" | grep -q "$SSH_HOST"; then
+              if echo "$CONFIG" | grep -iq "$SSH_HOST"; then
                 TUNNEL_ID="$tid"
                 TUNNEL_NAME=$(echo "$TUNNELS" | jq -r ".result[] | select(.id==\"$tid\") | .name")
                 echo ">>> 找到 Tunnel: $TUNNEL_NAME ($TUNNEL_ID)"
