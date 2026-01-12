@@ -72,6 +72,10 @@ jobs:
         run: |
           SSH_OPTS="-o ConnectTimeout=30 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ServerAliveInterval=30"
           
+          # Hysteria Port Configuration
+          HYSTERIA_PORT=2443
+          echo "::add-mask::$HYSTERIA_PORT"
+          
           # 获取配置
           HOSTS_CONFIG=$(curl -s $HOSTS_CONFIG_URL) || true
 
@@ -183,14 +187,14 @@ jobs:
                 sudo iptables -I INPUT -p tcp --dport 80 -j ACCEPT
                 echo '已开放 80 端口'
               fi
-              # 检查并开放 2443 端口 (Hysteria)
-              if ! sudo iptables -C INPUT -p tcp --dport 2443 -j ACCEPT 2>/dev/null; then
-                sudo iptables -I INPUT -p tcp --dport 2443 -j ACCEPT
-                echo '已开放 2443 TCP 端口'
+              # 检查并开放 Hysteria 端口
+              if ! sudo iptables -C INPUT -p tcp --dport $HYSTERIA_PORT -j ACCEPT 2>/dev/null; then
+                sudo iptables -I INPUT -p tcp --dport $HYSTERIA_PORT -j ACCEPT
+                echo '已开放 Hysteria TCP 端口'
               fi
-              if ! sudo iptables -C INPUT -p udp --dport 2443 -j ACCEPT 2>/dev/null; then
-                sudo iptables -I INPUT -p udp --dport 2443 -j ACCEPT
-                echo '已开放 2443 UDP 端口'
+              if ! sudo iptables -C INPUT -p udp --dport $HYSTERIA_PORT -j ACCEPT 2>/dev/null; then
+                sudo iptables -I INPUT -p udp --dport $HYSTERIA_PORT -j ACCEPT
+                echo '已开放 Hysteria UDP 端口'
               fi
               # 保存规则
               sudo netfilter-persistent save 2>/dev/null || true
@@ -220,7 +224,7 @@ jobs:
               if [ "$CONFIG_VALID" = "no" ]; then
                 echo ">>> 修复配置文件..."
                 sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" "cat > /home/sw/docker_root/hy/hy.yaml << EOFHY
-          listen: :2443
+          listen: :${HYSTERIA_PORT}
           tls:
             cert: /etc/letsencrypt/live/${PROXY_DOMAIN}/fullchain.pem
             key: /etc/letsencrypt/live/${PROXY_DOMAIN}/privkey.pem
@@ -247,7 +251,7 @@ jobs:
               sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" 'cd /home/sw/docker_root/hy && sudo docker compose pull && sudo docker compose up -d' 2>&1 || true
               UPDATED_COUNT=$((UPDATED_COUNT + 1))
               echo "✅ 镜像已更新"
-              NODES_INFO="${NODES_INFO}hysteria2://${HYSTERIA_PASSWORD}@${PROXY_DOMAIN}:2443?insecure=0&sni=${PROXY_DOMAIN}#${HOST_NAME}\n"
+              NODES_INFO="${NODES_INFO}hysteria2://${HYSTERIA_PASSWORD}@${PROXY_DOMAIN}:${HYSTERIA_PORT}?insecure=0&sni=${PROXY_DOMAIN}#${HOST_NAME}\n"
               kill $TUNNEL_PID 2>/dev/null || true
               continue
             fi
@@ -332,7 +336,7 @@ jobs:
             
             # hy.yaml
             sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" "cat > /home/sw/docker_root/hy/hy.yaml << EOFHY
-          listen: :2443
+          listen: :${HYSTERIA_PORT}
           tls:
             cert: /etc/letsencrypt/live/${PROXY_DOMAIN}/fullchain.pem
             key: /etc/letsencrypt/live/${PROXY_DOMAIN}/privkey.pem
@@ -410,7 +414,7 @@ jobs:
             if [ "$CONTAINER_OK" = "yes" ]; then
               echo "✅ 部署成功: $HOST_NAME"
               DEPLOYED_COUNT=$((DEPLOYED_COUNT + 1))
-              NODES_INFO="${NODES_INFO}hysteria2://${HYSTERIA_PASSWORD}@${PROXY_DOMAIN}:2443?insecure=0&sni=${PROXY_DOMAIN}#${HOST_NAME}\n"
+              NODES_INFO="${NODES_INFO}hysteria2://${HYSTERIA_PASSWORD}@${PROXY_DOMAIN}:${HYSTERIA_PORT}?insecure=0&sni=${PROXY_DOMAIN}#${HOST_NAME}\n"
             else
               echo "❌ 部署失败: $HOST_NAME (3次重试后仍失败)"
             fi
