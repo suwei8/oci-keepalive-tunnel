@@ -97,7 +97,6 @@ jobs:
       - name: Run Keepalive (Tunnel Mode)
         env:
           HOSTS_CONFIG_URL: ${{ secrets.HOSTS_CONFIG_URL }}
-          SSH_KEY: ${{ secrets.SSH_KEY }}
           AMD_SSH_USERNAME: ${{ secrets.AMD_SSH_USERNAME }}
           SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }}
           CURRENT_INDEX: ${{ matrix.host_id }}
