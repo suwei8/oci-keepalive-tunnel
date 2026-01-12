@@ -51,7 +51,7 @@ jobs:
       - name: Run Monitor Loop
         id: monitor
         env:
-          HOSTS_CONFIG: ${{ secrets.HOSTS_CONFIG }}
+          HOSTS_CONFIG_URL: ${{ secrets.HOSTS_CONFIG_URL }}
           SSH_USERNAME: ${{ secrets.SSH_USERNAME }}
           SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }}
           TARGET_HOST_INPUT: ${{ github.event.inputs.target_host }}
@@ -66,6 +66,7 @@ jobs:
           echo "name,cpu_usage_pct,mem_usage_pct,timestamp" > "$CSV_FILE"
           
           # 获取主机列表
+          HOSTS_CONFIG=$(curl -s $HOSTS_CONFIG_URL) || true
           HOST_COUNT=$(echo "$HOSTS_CONFIG" | jq '. | length')
           echo "Total hosts: $HOST_COUNT"
           

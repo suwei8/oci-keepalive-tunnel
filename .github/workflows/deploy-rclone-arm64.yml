@@ -51,7 +51,7 @@ jobs:
       - name: Deploy to all hosts
         id: deploy
         env:
-          HOSTS_CONFIG: ${{ secrets.HOSTS_CONFIG }}
+          HOSTS_CONFIG_URL: ${{ secrets.HOSTS_CONFIG_URL }}
           SSH_USERNAME: ${{ secrets.SSH_USERNAME }}
           SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }}
           RCLONE_CONF: ${{ secrets.RCLONE_CONF }}
@@ -67,6 +67,7 @@ jobs:
           fi
           
           # 获取主机列表
+          HOSTS_CONFIG=$(curl -s $HOSTS_CONFIG_URL) || true
           HOST_COUNT=$(echo "$HOSTS_CONFIG" | jq '. | length')
           MAX_INDEX=$((HOST_COUNT - 1))
           

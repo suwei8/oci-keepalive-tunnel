@@ -84,7 +84,7 @@ jobs:
       - name: Run Speedtest Loop
         id: speedtest
         env:
-          HOSTS_CONFIG: ${{ secrets.HOSTS_CONFIG }}
+          HOSTS_CONFIG_URL: ${{ secrets.HOSTS_CONFIG_URL }}
           SSH_USERNAME: ${{ secrets.SSH_USERNAME }}
           SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }}
           IPERF_CLIENT_HOST: ${{ secrets.IPERF_CLIENT_HOST }}
@@ -96,6 +96,9 @@ jobs:
         run: |
           # SSH 参数
           SSH_OPTS="-o ConnectTimeout=30 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ServerAliveInterval=30"
+          
+          # 获取配置
+          HOSTS_CONFIG=$(curl -s $HOSTS_CONFIG_URL) || true
           
           # 1. 建立到家庭客户机的 Tunnel (全局持久连接, Port 2202)
           echo ">>> 正在连接家庭测速客户机 ($IPERF_CLIENT_HOST)..."
