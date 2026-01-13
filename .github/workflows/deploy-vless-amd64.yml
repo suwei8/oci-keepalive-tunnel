@@ -263,8 +263,8 @@ jobs:
               TUNNEL_ACCOUNT_NAME="hhwpxh.com"
             fi
             
-            echo ">>> VLESS DNS 账户: $VLESS_ACCOUNT_NAME"
-            echo ">>> Tunnel 账户: $TUNNEL_ACCOUNT_NAME"
+            echo ">>> VLESS DNS 账户: ${VLESS_ACCOUNT_NAME:0:2}***"
+            echo ">>> Tunnel 账户: ${TUNNEL_ACCOUNT_NAME:0:2}***"
             
             # 查找包含 ssh_host 的 Tunnel (在 SSH_HOST 对应的账户中)
             echo ">>> 查找 Tunnel..."
@@ -281,7 +281,7 @@ jobs:
               if echo "$CONFIG" | grep -iq "$SSH_HOST"; then
                 TUNNEL_ID="$tid"
                 TUNNEL_NAME=$(echo "$TUNNELS" | jq -r ".result[] | select(.id==\"$tid\") | .name")
-                echo ">>> 找到 Tunnel: $TUNNEL_NAME ($TUNNEL_ID)"
+                echo ">>> 找到 Tunnel ID: ${TUNNEL_ID:0:8}..."
                 break
               fi
             done
@@ -563,6 +563,7 @@ jobs:
           BLOG_GITHUB_TOKEN: ${{ secrets.BLOG_GITHUB_TOKEN }}
           BLOG_REPO_URL: ${{ secrets.BLOG_REPO_URL }}
         run: |
+          echo "::add-mask::$BLOG_REPO_URL"
           if [ -z "$BLOG_GITHUB_TOKEN" ]; then
             echo "⚠️ BLOG_GITHUB_TOKEN 未配置"
             exit 0
