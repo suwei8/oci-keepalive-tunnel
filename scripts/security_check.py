@@ -120,7 +120,7 @@ class SecurityChecker:
         """检查 /tmp 中的可疑文件"""
         print("\n[安全] 检查 /tmp 可疑文件...")
         # 白名单目录 - AppImage 挂载点等正常目录
-        whitelist_dirs = ['.mount_']  # AppImage 运行时挂载点
+        whitelist_dirs = ['.mount_', '_MEI']  # AppImage 运行时挂载点, PyInstaller 临时目录
         
         try:
             suspicious_files = []
