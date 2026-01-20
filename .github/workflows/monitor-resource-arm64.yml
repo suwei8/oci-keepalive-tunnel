@@ -104,7 +104,7 @@ jobs:
               
               if ! kill -0 $TUNNEL_PID 2>/dev/null; then
                 echo "❌ Tunnel 连接失败"
-                return 1
+                exit 1
               fi
               
               # Check if port is listening (sometimes cloudflared runs but requires auth)
@@ -117,7 +117,7 @@ jobs:
               if ! nc -z 127.0.0.1 2222; then
                  echo "❌ Tunnel 端口未就绪 (可能是 Auth Challenge)"
                  echo "Host $HOST_NAME: Tunnel Failed (Port not ready)" >> "$DEBUG_FILE"
-                 return 1
+                 exit 1
               fi
               
               # 执行监控脚本 (1分钟)
@@ -189,7 +189,7 @@ jobs:
                  echo "❌ SSH 连接或脚本执行失败 (Exit Code: $RET_CODE)"
                  echo "Debug Output: $STATS"
                  echo "Host $HOST_NAME: SSH Failed (Exit Code $RET_CODE)" >> "$DEBUG_FILE"
-                 return 1
+                 exit 1
               fi
               
               RESULT_LINE=$(echo "$STATS" | grep "RESULT::")
