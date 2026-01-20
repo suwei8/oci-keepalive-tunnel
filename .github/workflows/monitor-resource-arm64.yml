@@ -63,7 +63,9 @@ jobs:
           # CSV 文件
           mkdir -p csv
           CSV_FILE="csv/resource_usage.csv"
+          DEBUG_FILE="debug_summary.txt"
           echo "name,cpu_usage_pct,mem_usage_pct,timestamp" > "$CSV_FILE"
+          echo "Debug Summary - $(date)" > "$DEBUG_FILE"
           
           # 获取主机列表
           HOSTS_CONFIG=$(curl -s $HOSTS_CONFIG_URL) || true
@@ -92,7 +94,7 @@ jobs:
             pkill -f "cloudflared.*2222" 2>/dev/null || true
             sleep 2
             # Use 'access tcp' instead of 'access ssh' to match AMD64 workflow, which is more reliable for port forwarding
-            cloudflared access tcp --hostname "$SSH_HOST" --url "tcp://127.0.0.1:2222" > /dev/null 2>&1 &
+            cloudflared access tcp --hostname "$SSH_HOST" --url "tcp://127.0.0.1:2222" > cloudflared.log 2>&1 &
             TUNNEL_PID=$!
             sleep 5
             
@@ -106,14 +108,15 @@ jobs:
               fi
               
               # Check if port is listening (sometimes cloudflared runs but requires auth)
-              # Wait up to 10s for port
-              for i in {1..10}; do
+              # Wait up to 30s for port
+              for i in {1..30}; do
                 if nc -z 127.0.0.1 2222; then break; fi
                 sleep 1
               done
               
               if ! nc -z 127.0.0.1 2222; then
                  echo "❌ Tunnel 端口未就绪 (可能是 Auth Challenge)"
+                 echo "Host $HOST_NAME: Tunnel Failed (Port not ready)" >> "$DEBUG_FILE"
                  return 1
               fi
               
@@ -185,6 +188,7 @@ jobs:
               if [ $RET_CODE -ne 0 ]; then
                  echo "❌ SSH 连接或脚本执行失败 (Exit Code: $RET_CODE)"
                  echo "Debug Output: $STATS"
+                 echo "Host $HOST_NAME: SSH Failed (Exit Code $RET_CODE)" >> "$DEBUG_FILE"
                  return 1
               fi
               
@@ -196,6 +200,7 @@ jobs:
                  
                  TIMESTAMP=$(date -u +"%Y-%m-%d %H:%M:%S")
                  echo "${HOST_NAME},${AVG_CPU},${AVG_MEM},${TIMESTAMP}" >> "$CSV_FILE"
+                 echo "Host $HOST_NAME: Success" >> "$DEBUG_FILE"
               else
                  echo "❌ 监控失败或无数据返回"
                  echo "$STATS"
@@ -230,6 +235,16 @@ jobs:
             git push || echo "Nothing to push"
           fi
 
+      - name: Upload Debug Artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-logs
+          path: |
+            csv/
+            debug_summary.txt
+            cloudflared.log
+
       - name: Send Telegram notification (Low Usage Warning)
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -244,6 +259,23 @@ jobs:
           
           if [ ! -f "$CSV_FILE" ]; then
              echo "⚠️ 无结果文件"
+             exit 0
+          fi
+          
+          # 检查文件是否为空或仅有表头
+          if [ ! -s "$CSV_FILE" ] || [ $(wc -l < "$CSV_FILE") -le 1 ]; then
+             FAILURE_MSG=$(printf "⚠️ *ARM64 监控失败*\n\n无数据收集。\n请查看 GitHub Artifacts 中的 debug_summary.txt")
+             
+             IFS=',' read -ra CHAT_IDS <<< "$TELEGRAM_CHAT_ID"
+             for chat_id in "${CHAT_IDS[@]}"; do
+               chat_id=$(echo "$chat_id" | xargs)
+               if [ -n "$chat_id" ]; then
+                 curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+                   -d chat_id="${chat_id}" \
+                   -d parse_mode="Markdown" \
+                   --data-urlencode "text=${FAILURE_MSG}" > /dev/null
+               fi
+             done
              exit 0
           fi
           
