@@ -120,16 +120,16 @@ jobs:
                  return 1
               fi
               
-              # 执行监控脚本 (5分钟)
-              # 逻辑：每 10 秒采集一次，共 30 次。计算平均值。
+              # 执行监控脚本 (1分钟)
+              # 逻辑：每 10 秒采集一次，共 6 次。计算平均值。
               # 使用 /proc/stat 计算 CPU, free 计算内存
-              echo ">>> 开始监控 (5分钟)..."
+              echo ">>> 开始监控 (1分钟)..."
               
               STATS=$(sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" '
                 CPU_SUM=0
                 MEM_SUM=0
                 COUNT=0
-                MAX_LOOPS=30
+                MAX_LOOPS=6
                 
                 # 获取初始 CPU 状态
                 read cpu user nice system idle iowait irq softirq steal guest < /proc/stat
