@@ -162,5 +162,95 @@ jobs:
                export REPO_NAME='$REPO_NAME' && \
                python3 ~/remote_keepalive.py --hostname '$NAME'"
           
+          # 回传预测结果
+          echo ">>> Retrieve Prediction Result..."
+          mkdir -p predictions
+          SAFE_NAME=$(echo "$NAME" | tr ' ' '_')
+          
+          sshpass -p "$SSH_PASSWORD" ssh -vvv -o PreferredAuthentications=password -o PubkeyAuthentication=no -p 2222 -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no $USER_NAME@localhost \
+              "ls -lh /tmp/prediction_result.json && echo 'File exists' || echo '❌ Remote file missing'"
+          
+          sshpass -p "$SSH_PASSWORD" scp -P 2222 -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no \
+             "$USER_NAME@localhost:/tmp/prediction_result.json" \
+             "predictions/${SAFE_NAME}.json" && echo "✅ Retrieved ${SAFE_NAME}.json" || echo "❌ SCP Failed"
+
           # 清理 Tunnel
           kill $TUNNEL_PID
+
+      - name: Upload prediction artifact
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: prediction-${{ matrix.host_id }}
+          path: predictions/*.json
+          if-no-files-found: ignore
+          retention-days: 1
+
+  # 收集所有预测结果
+  collect:
+    name: Collect Predictions
+    needs: keepalive-matrix
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download all prediction artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: prediction-*
+        continue-on-error: true
+
+      - name: Merge predictions to CSV
+        run: |
+          CSV_FILE="predictions/predictions.csv"
+          mkdir -p predictions
+          
+          if [ ! -f "$CSV_FILE" ]; then
+            echo "timestamp,hostname,issue,d1,d2,d3,model_type" > "$CSV_FILE"
+          fi
+          
+          if [ -d artifacts ]; then
+            find artifacts -name "*.json" -type f | while read json_file; do
+              if [ -f "$json_file" ]; then
+                timestamp=$(jq -r '.timestamp' "$json_file")
+                hostname=$(jq -r '.hostname' "$json_file")
+                issue=$(jq -r '.issue' "$json_file")
+                d1=$(jq -r '.d1' "$json_file")
+                d2=$(jq -r '.d2' "$json_file")
+                d3=$(jq -r '.d3' "$json_file")
+                model_type=$(jq -r '.model_type' "$json_file")
+                echo "${timestamp},${hostname},${issue},${d1},${d2},${d3},${model_type}" >> "$CSV_FILE"
+                echo "Added: $hostname -> $d1 $d2 $d3"
+              fi
+            done
+          fi
+          
+          if [ -f "$CSV_FILE" ] && [ $(wc -l < "$CSV_FILE") -gt 1 ]; then
+            head -1 "$CSV_FILE" > /tmp/csv_header.tmp
+            tail -n +2 "$CSV_FILE" | sort -t',' -k1 -r > /tmp/csv_body.tmp
+            cat /tmp/csv_header.tmp /tmp/csv_body.tmp > "$CSV_FILE"
+            rm -f /tmp/csv_header.tmp /tmp/csv_body.tmp
+          fi
+
+      - name: Upload merged predictions
+        uses: actions/upload-artifact@v4
+        with:
+          name: predictions-csv
+          path: predictions/predictions.csv
+          if-no-files-found: warn
+
+      - name: Commit predictions
+        run: |
+          if [ -f predictions/predictions.csv ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add predictions/predictions.csv
+            git diff --staged --quiet || git commit -m "Update predictions $(date -u +%Y-%m-%d)"
+            git pull --rebase
+            git push
+          fi
