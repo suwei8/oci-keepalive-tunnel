@@ -443,6 +443,13 @@ jobs:
             rm -f /tmp/csv_header.tmp /tmp/csv_body.tmp
           fi
 
+      - name: Upload merged predictions
+        uses: actions/upload-artifact@v4
+        with:
+          name: predictions-csv
+          path: predictions/predictions.csv
+          if-no-files-found: warn
+
       - name: Commit predictions
         run: |
           if [ -f predictions/predictions.csv ]; then
