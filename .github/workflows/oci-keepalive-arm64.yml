@@ -356,9 +356,15 @@ jobs:
               # 回传预测结果
               mkdir -p predictions
               SAFE_NAME=$(echo "$HOST_NAME" | tr ' ' '_')
+              
+              echo ">>> Checking remote file existence..."
+              sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -p 2222 "${SSH_USERNAME}@127.0.0.1" \
+                 "ls -lh /tmp/prediction_result.json && echo 'File exists' || echo '❌ Remote file missing'"
+              
+              echo ">>> Attempting SCP transfer..."
               sshpass -p "$SSH_PASSWORD" scp $SSH_OPTS -P 2222 \
                 "${SSH_USERNAME}@127.0.0.1:/tmp/prediction_result.json" \
-                "predictions/${SAFE_NAME}.json" 2>/dev/null || echo "No prediction file"
+                "predictions/${SAFE_NAME}.json" && echo "✅ Retrieved ${SAFE_NAME}.json" || echo "❌ SCP Failed (Exit Code: $?)"
               
               kill $TUNNEL_PID 2>/dev/null || true
               
