@@ -109,6 +109,12 @@ jobs:
               continue
             fi
             
+            # 跳过 GCP 主机 (GCP 对中国流量收费)
+            if echo "$HOST_NAME" | grep -qi "GCP"; then
+              echo ">>> 跳过 GCP 主机: $HOST_NAME"
+              continue
+            fi
+            
             if [ -n "$TARGET_HOST" ] && [ "$HOST_NAME" != "$TARGET_HOST" ]; then
               continue
             fi
