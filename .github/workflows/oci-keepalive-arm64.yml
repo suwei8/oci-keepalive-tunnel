@@ -59,6 +59,13 @@ jobs:
             exit 0
           fi
           
+          # 如果主机名包含 "Mini"，跳过 (最小配置机器)
+          if echo "$HOST_NAME" | grep -qi "Mini"; then
+            echo "skip=true" >> $GITHUB_OUTPUT
+            echo "Skipping Mini instance: $HOST_NAME"
+            exit 0
+          fi
+          
           # 只处理 arm64 类型的主机
           if [ "$CPU_TYPE" != "arm64" ]; then
             echo "skip=true" >> $GITHUB_OUTPUT
