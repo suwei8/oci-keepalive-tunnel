@@ -300,11 +300,8 @@ jobs:
             
             sleep 1
             
-            # 上传 (Client sends to Server)
-            IPERF_UL_RESULT=$(sshpass -p "$IPERF_CLIENT_PASS" ssh $SSH_OPTS -n -p 2202 "${IPERF_CLIENT_USER}@127.0.0.1" "
-              $UNSET_PROXY
-              iperf3 -c $OCI_PUBLIC_IP -t ${TEST_DURATION:-10} -J || echo '{\"error\": \"connection failed\"}'
-            ")
+            # 上传 (Client sends to Server) - Skipped by user request
+            # IPERF_UL_RESULT=...
             
             # 3.4 清理 OCI
             sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" 'sudo pkill -9 iperf3 2>/dev/null || true'
@@ -326,10 +323,9 @@ jobs:
             }
             
             DL_VAL=$(get_speed_mbps "$IPERF_DL_RESULT")
-            UL_VAL=$(get_speed_mbps "$IPERF_UL_RESULT")
             
             if [ "$DL_VAL" != "N/A" ]; then DL_STR="${DL_VAL} Mbps"; else DL_STR="N/A"; fi
-            if [ "$UL_VAL" != "N/A" ]; then UL_STR="${UL_VAL} Mbps"; else UL_STR="N/A"; fi
+            UL_STR="Skipped"
             
             TIMESTAMP=$(date -u +"%Y-%m-%d %H:%M:%S")
             
