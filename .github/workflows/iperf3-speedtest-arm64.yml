@@ -40,6 +40,8 @@ on:
           - 'JP-东京1-arm1'
           - 'JP-东京1-arm2-Mini'
           - 'IT-都灵'
+          - 'AU-悉尼'
+          - 'JBP-马来西亚'
       speed_rank:
         description: '上期测速排名 (仅当 Target Hosts 为 ALL 时生效)'
         required: false
