@@ -1,0 +1,212 @@
+name: Update Antigravity Bridge (ARM64)
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_index:
+        description: '指定主机索引 (0-19, 留空=全部)'
+        required: false
+        default: ''
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  update-bridge:
+    name: "Update Host ${{ matrix.index }}"
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        index: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29]
+
+    steps:
+      - name: Get host info from secrets
+        id: host
+        env:
+          HOSTS_CONFIG_URL: ${{ secrets.HOSTS_CONFIG_URL }}
+          HOST_INDEX: ${{ matrix.index }}
+          TARGET_INDEX: ${{ github.event.inputs.target_index }}
+        run: |
+          # 获取配置
+          HOSTS_CONFIG=$(curl -s $HOSTS_CONFIG_URL) || true
+          
+          # 如果指定了目标索引且不匹配，跳过
+          if [ -n "$TARGET_INDEX" ] && [ "$TARGET_INDEX" != "$HOST_INDEX" ]; then
+            echo "skip=true" >> $GITHUB_OUTPUT
+            echo "Skipping index $HOST_INDEX (target: $TARGET_INDEX)"
+            exit 0
+          fi
+          
+          # 从 secrets 获取主机信息
+          HOST_NAME=$(echo "$HOSTS_CONFIG" | jq -r ".[$HOST_INDEX].name")
+          SSH_HOST=$(echo "$HOSTS_CONFIG" | jq -r ".[$HOST_INDEX].ssh_host")
+          CPU_TYPE=$(echo "$HOSTS_CONFIG" | jq -r ".[$HOST_INDEX].cpu_type")
+          
+          if [ "$HOST_NAME" = "null" ] || [ -z "$HOST_NAME" ]; then
+            echo "skip=true" >> $GITHUB_OUTPUT
+            echo "No host at index $HOST_INDEX"
+            exit 0
+          fi
+          
+          # 只处理 arm64 类型的主机
+          if [ "$CPU_TYPE" != "arm64" ]; then
+            echo "skip=true" >> $GITHUB_OUTPUT
+            echo "Skipping non-arm64 host at index $HOST_INDEX"
+            exit 0
+          fi
+          
+          echo "skip=false" >> $GITHUB_OUTPUT
+          echo "name=$HOST_NAME" >> $GITHUB_OUTPUT
+          echo "::add-mask::$SSH_HOST"
+          echo "ssh_host=$SSH_HOST" >> $GITHUB_OUTPUT
+          echo "Host: $HOST_NAME ($SSH_HOST)"
+
+      - name: Checkout repository
+        if: steps.host.outputs.skip != 'true'
+        uses: actions/checkout@v4
+
+      - name: Install cloudflared
+        if: steps.host.outputs.skip != 'true'
+        run: |
+          sudo mkdir -p /usr/local/bin
+          wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -O /usr/local/bin/cloudflared
+          sudo chmod +x /usr/local/bin/cloudflared
+          cloudflared --version
+
+      - name: Setup SSH
+        if: steps.host.outputs.skip != 'true'
+        run: |
+          mkdir -p ~/.ssh
+          cat >> ~/.ssh/config << 'EOF'
+          Host *
+            StrictHostKeyChecking no
+            UserKnownHostsFile /dev/null
+            LogLevel ERROR
+          EOF
+          sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+
+      - name: Whitelist GitHub Actions IP
+        if: steps.host.outputs.skip != 'true'
+        env:
+          SSH_HOST: ${{ steps.host.outputs.ssh_host }}
+          CF_API_EMAIL: ${{ secrets.CF_API_EMAIL }}
+          CF_API_KEY: ${{ secrets.CF_API_KEY }}
+          CF_ZONE_ID: ${{ secrets.CF_ZONE_ID }}
+          CF_API_EMAIL_555606: ${{ secrets.CF_API_EMAIL_555606 }}
+          CF_API_KEY_555606: ${{ secrets.CF_API_KEY_555606 }}
+          CF_ZONE_ID_555606: ${{ secrets.CF_ZONE_ID_555606 }}
+        run: |
+          echo "=========================================="
+          echo "Whitelisting GitHub Actions IPs"
+          echo "=========================================="
+          
+          # Extract domain from SSH_HOST
+          DOMAIN=$(echo "$SSH_HOST" | awk -F'.' '{print $(NF-1)"."$NF}')
+          echo "Domain: $DOMAIN"
+          
+          # Select Cloudflare credentials based on domain
+          if [[ "$DOMAIN" == "555606.xyz" ]]; then
+            API_EMAIL="$CF_API_EMAIL_555606"
+            API_KEY="$CF_API_KEY_555606"
+            ZONE_ID="$CF_ZONE_ID_555606"
+          elif [[ "$DOMAIN" == "hhwpxh.com" ]]; then
+            API_EMAIL="$CF_API_EMAIL"
+            API_KEY="$CF_API_KEY"
+            ZONE_ID="$CF_ZONE_ID"
+          else
+            echo "❌ Unknown domain: $DOMAIN"
+            exit 1
+          fi
+          
+          echo "Using Cloudflare Zone: $ZONE_ID"
+          
+          # Get current GitHub Actions Runner IP
+          RUNNER_IP=$(curl -s https://api.ipify.org)
+          echo "GitHub Actions Runner IP: $RUNNER_IP"
+          
+          # Add current Runner IP Specifically
+          echo "Checking/Adding IP to whitelist..."
+          curl -s -X POST "https://api.cloudflare.com/client/v4/zones/$ZONE_ID/firewall/access_rules/rules" \
+            -H "X-Auth-Email: $API_EMAIL" \
+            -H "X-Auth-Key: $API_KEY" \
+            -H "Content-Type: application/json" \
+            --data '{"mode":"whitelist","configuration":{"target":"ip","value":"'$RUNNER_IP'"},"notes":"GitHub Actions Runner IP (Auto)"}' > /dev/null
+            
+          echo "⏳ Waiting 3 seconds for propagation..."
+          sleep 3
+
+      - name: Run Update
+        if: steps.host.outputs.skip != 'true'
+        env:
+          SSH_USERNAME: ${{ secrets.SSH_USERNAME }}
+          SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }}
+          HOST_NAME: ${{ steps.host.outputs.name }}
+          SSH_HOST: ${{ steps.host.outputs.ssh_host }}
+        run: |
+          echo "=========================================="
+          echo "Updating Antigravity Bridge on: $HOST_NAME"
+          echo "=========================================="
+          
+          SSH_OPTS="-o ConnectTimeout=30 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ServerAliveInterval=60"
+          
+          # 建立隧道
+          echo ">>> Establishing Tunnel..."
+          cloudflared access tcp --hostname "$SSH_HOST" --url "tcp://127.0.0.1:2222" > /dev/null 2>&1 &
+          TUNNEL_PID=$!
+          
+          # 等待隧道
+          echo "Waiting for tunnel..."
+          for i in {1..15}; do
+              if nc -z 127.0.0.1 2222; then break; fi
+              sleep 1
+          done
+          
+          if ! nc -z 127.0.0.1 2222; then
+             echo "❌ Tunnel failed"
+             kill $TUNNEL_PID 2>/dev/null || true
+             exit 1
+          fi
+          echo "✅ Tunnel ready"
+          
+          # 执行更新脚本
+          echo ">>> Executing Update Script..."
+          sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -p 2222 "${SSH_USERNAME}@127.0.0.1" '
+            TARGET_DIR="/home/sw/antigravity-bridge"
+            if [ -d "$TARGET_DIR" ]; then
+              echo "✅ Found $TARGET_DIR"
+              cd "$TARGET_DIR"
+              
+              echo "Stopping service..."
+              ./manage.sh stop
+              sleep 2
+              
+              echo "Downloading new binary..."
+              # Use -q to reduce noise but show errors
+              if wget -q -O /tmp/antigravity-bridge https://github.com/suwei8/antigravity-Bridge/releases/latest/download/antigravity-bridge; then
+                  echo "Installing new binary..."
+                  chmod +x /tmp/antigravity-bridge
+                  mv /tmp/antigravity-bridge ./antigravity-bridge
+                  
+                  echo "Starting service..."
+                  ./manage.sh start
+                  echo "✅ Update completed successfully!"
+              else
+                  echo "❌ Download failed! Restoring service..."
+                  ./manage.sh start
+                  exit 1
+              fi
+            else
+              echo "⚠️ Directory $TARGET_DIR does not exist. Skipping update."
+            fi
+          '
+          
+          # 清理
+          kill $TUNNEL_PID 2>/dev/null || true
+          echo ""
+          echo "✅ Done"
