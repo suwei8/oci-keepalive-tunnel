@@ -189,6 +189,11 @@ jobs:
               echo "✅ Found installation at: $TARGET_DIR"
               cd "$TARGET_DIR"
               
+              # 安装 Xvfb
+              echo "Installing Xvfb dependencies..."
+              sudo apt-get update -qq >/dev/null
+              sudo apt-get install -y xvfb >/dev/null
+              
               echo "Stopping service..."
               ./manage.sh stop
               sleep 2
@@ -199,6 +204,12 @@ jobs:
                   echo "Installing new binary..."
                   chmod +x /tmp/antigravity-bridge
                   mv /tmp/antigravity-bridge ./antigravity-bridge
+                  
+                  # Patch manage.sh to use xvfb-run if not already patched
+                  if ! grep -q "xvfb-run" manage.sh; then
+                      echo "Patching manage.sh to use xvfb-run..."
+                      sed -i 's/nohup \.\/\$APP_NAME >/nohup xvfb-run -a \.\/\$APP_NAME >/' manage.sh
+                  fi
                   
                   echo "Starting service..."
                   ./manage.sh start
