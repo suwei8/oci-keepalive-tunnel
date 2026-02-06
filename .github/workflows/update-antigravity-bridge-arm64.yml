@@ -177,9 +177,16 @@ jobs:
           # 执行更新脚本
           echo ">>> Executing Update Script..."
           sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -p 2222 "${SSH_USERNAME}@127.0.0.1" '
-            TARGET_DIR="$HOME/antigravity-bridge"
-            if [ -d "$TARGET_DIR" ]; then
-              echo "✅ Found $TARGET_DIR"
+            TARGET_DIR=""
+            
+            if [ -d "$HOME/antigravity-bridge" ]; then
+                TARGET_DIR="$HOME/antigravity-bridge"
+            elif [ -f "$HOME/manage.sh" ] && [ -f "$HOME/antigravity-bridge" ]; then
+                TARGET_DIR="$HOME"
+            fi
+            
+            if [ -n "$TARGET_DIR" ]; then
+              echo "✅ Found installation at: $TARGET_DIR"
               cd "$TARGET_DIR"
               
               echo "Stopping service..."
@@ -202,7 +209,8 @@ jobs:
                   exit 1
               fi
             else
-              echo "⚠️ Directory $TARGET_DIR does not exist. Skipping update."
+              echo "⚠️ Could not locate Antigravity Bridge installation (Checked $HOME/antigravity-bridge and $HOME). Skipping."
+              ls -l $HOME/manage.sh $HOME/antigravity-bridge 2>/dev/null || true
             fi
           '
           
