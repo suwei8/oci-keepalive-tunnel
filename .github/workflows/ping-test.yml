@@ -186,11 +186,28 @@ jobs:
         env:
           PING_IP: ${{ github.event.inputs.ping_ip }}
         run: |
-          echo "## Ping Test Results (Target: $PING_IP)" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## 📊 Ping Test Results (Target: $PING_IP)" >> $GITHUB_STEP_SUMMARY
+          
           if [ -f csv/ping_results.csv ]; then
-            echo '```' >> $GITHUB_STEP_SUMMARY
+            echo "### 🏆 Top 10 Lowest Latency" >> $GITHUB_STEP_SUMMARY
+            echo "| Host | IP | Latency | Timestamp |" >> $GITHUB_STEP_SUMMARY
+            echo "|------|----|---------|-----------|" >> $GITHUB_STEP_SUMMARY
+            
+            # Filter for current target IP, remove 'ms', sort by latency (numeric), add 'ms' back
+            # CSV format: name,ping-ip,time,timestamp
+            # We filter lines containing the target IP
+            # We exclude N/A or timeout for the top list
+            grep ",$PING_IP," csv/ping_results.csv | grep -v "N/A" | grep -v "timeout" | \
+            sed 's/ms//g' | \
+            sort -t',' -k3 -n | head -10 | \
+            awk -F',' '{printf "| %s | %s | %sms | %s |\n", $1, $2, $3, $4}' >> $GITHUB_STEP_SUMMARY
+            
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### 📝 Latest 30 Entries" >> $GITHUB_STEP_SUMMARY
+            echo '```csv' >> $GITHUB_STEP_SUMMARY
             echo "name,ping-ip,time,timestamp" >> $GITHUB_STEP_SUMMARY
-            tail -30 csv/ping_results.csv | grep "$PING_IP" | head -30 >> $GITHUB_STEP_SUMMARY
+            tail -30 csv/ping_results.csv | grep "$PING_IP" >> $GITHUB_STEP_SUMMARY
             echo '```' >> $GITHUB_STEP_SUMMARY
+          else
+            echo "No results found." >> $GITHUB_STEP_SUMMARY
           fi
