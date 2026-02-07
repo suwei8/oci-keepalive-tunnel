@@ -48,9 +48,15 @@ jobs:
       - name: Install cloudflared
         if: steps.host.outputs.skip != 'true'
         run: |
-          curl -sL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o /tmp/cloudflared
-          chmod +x /tmp/cloudflared
-          sudo mv /tmp/cloudflared /usr/local/bin/cloudflared
+          if [ -f bin/cloudflared ]; then
+            sudo cp bin/cloudflared /usr/local/bin/cloudflared
+          else
+            echo "Local binary not found, downloading..."
+            curl -sL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o /tmp/cloudflared
+            chmod +x /tmp/cloudflared
+            sudo mv /tmp/cloudflared /usr/local/bin/cloudflared
+          fi
+          cloudflared --version
 
       - name: Setup SSH
         if: steps.host.outputs.skip != 'true'
