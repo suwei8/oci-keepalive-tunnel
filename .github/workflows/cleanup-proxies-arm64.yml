@@ -1,0 +1,182 @@
+name: Cleanup Unused Proxies (ARM64)
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_host:
+        description: '指定清理主机 (留空=扫描全部配置为空的主机)'
+        required: false
+        default: ''
+
+jobs:
+  cleanup:
+    name: "Cleanup Proxies"
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install cloudflared
+        run: |
+          sudo cp bin/cloudflared /usr/local/bin/cloudflared
+          cloudflared --version
+
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          cat >> ~/.ssh/config << 'EOF'
+          Host *
+            StrictHostKeyChecking no
+            UserKnownHostsFile /dev/null
+            LogLevel ERROR
+          EOF
+          sudo apt-get update -qq && sudo apt-get install -y -qq sshpass jq
+
+      - name: Run Cleanup
+        env:
+          HOSTS_CONFIG_URL: ${{ secrets.HOSTS_CONFIG_URL }}
+          SSH_USERNAME: ${{ secrets.SSH_USERNAME }}
+          SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }}
+          TARGET_HOST: ${{ github.event.inputs.target_host }}
+        run: |
+          SSH_OPTS="-o ConnectTimeout=30 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ServerAliveInterval=30"
+          
+          # 获取配置
+          HOSTS_CONFIG=$(curl -s $HOSTS_CONFIG_URL) || true
+          
+          HOST_COUNT=$(echo "$HOSTS_CONFIG" | jq '. | length')
+          echo "Total hosts: $HOST_COUNT"
+          
+          CLEANED_COUNT=0
+          SKIPPED_COUNT=0
+          
+          for INDEX in $(seq 0 $((HOST_COUNT - 1))); do
+            host_item=$(echo "$HOSTS_CONFIG" | jq -c ".[$INDEX]")
+            HOST_NAME=$(echo "$host_item" | jq -r '.name')
+            SSH_HOST=$(echo "$host_item" | jq -r '.ssh_host')
+            VLESS_HOST=$(echo "$host_item" | jq -r '.vless_host')
+            PROXY_DOMAIN=$(echo "$host_item" | jq -r '.proxy_domains')
+            CPU_TYPE=$(echo "$host_item" | jq -r '.cpu_type')
+            
+            # 隐藏敏感信息
+            echo "::add-mask::$SSH_HOST"
+            
+            if [ "$HOST_NAME" = "null" ] || [ -z "$HOST_NAME" ]; then
+              continue
+            fi
+            
+            # 只处理 arm64 类型的主机
+            if [ "$CPU_TYPE" != "arm64" ]; then
+              continue
+            fi
+            
+            # 如果指定了目标主机，则只处理该主机
+            if [ -n "$TARGET_HOST" ] && [ "$HOST_NAME" != "$TARGET_HOST" ]; then
+              continue
+            fi
+            
+            # 核心判断: vless_host 和 proxy_domains 必须都为空，才执行清理
+            # 除非指定了 TARGET_HOST (强制清理)
+            if [ -z "$TARGET_HOST" ]; then
+                if [ "$VLESS_HOST" != "null" ] && [ -n "$VLESS_HOST" ]; then
+                  continue
+                fi
+                if [ "$PROXY_DOMAIN" != "null" ] && [ -n "$PROXY_DOMAIN" ]; then
+                  continue
+                fi
+            fi
+            
+            echo ""
+            echo "==========================================="
+            echo "Cleaning: $HOST_NAME ($SSH_HOST)"
+            echo "==========================================="
+            
+            pkill -f "cloudflared.*2222" 2>/dev/null || true
+            sleep 2
+            cloudflared access ssh --hostname "$SSH_HOST" --url "ssh://127.0.0.1:2222" &
+            TUNNEL_PID=$!
+            sleep 5
+            
+            if ! kill -0 $TUNNEL_PID 2>/dev/null; then
+              echo "❌ Tunnel 连接失败"
+              continue
+            fi
+            
+            echo ">>> 开始清理..."
+            
+            sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" "
+              # 1. 清理 deploy-vless-amd64.yml 部署的服务 (Legacy Xray)
+              if sudo systemctl is-active xray-vless > /dev/null 2>&1 || [ -f /etc/systemd/system/xray-vless.service ]; then
+                  echo '>>> 发现 xray-vless 服务，正在移除...'
+                  sudo systemctl stop xray-vless 2>/dev/null || true
+                  sudo systemctl disable xray-vless 2>/dev/null || true
+                  sudo rm -f /etc/systemd/system/xray-vless.service
+                  sudo systemctl daemon-reload
+                  sudo rm -f /usr/local/bin/xray
+                  sudo rm -rf /etc/xray
+                  sudo rm -rf /usr/local/share/xray
+                  echo '✅ xray-vless 已移除'
+              else
+                  echo '⏭️ 未发现 xray-vless 服务'
+              fi
+
+              # 2. 清理 deploy-hysteria-arm64.yml 部署的服务 (Docker: hysteria-server)
+              if sudo docker ps -a | grep -q 'hysteria-server'; then
+                  echo '>>> 发现 hysteria-server 容器，正在移除...'
+                  sudo docker rm -f hysteria-server
+                  # 尝试移除镜像
+                  sudo docker rmi tobyxdd/hysteria:latest 2>/dev/null || true
+                  # 移除配置目录
+                  if [ -d /home/sw/docker_root/hy ]; then
+                      sudo rm -rf /home/sw/docker_root/hy
+                      echo '✅ hysteria-server 文件已移除'
+                  fi
+                  echo '✅ hysteria-server 容器已移除'
+              else
+                  echo '⏭️ 未发现 hysteria-server 容器'
+              fi
+              
+              # 3. 清理 3xui_app (Docker)
+              if sudo docker ps -a | grep -q '3xui_app'; then
+                  echo '>>> 发现 3xui_app 容器，正在移除...'
+                  # 获取镜像名称以便清理
+                  IMAGE_NAME=\$(sudo docker inspect --format='{{.Config.Image}}' 3xui_app 2>/dev/null)
+                  
+                  sudo docker rm -f 3xui_app
+                  
+                  if [ -n \"\$IMAGE_NAME\" ]; then
+                      sudo docker rmi \"\$IMAGE_NAME\" 2>/dev/null || true
+                  fi
+                  
+                  # 移除配置目录 (根据通常路径推断，谨慎删除)
+                  # 假设在 /home/sw/docker_root/3xui 或类似位置
+                  # 为安全起见，先检查是否存在
+                  if [ -d /home/sw/docker_root/3xui ]; then
+                      sudo rm -rf /home/sw/docker_root/3xui
+                      echo '✅ 3xui 文件已移除 (/home/sw/docker_root/3xui)'
+                  elif [ -d /home/sw/3xui ]; then
+                      sudo rm -rf /home/sw/3xui
+                      echo '✅ 3xui 文件已移除 (/home/sw/3xui)'
+                  fi
+                  
+                  echo '✅ 3xui_app 容器已移除'
+              else
+                  echo '⏭️ 未发现 3xui_app 容器'
+              fi
+              
+              # 4. 清理残留的 iptables 规则 (可选，暂不执行以免误伤)
+              # ...
+              
+            " 2>&1 || true
+            
+            CLEANED_COUNT=$((CLEANED_COUNT + 1))
+            
+            kill $TUNNEL_PID 2>/dev/null || true
+          done
+          
+          echo ""
+          echo "==========================================="
+          echo "清理完成: 共清理 $CLEANED_COUNT 台主机"
+          echo "==========================================="
