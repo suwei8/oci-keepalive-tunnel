@@ -97,6 +97,7 @@ jobs:
             HOST_NAME=$(echo "$host_item" | jq -r '.name')
             SSH_HOST=$(echo "$host_item" | jq -r '.ssh_host')
             PROXY_DOMAIN=$(echo "$host_item" | jq -r '.proxy_domains')
+            VLESS_HOST=$(echo "$host_item" | jq -r '.vless_host')
             CPU_TYPE=$(echo "$host_item" | jq -r '.cpu_type')
             
             # 隐藏敏感信息
@@ -113,6 +114,18 @@ jobs:
             fi
             
             if [ -n "$TARGET_HOST" ] && [ "$HOST_NAME" != "$TARGET_HOST" ]; then
+              continue
+            fi
+            
+            # 跳过条件: vless_host 和 proxy_domains 均为空
+            if ([ "$VLESS_HOST" = "null" ] || [ -z "$VLESS_HOST" ]) && ([ "$PROXY_DOMAIN" = "null" ] || [ -z "$PROXY_DOMAIN" ]); then
+              echo ">>> 跳过 $HOST_NAME (vless_host 和 proxy_domains 均为空)"
+              continue
+            fi
+            
+            # Hysteria 特定检查: 必须有 proxy_domains
+            if [ "$PROXY_DOMAIN" = "null" ] || [ -z "$PROXY_DOMAIN" ]; then
+              echo ">>> 跳过 $HOST_NAME (Hysteria 必须配置 proxy_domains)"
               continue
             fi
             
