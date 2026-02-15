@@ -65,6 +65,7 @@ jobs:
           CF_API_EMAIL: ${{ secrets.CF_API_EMAIL }}
           CF_API_KEY: ${{ secrets.CF_API_KEY }}
           CF_ZONE_ID: ${{ secrets.CF_ZONE_ID }}
+          CF_ZONE_ID_555606: ${{ secrets.CF_ZONE_ID_555606 }}
           HYSTERIA_PASSWORD: ${{ secrets.HYSTERIA_PASSWORD }}
           FORCE_REDEPLOY: ${{ github.event.inputs.force_redeploy }}
           UPDATE_IMAGE: ${{ github.event.inputs.update_image }}
@@ -171,13 +172,22 @@ jobs:
             MASKED_IP=$(echo "$PUBLIC_IP" | awk -F. '{print $1"."$2".*.*"}')
             echo "✅ 公网 IP: $MASKED_IP"
             
+            # 动态选择 Zone ID
+            CURRENT_ZONE_ID="$CF_ZONE_ID"
+            if [[ "$PROXY_DOMAIN" == *"555606.xyz"* ]]; then
+              CURRENT_ZONE_ID="$CF_ZONE_ID_555606"
+              echo ">>> 使用 Zone ID (555606.xyz)"
+            else
+              echo ">>> 使用默认 Zone ID (hhwpxh.com)"
+            fi
+            
             # DNS 配置 (每次都检查，确保 DNS 记录存在)
             echo ">>> 检查 DNS..."
-            DNS_RECORD=$(curl -s "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records?name=${PROXY_DOMAIN}" -H "X-Auth-Email: ${CF_API_EMAIL}" -H "X-Auth-Key: ${CF_API_KEY}" | jq -r '.result[0].content // empty')
+            DNS_RECORD=$(curl -s "https://api.cloudflare.com/client/v4/zones/${CURRENT_ZONE_ID}/dns_records?name=${PROXY_DOMAIN}" -H "X-Auth-Email: ${CF_API_EMAIL}" -H "X-Auth-Key: ${CF_API_KEY}" | jq -r '.result[0].content // empty')
             
             if [ -z "$DNS_RECORD" ]; then
               echo ">>> 创建 DNS A 记录: ${PROXY_DOMAIN} -> ${MASKED_IP}"
-              DNS_RESULT=$(curl -s -X POST "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records" -H "X-Auth-Email: ${CF_API_EMAIL}" -H "X-Auth-Key: ${CF_API_KEY}" -H "Content-Type: application/json" -d "{\"type\":\"A\",\"name\":\"${PROXY_DOMAIN}\",\"content\":\"${PUBLIC_IP}\",\"proxied\":false,\"ttl\":1}")
+              DNS_RESULT=$(curl -s -X POST "https://api.cloudflare.com/client/v4/zones/${CURRENT_ZONE_ID}/dns_records" -H "X-Auth-Email: ${CF_API_EMAIL}" -H "X-Auth-Key: ${CF_API_KEY}" -H "Content-Type: application/json" -d "{\"type\":\"A\",\"name\":\"${PROXY_DOMAIN}\",\"content\":\"${PUBLIC_IP}\",\"proxied\":false,\"ttl\":1}")
               if echo "$DNS_RESULT" | jq -e '.success' > /dev/null; then
                 echo "✅ DNS 记录已创建"
               else
@@ -186,8 +196,8 @@ jobs:
               fi
             elif [ "$DNS_RECORD" != "$PUBLIC_IP" ]; then
               echo ">>> 更新 DNS A 记录: ${PROXY_DOMAIN} -> ${MASKED_IP}"
-              RECORD_ID=$(curl -s "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records?name=${PROXY_DOMAIN}" -H "X-Auth-Email: ${CF_API_EMAIL}" -H "X-Auth-Key: ${CF_API_KEY}" | jq -r '.result[0].id')
-              curl -s -X PUT "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records/${RECORD_ID}" -H "X-Auth-Email: ${CF_API_EMAIL}" -H "X-Auth-Key: ${CF_API_KEY}" -H "Content-Type: application/json" -d "{\"type\":\"A\",\"name\":\"${PROXY_DOMAIN}\",\"content\":\"${PUBLIC_IP}\",\"proxied\":false,\"ttl\":1}" > /dev/null
+              RECORD_ID=$(curl -s "https://api.cloudflare.com/client/v4/zones/${CURRENT_ZONE_ID}/dns_records?name=${PROXY_DOMAIN}" -H "X-Auth-Email: ${CF_API_EMAIL}" -H "X-Auth-Key: ${CF_API_KEY}" | jq -r '.result[0].id')
+              curl -s -X PUT "https://api.cloudflare.com/client/v4/zones/${CURRENT_ZONE_ID}/dns_records/${RECORD_ID}" -H "X-Auth-Email: ${CF_API_EMAIL}" -H "X-Auth-Key: ${CF_API_KEY}" -H "Content-Type: application/json" -d "{\"type\":\"A\",\"name\":\"${PROXY_DOMAIN}\",\"content\":\"${PUBLIC_IP}\",\"proxied\":false,\"ttl\":1}" > /dev/null
               echo "✅ DNS 记录已更新"
             else
               echo "✅ DNS 记录已存在且正确"
