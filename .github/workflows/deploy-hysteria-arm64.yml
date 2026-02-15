@@ -64,6 +64,8 @@ jobs:
           SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }}
           CF_API_EMAIL: ${{ secrets.CF_API_EMAIL }}
           CF_API_KEY: ${{ secrets.CF_API_KEY }}
+          CF_API_EMAIL_555606: ${{ secrets.CF_API_EMAIL_555606 }}
+          CF_API_KEY_555606: ${{ secrets.CF_API_KEY_555606 }}
           CF_ZONE_ID: ${{ secrets.CF_ZONE_ID }}
           CF_ZONE_ID_555606: ${{ secrets.CF_ZONE_ID_555606 }}
           HYSTERIA_PASSWORD: ${{ secrets.HYSTERIA_PASSWORD }}
@@ -172,22 +174,27 @@ jobs:
             MASKED_IP=$(echo "$PUBLIC_IP" | awk -F. '{print $1"."$2".*.*"}')
             echo "✅ 公网 IP: $MASKED_IP"
             
-            # 动态选择 Zone ID
+            # 动态选择 Zone ID 和 凭证
             CURRENT_ZONE_ID="$CF_ZONE_ID"
+            CURRENT_API_EMAIL="$CF_API_EMAIL"
+            CURRENT_API_KEY="$CF_API_KEY"
+            
             if [[ "$PROXY_DOMAIN" == *"555606.xyz"* ]]; then
               CURRENT_ZONE_ID="$CF_ZONE_ID_555606"
-              echo ">>> 使用 Zone ID (555606.xyz)"
+              CURRENT_API_EMAIL="$CF_API_EMAIL_555606"
+              CURRENT_API_KEY="$CF_API_KEY_555606"
+              echo ">>> 使用 555606.xyz 凭证配置"
             else
-              echo ">>> 使用默认 Zone ID (hhwpxh.com)"
+              echo ">>> 使用默认 hhwpxh.com 凭证配置"
             fi
             
             # DNS 配置 (每次都检查，确保 DNS 记录存在)
             echo ">>> 检查 DNS..."
-            DNS_RECORD=$(curl -s "https://api.cloudflare.com/client/v4/zones/${CURRENT_ZONE_ID}/dns_records?name=${PROXY_DOMAIN}" -H "X-Auth-Email: ${CF_API_EMAIL}" -H "X-Auth-Key: ${CF_API_KEY}" | jq -r '.result[0].content // empty')
+            DNS_RECORD=$(curl -s "https://api.cloudflare.com/client/v4/zones/${CURRENT_ZONE_ID}/dns_records?name=${PROXY_DOMAIN}" -H "X-Auth-Email: ${CURRENT_API_EMAIL}" -H "X-Auth-Key: ${CURRENT_API_KEY}" | jq -r '.result[0].content // empty')
             
             if [ -z "$DNS_RECORD" ]; then
               echo ">>> 创建 DNS A 记录: ${PROXY_DOMAIN} -> ${MASKED_IP}"
-              DNS_RESULT=$(curl -s -X POST "https://api.cloudflare.com/client/v4/zones/${CURRENT_ZONE_ID}/dns_records" -H "X-Auth-Email: ${CF_API_EMAIL}" -H "X-Auth-Key: ${CF_API_KEY}" -H "Content-Type: application/json" -d "{\"type\":\"A\",\"name\":\"${PROXY_DOMAIN}\",\"content\":\"${PUBLIC_IP}\",\"proxied\":false,\"ttl\":1}")
+              DNS_RESULT=$(curl -s -X POST "https://api.cloudflare.com/client/v4/zones/${CURRENT_ZONE_ID}/dns_records" -H "X-Auth-Email: ${CURRENT_API_EMAIL}" -H "X-Auth-Key: ${CURRENT_API_KEY}" -H "Content-Type: application/json" -d "{\"type\":\"A\",\"name\":\"${PROXY_DOMAIN}\",\"content\":\"${PUBLIC_IP}\",\"proxied\":false,\"ttl\":1}")
               if echo "$DNS_RESULT" | jq -e '.success' > /dev/null; then
                 echo "✅ DNS 记录已创建"
               else
@@ -196,8 +203,8 @@ jobs:
               fi
             elif [ "$DNS_RECORD" != "$PUBLIC_IP" ]; then
               echo ">>> 更新 DNS A 记录: ${PROXY_DOMAIN} -> ${MASKED_IP}"
-              RECORD_ID=$(curl -s "https://api.cloudflare.com/client/v4/zones/${CURRENT_ZONE_ID}/dns_records?name=${PROXY_DOMAIN}" -H "X-Auth-Email: ${CF_API_EMAIL}" -H "X-Auth-Key: ${CF_API_KEY}" | jq -r '.result[0].id')
-              curl -s -X PUT "https://api.cloudflare.com/client/v4/zones/${CURRENT_ZONE_ID}/dns_records/${RECORD_ID}" -H "X-Auth-Email: ${CF_API_EMAIL}" -H "X-Auth-Key: ${CF_API_KEY}" -H "Content-Type: application/json" -d "{\"type\":\"A\",\"name\":\"${PROXY_DOMAIN}\",\"content\":\"${PUBLIC_IP}\",\"proxied\":false,\"ttl\":1}" > /dev/null
+              RECORD_ID=$(curl -s "https://api.cloudflare.com/client/v4/zones/${CURRENT_ZONE_ID}/dns_records?name=${PROXY_DOMAIN}" -H "X-Auth-Email: ${CURRENT_API_EMAIL}" -H "X-Auth-Key: ${CURRENT_API_KEY}" | jq -r '.result[0].id')
+              curl -s -X PUT "https://api.cloudflare.com/client/v4/zones/${CURRENT_ZONE_ID}/dns_records/${RECORD_ID}" -H "X-Auth-Email: ${CURRENT_API_EMAIL}" -H "X-Auth-Key: ${CURRENT_API_KEY}" -H "Content-Type: application/json" -d "{\"type\":\"A\",\"name\":\"${PROXY_DOMAIN}\",\"content\":\"${PUBLIC_IP}\",\"proxied\":false,\"ttl\":1}" > /dev/null
               echo "✅ DNS 记录已更新"
             else
               echo "✅ DNS 记录已存在且正确"
@@ -216,7 +223,7 @@ jobs:
                 sudo iptables -I INPUT -p tcp --dport $HYSTERIA_PORT -j ACCEPT
                 echo '已开放 Hysteria TCP 端口'
               fi
-              if ! sudo iptables -C INPUT -p udp --dport $HYSTERIA_PORT -j ACCEPT 2>/dev/null; then
+                if ! sudo iptables -C INPUT -p udp --dport $HYSTERIA_PORT -j ACCEPT 2>/dev/null; then
                 sudo iptables -I INPUT -p udp --dport $HYSTERIA_PORT -j ACCEPT
                 echo '已开放 Hysteria UDP 端口'
               fi
@@ -314,7 +321,7 @@ jobs:
                 sudo docker stop hysteria-server 2>/dev/null || true
                 sudo fuser -k 80/tcp 2>/dev/null || true
                 sleep 2
-                sudo certbot certonly --standalone -d ${PROXY_DOMAIN} --non-interactive --agree-tos --email ${CF_API_EMAIL} --http-01-port 80 || true
+                sudo certbot certonly --standalone -d ${PROXY_DOMAIN} --non-interactive --agree-tos --email ${CURRENT_API_EMAIL} --http-01-port 80 || true
                 sudo systemctl start nginx 2>/dev/null || true
               " 2>&1
               
