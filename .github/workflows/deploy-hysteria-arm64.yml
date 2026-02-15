@@ -77,7 +77,8 @@ jobs:
           echo "::add-mask::$HYSTERIA_PORT"
           
           # 获取配置
-          HOSTS_CONFIG=$(curl -s $HOSTS_CONFIG_URL) || true
+          # 获取配置 (添加随机参数避开 CDN 缓存)
+          HOSTS_CONFIG=$(curl -s "${HOSTS_CONFIG_URL}?t=$(date +%s)") || true
 
           NODES_INFO=""
           DEPLOYED_COUNT=0
