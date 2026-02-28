@@ -271,6 +271,14 @@ jobs:
             proxy:
               url: https://www.kernel.org/
               rewriteHost: true
+          outbounds:
+            - name: ipv4_direct
+              type: direct
+              direct:
+                mode: 4
+          acl:
+            inline:
+              - ipv4_direct(all)
           resolver:
             type: udp
             udp:
@@ -383,6 +391,14 @@ jobs:
             proxy:
               url: https://www.kernel.org/
               rewriteHost: true
+          outbounds:
+            - name: ipv4_direct
+              type: direct
+              direct:
+                mode: 4
+          acl:
+            inline:
+              - ipv4_direct(all)
           resolver:
             type: udp
             udp:
