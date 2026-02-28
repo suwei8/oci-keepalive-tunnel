@@ -425,7 +425,7 @@ jobs:
                       streamSettings: {network: "ws", wsSettings: {path: "/", headers: {Host: $host}}}
                     }
                   ],
-                  outbounds: [{protocol: "freedom"}]
+                  outbounds: [{protocol: "freedom", settings: {domainStrategy: "UseIPv4"}}]
                 }')
               echo "✅ 配置包含: Tunnel + Direct VLESS (无 TLS)"
             else
@@ -443,7 +443,7 @@ jobs:
                       streamSettings: {network: "ws", wsSettings: {path: "/library1629"}}
                     }
                   ],
-                  outbounds: [{protocol: "freedom"}]
+                  outbounds: [{protocol: "freedom", settings: {domainStrategy: "UseIPv4"}}]
                 }')
               echo "✅ 配置包含: 仅 Tunnel"
             fi
