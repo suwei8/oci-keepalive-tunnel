@@ -279,13 +279,13 @@ jobs:
              exit 0
           fi
           
-          # 提取 Top 10 低负载 (即 CSV 的前10行，因为已经按升序排了)
-          TOP10_TEXT=$(tail -n +2 "$CSV_FILE" | head -10 | awk -F',' '{printf "%2d. %-12s CPU: %s%% | MEM: %s%%\n", NR, $1, $2, $3}')
+          # 提取所有低负载 (即 CSV 的所有行，因为已经按升序排了)
+          ALL_TEXT=$(tail -n +2 "$CSV_FILE" | awk -F',' '{printf "%2d. %-12s CPU: %s%% | MEM: %s%%\n", NR, $1, $2, $3}')
           
           TIMESTAMP=$(date -u +'%Y-%m-%d %H:%M UTC')
           
           # 警告信息
-          FINAL_MSG=$(printf "⚠️ *ARM64 闲置实例警告 (Top 10)*\n\n📅 %s\n\n📉 *低负载排名 (CPU升序)*:\n\`\`\`\n%s\n\`\`\`\n\n💡 请注意由于负载过低可能有回收风险！" "$TIMESTAMP" "$TOP10_TEXT")
+          FINAL_MSG=$(printf "⚠️ *所有 ARM64 闲置实例警告*\n\n📅 %s\n\n📉 *低负载排名 (CPU升序)*:\n\`\`\`\n%s\n\`\`\`\n\n💡 请注意由于负载过低可能有回收风险！" "$TIMESTAMP" "$ALL_TEXT")
           
           IFS=',' read -ra CHAT_IDS <<< "$TELEGRAM_CHAT_ID"
           for chat_id in "${CHAT_IDS[@]}"; do
@@ -308,8 +308,8 @@ jobs:
           if [ -f "$CSV_FILE" ]; then
              echo "| 实例名称 | 平均 CPU (%) | 平均 内存 (%) |" >> $GITHUB_STEP_SUMMARY
              echo "| :--- | :--- | :--- |" >> $GITHUB_STEP_SUMMARY
-             # 仅显示前 10
-             tail -n +2 "$CSV_FILE" | head -10 | awk -F',' '{printf "| %s | %s%% | %s%% |\n", $1, $2, $3}' >> $GITHUB_STEP_SUMMARY
+             # 显示所有实例
+             tail -n +2 "$CSV_FILE" | awk -F',' '{printf "| %s | %s%% | %s%% |\n", $1, $2, $3}' >> $GITHUB_STEP_SUMMARY
           else
              echo "无数据" >> $GITHUB_STEP_SUMMARY
           fi
