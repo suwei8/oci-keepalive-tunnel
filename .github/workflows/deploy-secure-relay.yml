@@ -10,8 +10,9 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v3
 
-      - name: Set up SSH
+      - name: Set up SSH and install sshpass
         run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
           mkdir -p ~/.ssh
           cat << 'SSH_CONFIG' > ~/.ssh/config
           Host aws-hk
@@ -31,16 +32,35 @@ jobs:
           echo "export SSHPASS='${{ secrets.AWSHK_PASS }}'" > /tmp/awshk_env
           echo "export SSHPASS='${{ secrets.ALIYUN_PASS }}'" > /tmp/aliyun_env
 
-      - name: Generate AWS-HK GOST Config
+      - name: Download binaries on runner (bypass China firewall)
         run: |
+          mkdir -p /tmp/binaries
+          
+          # Download GOST v3 on the runner (unrestricted internet)
+          echo ">>> Downloading GOST v3..."
+          wget -q -O /tmp/binaries/gost.tar.gz \
+            https://github.com/go-gost/gost/releases/download/v3.0.0-rc10/gost_3.0.0-rc10_linux_amd64.tar.gz
+          tar -zxf /tmp/binaries/gost.tar.gz -C /tmp/binaries/
+          chmod +x /tmp/binaries/gost
+          echo "GOST downloaded: $(ls -lh /tmp/binaries/gost)"
+          
+          # Download Hysteria2 on the runner
+          echo ">>> Downloading Hysteria2..."
+          wget -q -O /tmp/binaries/hysteria \
+            https://github.com/apernet/hysteria/releases/latest/download/hysteria-linux-amd64
+          chmod +x /tmp/binaries/hysteria
+          echo "Hysteria2 downloaded: $(ls -lh /tmp/binaries/hysteria)"
+
+      - name: Generate configs
+        run: |
+          # --- AWS-HK GOST Service ---
           cat << 'AWSHK_GOST' > /tmp/gost-awshk.service
           [Unit]
-          Description=GOST Relay Server
+          Description=GOST Relay Server (TLS)
           After=network.target
 
           [Service]
           Type=simple
-          # Listening on TLS 443 with user pass: sw63828 (can be changed)
           ExecStart=/usr/local/bin/gost -L relay+tls://hysteria:sw63828@:443
           Restart=always
           RestartSec=3
@@ -49,40 +69,14 @@ jobs:
           WantedBy=multi-user.target
           AWSHK_GOST
 
-      - name: Deploy GOST to AWS-HK
-        run: |
-          source /tmp/awshk_env
-          sshpass -e scp -o StrictHostKeyChecking=no /tmp/gost-awshk.service aws-hk:/tmp/gost-awshk.service
-          sshpass -e ssh -o StrictHostKeyChecking=no aws-hk << 'REMOTE_COMMANDS'
-            sudo bash -c '
-              # Install GOST v3
-              if [ ! -f "/usr/local/bin/gost" ]; then
-                wget -O gost.tar.gz https://github.com/go-gost/gost/releases/download/v3.0.0-rc10/gost_3.0.0-rc10_linux_amd64.tar.gz
-                tar -zxvf gost.tar.gz
-                mv gost /usr/local/bin/gost
-                chmod +x /usr/local/bin/gost
-                rm gost* README.en.md README.md LICENSE
-              fi
-              
-              # Deploy service
-              mv /tmp/gost-awshk.service /etc/systemd/system/gost-relay.service
-              systemctl daemon-reload
-              systemctl enable gost-relay
-              systemctl restart gost-relay
-            '
-          REMOTE_COMMANDS
-
-      - name: Generate Aliyun Hysteria2 and GOST Configs
-        run: |
-          # GOST Client Service
-          cat << 'ALIYUN_GOST' > /tmp/gost-aliyun.service
+          # --- Aliyun GOST Client Service ---
+          cat << ALIYUN_GOST > /tmp/gost-aliyun.service
           [Unit]
           Description=GOST Relay Client
           After=network.target
 
           [Service]
           Type=simple
-          # Listens on local 1080 SOCKS5, forwards to AWS-HK 443 TLS
           ExecStart=/usr/local/bin/gost -L socks5://127.0.0.1:1080 -F relay+tls://hysteria:sw63828@${{ secrets.AWSHK_HOST }}:443
           Restart=always
           RestartSec=3
@@ -91,8 +85,8 @@ jobs:
           WantedBy=multi-user.target
           ALIYUN_GOST
 
-          # Hysteria2 Server YAML
-          cat << 'ALIYUN_HYSTERIA' > /tmp/config.yaml
+          # --- Aliyun Hysteria2 Server Config ---
+          cat << 'ALIYUN_HYSTERIA' > /tmp/hysteria_config.yaml
           listen: :8443
 
           tls:
@@ -103,8 +97,6 @@ jobs:
             type: password
             password: sw63828
 
-          # Extremely important: Force all traffic into the local GOST socks5 proxy.
-          # We don't want Hysteria terminating egress traffic directly on Aliyun.
           outbounds:
             - name: gost-tunnel
               type: socks5
@@ -116,43 +108,116 @@ jobs:
               - outbound: gost-tunnel
           ALIYUN_HYSTERIA
 
+          # --- Hysteria2 systemd service ---
+          cat << 'HY_SERVICE' > /tmp/hysteria-server.service
+          [Unit]
+          Description=Hysteria2 Server
+          After=network.target
+
+          [Service]
+          Type=simple
+          ExecStart=/usr/local/bin/hysteria server -c /etc/hysteria/config.yaml
+          Restart=always
+          RestartSec=3
+
+          [Install]
+          WantedBy=multi-user.target
+          HY_SERVICE
+
+      - name: Deploy GOST to AWS-HK
+        run: |
+          source /tmp/awshk_env
+          
+          # Upload binary and service file
+          sshpass -e scp -o StrictHostKeyChecking=no \
+            /tmp/binaries/gost \
+            /tmp/gost-awshk.service \
+            aws-hk:/tmp/
+          
+          sshpass -e ssh -o StrictHostKeyChecking=no aws-hk << 'REMOTE_COMMANDS'
+            sudo bash -c '
+              # Install GOST binary
+              mv /tmp/gost /usr/local/bin/gost
+              chmod +x /usr/local/bin/gost
+              
+              # Deploy service
+              mv /tmp/gost-awshk.service /etc/systemd/system/gost-relay.service
+              systemctl daemon-reload
+              systemctl enable gost-relay
+              systemctl restart gost-relay
+              
+              sleep 1
+              if systemctl is-active --quiet gost-relay; then
+                echo "✅ AWS-HK GOST relay is active."
+              else
+                echo "❌ AWS-HK GOST relay failed!"
+                journalctl -u gost-relay --no-pager | tail -5
+                exit 1
+              fi
+            '
+          REMOTE_COMMANDS
+
       - name: Deploy GOST and Hysteria2 to Aliyun
         run: |
           source /tmp/aliyun_env
-          sshpass -e scp -o StrictHostKeyChecking=no /tmp/gost-aliyun.service aliyun:/tmp/gost-aliyun.service
-          sshpass -e scp -o StrictHostKeyChecking=no /tmp/config.yaml aliyun:/tmp/hysteria_config.yaml
+          
+          # Upload all binaries, configs and services
+          sshpass -e scp -o StrictHostKeyChecking=no \
+            /tmp/binaries/gost \
+            /tmp/binaries/hysteria \
+            /tmp/gost-aliyun.service \
+            /tmp/hysteria_config.yaml \
+            /tmp/hysteria-server.service \
+            aliyun:/tmp/
+          
           sshpass -e ssh -o StrictHostKeyChecking=no aliyun << 'REMOTE_COMMANDS'
             sudo bash -c '
-              # Install GOST v3
-              if [ ! -f "/usr/local/bin/gost" ]; then
-                wget -O gost.tar.gz https://github.com/go-gost/gost/releases/download/v3.0.0-rc10/gost_3.0.0-rc10_linux_amd64.tar.gz
-                tar -zxvf gost.tar.gz
-                mv gost /usr/local/bin/gost
-                chmod +x /usr/local/bin/gost
-                rm gost* README.en.md README.md LICENSE
-              fi
+              set -e
               
-              # Deploy GOST service
+              # Install GOST binary
+              mv /tmp/gost /usr/local/bin/gost
+              chmod +x /usr/local/bin/gost
+              
+              # Deploy GOST client service
               mv /tmp/gost-aliyun.service /etc/systemd/system/gost-client.service
               systemctl daemon-reload
               systemctl enable gost-client
               systemctl restart gost-client
-
-              # Install Hysteria2
-              if [ ! -f "/usr/local/bin/hysteria" ]; then
-                bash <(curl -fsSL https://get.hy2.sh/)
-              fi
+              
+              # Install Hysteria2 binary
+              mv /tmp/hysteria /usr/local/bin/hysteria
+              chmod +x /usr/local/bin/hysteria
 
               # Generate Self-Signed Cert for Hysteria2
               mkdir -p /etc/hysteria
               if [ ! -f "/etc/hysteria/server.crt" ]; then
-                 openssl req -x509 -nodes -newkey rsa:2048 -keyout /etc/hysteria/server.key -out /etc/hysteria/server.crt -days 3650 -subj "/C=US/ST=State/L=City/O=Org/OU=Unit/CN=bing.com"
+                 openssl req -x509 -nodes -newkey rsa:2048 \
+                   -keyout /etc/hysteria/server.key \
+                   -out /etc/hysteria/server.crt \
+                   -days 3650 \
+                   -subj "/C=US/ST=State/L=City/O=Org/OU=Unit/CN=bing.com"
               fi
 
-              # Deploy Hysteria config
+              # Deploy Hysteria config and service
               mv /tmp/hysteria_config.yaml /etc/hysteria/config.yaml
-              systemctl enable hysteria-server.service
-              systemctl restart hysteria-server.service
+              mv /tmp/hysteria-server.service /etc/systemd/system/hysteria-server.service
+              systemctl daemon-reload
+              systemctl enable hysteria-server
+              systemctl restart hysteria-server
+              
+              sleep 1
+              echo "=== Service Status ==="
+              echo -n "GOST client: "; systemctl is-active gost-client
+              echo -n "Hysteria2:   "; systemctl is-active hysteria-server
+              
+              if systemctl is-active --quiet gost-client && systemctl is-active --quiet hysteria-server; then
+                echo "✅ All Aliyun services are active!"
+              else
+                echo "❌ Some services failed!"
+                journalctl -u gost-client --no-pager | tail -5
+                journalctl -u hysteria-server --no-pager | tail -5
+                exit 1
+              fi
             '
           REMOTE_COMMANDS
 
@@ -163,11 +228,10 @@ jobs:
         run: |
           TIMESTAMP=$(date -u +'%Y-%m-%d %H:%M UTC')
           
-          # We only need to provide the single entrance node. Let's format it for NekoBox/v2rayN!
           # Hysteria2 share link format: hysteria2://password@host:port?insecure=1&sni=bing.com#Name
           HY2_LINK="hysteria2://sw63828@${{ secrets.ALIYUN_HOST }}:8443?insecure=1&sni=bing.com#Aliyun_Hysteria_Entrance"
           
-          FINAL_MSG=$(printf "🔒 *全加密双跳隧道部署完成*\n\n📅 %s\n\n🛡️ **架构**: Hysteria2 -> Aliyun -> GOST -> AWS-HK\n\n🔑 **你的入口节点**:\n\`%s\`\n\n💡 **使用说明**:\n1. 将上方节点导入你的代理客户端(v2rayN/NekoBox)\n2. 导入你原本的 VLESS 订阅链接。\n3. 选中所有的 VLESS 落地节点，右键设置【前置代理 / Proxy Chain】，指向这个新导入的 Aliyun 入口节点！\n\n这样，你的所有 VLESS 数据就会全程被强加密包裹传输，彻底免疫特征识别！" "$TIMESTAMP" "$HY2_LINK")
+          FINAL_MSG=$(printf "🔒 *全加密双跳隧道部署完成*\n\n📅 %s\n\n🛡️ *架构*: Hysteria2 -> Aliyun -> GOST -> AWS-HK\n\n🔑 *你的入口节点*:\n\`%s\`\n\n💡 *使用说明*:\n1. 将上方节点导入你的代理客户端(v2rayN/NekoBox)\n2. 导入你原本的 VLESS 订阅链接。\n3. 选中所有的 VLESS 落地节点，右键设置【前置代理 / Proxy Chain】，指向这个新导入的 Aliyun 入口节点！\n\n这样，你的所有 VLESS 数据就会全程被强加密包裹传输，彻底免疫特征识别！" "$TIMESTAMP" "$HY2_LINK")
           
           IFS=',' read -ra CHAT_IDS <<< "$TELEGRAM_CHAT_ID"
           for chat_id in "${CHAT_IDS[@]}"; do
