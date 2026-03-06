@@ -451,7 +451,7 @@ jobs:
                 fi
                 
                 # 获取主机真实 IP
-                HOST_IP=$(sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${CURRENT_SSH_USER}@127.0.0.1" 'curl -s4 -m 10 ipv4.icanhazip.com || curl -s4 -m 10 ifconfig.me' 2>/dev/null)
+                HOST_IP=$(sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${CURRENT_SSH_USER}@127.0.0.1" 'curl -s4 -m 10 ipv4.icanhazip.com || curl -s4 -m 10 ifconfig.me' 2>/dev/null) || true
                 if [ -n "$HOST_IP" ]; then
                   DNS_CHECK=$(curl -s "https://api.cloudflare.com/client/v4/zones/${PROXY_ZONE_ID}/dns_records?name=${PROXY_DOMAIN}" \
                     -H "X-Auth-Email: ${PROXY_CF_EMAIL}" \
