@@ -310,7 +310,7 @@ jobs:
           NODES_FULL="${NODES_FULL}$(cat /tmp/relay/new_nodes.txt | head -20)"
           NODES_FULL="${NODES_FULL}"$'\n''```'
           
-          FINAL_MSG=$(printf "🚀 *双跳中转部署完成*\n\n📅 %s\n\n✅ *共映射 %s 个落地节点*\n\n%s\n\n🔗 *订阅地址*:\nhttps://v.555606.xyz/haproxy_aliyun_awshk_relay_vless.txt\n\n💡 复制上方链接导入客户端即可使用" "$TIMESTAMP" "$NODE_COUNT" "$NODES_FULL")
+          FINAL_MSG=$(printf "🚀 *双跳中转部署完成*\n\n📅 %s\n\n✅ *共映射 %s 个落地节点*\n\n%s\n\n🔗 *订阅地址*:\nhttps://v.555606.xyz/aliyun_awshk_relay_sub.txt\n\n💡 复制上方链接导入客户端即可使用" "$TIMESTAMP" "$NODE_COUNT" "$NODES_FULL")
           
           IFS=',' read -ra CHAT_IDS <<< "$TELEGRAM_CHAT_ID"
           for chat_id in "${CHAT_IDS[@]}"; do
@@ -351,7 +351,7 @@ jobs:
           cd /tmp/blog
           
           TIMESTAMP=$(date -u +'%Y-%m-%d %H:%M UTC')
-          FILE_NAME="haproxy_aliyun_awshk_relay_vless.txt"
+          FILE_NAME="aliyun_awshk_relay_sub.txt"
           
           CONTENT="# 阿里云->AWS-HK 双跳中转直连节点"$'\n'"# 更新时间: $TIMESTAMP"$'\n\n'
           CONTENT="${CONTENT}$(cat /tmp/relay/new_nodes.txt)"
