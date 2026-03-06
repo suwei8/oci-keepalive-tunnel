@@ -229,6 +229,50 @@ jobs:
                   fi
               fi
               
+              # 检查并更新直连域名 (proxy_domains) DNS 记录
+              if [ "$PROXY_DOMAIN" != "null" ] && [ -n "$PROXY_DOMAIN" ]; then
+                if echo "$PROXY_DOMAIN" | grep -q "555606.xyz"; then
+                  PROXY_CF_EMAIL="$CF_API_EMAIL_555606"
+                  PROXY_CF_KEY="$CF_API_KEY_555606"
+                  PROXY_ZONE_ID="$CF_ZONE_ID_555606"
+                else
+                  PROXY_CF_EMAIL="$CF_API_EMAIL"
+                  PROXY_CF_KEY="$CF_API_KEY"
+                  PROXY_ZONE_ID="$CF_ZONE_ID"
+                fi
+                
+                # 获取主机真实 IP
+                HOST_IP=$(sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${CURRENT_SSH_USER}@127.0.0.1" 'curl -s4 -m 10 ipv4.icanhazip.com || curl -s4 -m 10 ifconfig.me' 2>/dev/null)
+                if [ -n "$HOST_IP" ]; then
+                  DNS_CHECK=$(curl -s "https://api.cloudflare.com/client/v4/zones/${PROXY_ZONE_ID}/dns_records?name=${PROXY_DOMAIN}" \
+                    -H "X-Auth-Email: ${PROXY_CF_EMAIL}" \
+                    -H "X-Auth-Key: ${PROXY_CF_KEY}")
+                  
+                  EXISTING_DNS_ID=$(echo "$DNS_CHECK" | jq -r '.result[0].id // empty')
+                  EXISTING_DNS_CONTENT=$(echo "$DNS_CHECK" | jq -r '.result[0].content // empty')
+                  
+                  if [ -z "$EXISTING_DNS_ID" ]; then
+                    echo ">>> 创建缺失的 DNS A: $MASKED_PROXY_DOMAIN -> $HOST_IP"
+                    DNS_RESULT=$(curl -s -X POST "https://api.cloudflare.com/client/v4/zones/${PROXY_ZONE_ID}/dns_records" \
+                      -H "X-Auth-Email: ${PROXY_CF_EMAIL}" \
+                      -H "X-Auth-Key: ${PROXY_CF_KEY}" \
+                      -H "Content-Type: application/json" \
+                      -d "{\"type\":\"A\",\"name\":\"${PROXY_DOMAIN}\",\"content\":\"${HOST_IP}\",\"proxied\":false}")
+                  elif [ "$EXISTING_DNS_CONTENT" != "$HOST_IP" ]; then
+                    echo ">>> 更新 DNS A: $MASKED_PROXY_DOMAIN -> $HOST_IP (原IP: ${EXISTING_DNS_CONTENT})"
+                    DNS_RESULT=$(curl -s -X PUT "https://api.cloudflare.com/client/v4/zones/${PROXY_ZONE_ID}/dns_records/${EXISTING_DNS_ID}" \
+                      -H "X-Auth-Email: ${PROXY_CF_EMAIL}" \
+                      -H "X-Auth-Key: ${PROXY_CF_KEY}" \
+                      -H "Content-Type: application/json" \
+                      -d "{\"type\":\"A\",\"name\":\"${PROXY_DOMAIN}\",\"content\":\"${HOST_IP}\",\"proxied\":false}")
+                  else
+                    echo "✅ DNS 记录 $MASKED_PROXY_DOMAIN 已正确指向 $HOST_IP"
+                  fi
+                else
+                  echo "⚠️ 无法获取主机 $HOST_NAME 的公网 IP，跳过 proxy_domains 记录更新"
+                fi
+              fi
+              
               SKIPPED_COUNT=$((SKIPPED_COUNT + 1))
               
               # 生成两个链接
@@ -389,6 +433,67 @@ jobs:
                 fi
             else
                 echo ">>> vless_host 未配置，跳过 Cloudflare Tunnel 和 DNS 设置"
+            fi
+            
+            # ============================================
+            # 步骤1.5: 配置直连域名 DNS (仅当 proxy_domains 存在时)
+            # ============================================
+            if [ "$PROXY_DOMAIN" != "null" ] && [ -n "$PROXY_DOMAIN" ]; then
+                echo ">>> 配置 proxy_domains DNS 记录..."
+                if echo "$PROXY_DOMAIN" | grep -q "555606.xyz"; then
+                  PROXY_CF_EMAIL="$CF_API_EMAIL_555606"
+                  PROXY_CF_KEY="$CF_API_KEY_555606"
+                  PROXY_ZONE_ID="$CF_ZONE_ID_555606"
+                else
+                  PROXY_CF_EMAIL="$CF_API_EMAIL"
+                  PROXY_CF_KEY="$CF_API_KEY"
+                  PROXY_ZONE_ID="$CF_ZONE_ID"
+                fi
+                
+                # 获取主机真实 IP
+                HOST_IP=$(sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${CURRENT_SSH_USER}@127.0.0.1" 'curl -s4 -m 10 ipv4.icanhazip.com || curl -s4 -m 10 ifconfig.me' 2>/dev/null)
+                if [ -n "$HOST_IP" ]; then
+                  DNS_CHECK=$(curl -s "https://api.cloudflare.com/client/v4/zones/${PROXY_ZONE_ID}/dns_records?name=${PROXY_DOMAIN}" \
+                    -H "X-Auth-Email: ${PROXY_CF_EMAIL}" \
+                    -H "X-Auth-Key: ${PROXY_CF_KEY}")
+                  
+                  EXISTING_DNS_ID=$(echo "$DNS_CHECK" | jq -r '.result[0].id // empty')
+                  EXISTING_DNS_CONTENT=$(echo "$DNS_CHECK" | jq -r '.result[0].content // empty')
+                  
+                  if [ -z "$EXISTING_DNS_ID" ]; then
+                    echo ">>> 创建 DNS A: $MASKED_PROXY_DOMAIN -> $HOST_IP"
+                    DNS_RESULT=$(curl -s -X POST "https://api.cloudflare.com/client/v4/zones/${PROXY_ZONE_ID}/dns_records" \
+                      -H "X-Auth-Email: ${PROXY_CF_EMAIL}" \
+                      -H "X-Auth-Key: ${PROXY_CF_KEY}" \
+                      -H "Content-Type: application/json" \
+                      -d "{\"type\":\"A\",\"name\":\"${PROXY_DOMAIN}\",\"content\":\"${HOST_IP}\",\"proxied\":false}")
+                      
+                    if echo "$DNS_RESULT" | jq -e '.success' > /dev/null; then
+                      echo "✅ proxy_domains DNS 已创建"
+                    else
+                      echo "❌ proxy_domains DNS 创建失败"
+                    fi
+                  elif [ "$EXISTING_DNS_CONTENT" != "$HOST_IP" ]; then
+                    echo ">>> 更新 DNS A: $MASKED_PROXY_DOMAIN -> $HOST_IP (原IP: ${EXISTING_DNS_CONTENT})"
+                    DNS_RESULT=$(curl -s -X PUT "https://api.cloudflare.com/client/v4/zones/${PROXY_ZONE_ID}/dns_records/${EXISTING_DNS_ID}" \
+                      -H "X-Auth-Email: ${PROXY_CF_EMAIL}" \
+                      -H "X-Auth-Key: ${PROXY_CF_KEY}" \
+                      -H "Content-Type: application/json" \
+                      -d "{\"type\":\"A\",\"name\":\"${PROXY_DOMAIN}\",\"content\":\"${HOST_IP}\",\"proxied\":false}")
+                      
+                    if echo "$DNS_RESULT" | jq -e '.success' > /dev/null; then
+                      echo "✅ proxy_domains DNS 已更新"
+                    else
+                      echo "❌ proxy_domains DNS 更新失败"
+                    fi
+                  else
+                    echo "✅ proxy_domains DNS 记录已存在且正确 $MASKED_PROXY_DOMAIN -> $HOST_IP"
+                  fi
+                else
+                  echo "⚠️ 无法获取主机 $HOST_NAME 的公网 IP，跳过 proxy_domains 记录更新"
+                fi
+            else
+                echo ">>> proxy_domains 未配置，跳过直连域名 DNS 设置"
             fi
             
             # ============================================

@@ -145,7 +145,7 @@ jobs:
               default_backend out_{node['mapping_port']}
 
           backend out_{node['mapping_port']}
-              server target {node['target_host']}:{node['target_port']} check
+              server target {node['target_host']}:{node['target_port']} check init-addr libc,none
           """
           with open('/tmp/relay/awshk_haproxy.cfg', 'w') as f:
               f.write(awshk_cfg)
@@ -179,7 +179,7 @@ jobs:
               default_backend out_{node['mapping_port']}
 
           backend out_{node['mapping_port']}
-              server awshk {AWSHK_HOST}:{node['mapping_port']} check
+              server awshk {AWSHK_HOST}:{node['mapping_port']} check init-addr libc,none
           """
           with open('/tmp/relay/aliyun_haproxy.cfg', 'w') as f:
               f.write(aliyun_cfg)
