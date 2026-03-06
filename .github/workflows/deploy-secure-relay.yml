@@ -205,19 +205,24 @@ jobs:
               systemctl enable hysteria-server
               systemctl restart hysteria-server
               
-              sleep 1
-              echo "=== Service Status ==="
-              echo -n "GOST client: "; systemctl is-active gost-client
-              echo -n "Hysteria2:   "; systemctl is-active hysteria-server
+              # Wait for services to fully start (retry up to 5 times)
+              for i in $(seq 1 5); do
+                sleep 2
+                GOST_STATUS=$(systemctl is-active gost-client || true)
+                HY_STATUS=$(systemctl is-active hysteria-server || true)
+                echo "Attempt $i: GOST=$GOST_STATUS, Hysteria=$HY_STATUS"
+                if [ "$GOST_STATUS" = "active" ] && [ "$HY_STATUS" = "active" ]; then
+                  echo "✅ All Aliyun services are active!"
+                  exit 0
+                fi
+              done
               
-              if systemctl is-active --quiet gost-client && systemctl is-active --quiet hysteria-server; then
-                echo "✅ All Aliyun services are active!"
-              else
-                echo "❌ Some services failed!"
-                journalctl -u gost-client --no-pager | tail -5
-                journalctl -u hysteria-server --no-pager | tail -5
-                exit 1
-              fi
+              echo "❌ Some services failed after 5 attempts!"
+              echo "=== GOST Logs ==="
+              journalctl -u gost-client --no-pager | tail -10
+              echo "=== Hysteria Logs ==="
+              journalctl -u hysteria-server --no-pager | tail -10
+              exit 1
             '
           REMOTE_COMMANDS
 
