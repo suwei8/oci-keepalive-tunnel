@@ -213,6 +213,63 @@ jobs:
                 fi
               fi
               
+              # 检查 proxy_domains 的 DNS A 记录
+              if [ "$PROXY_DOMAIN" != "null" ] && [ -n "$PROXY_DOMAIN" ]; then
+                echo ">>> 检查 proxy_domain DNS: $(mask_domain "$PROXY_DOMAIN")"
+                SERVER_IP=$(sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" \
+                  'curl -s --connect-timeout 5 ifconfig.me || curl -s --connect-timeout 5 icanhazip.com' 2>/dev/null | tr -d '[:space:]')
+                
+                if [ -n "$SERVER_IP" ]; then
+                  # 根据 proxy_domain 选择 CF 账户
+                  if echo "$PROXY_DOMAIN" | grep -q "555606.xyz"; then
+                    PD_CF_EMAIL="$CF_API_EMAIL_555606"
+                    PD_CF_KEY="$CF_API_KEY_555606"
+                    PD_ZONE_ID="$CF_ZONE_ID_555606"
+                  else
+                    PD_CF_EMAIL="$CF_API_EMAIL"
+                    PD_CF_KEY="$CF_API_KEY"
+                    PD_ZONE_ID="$CF_ZONE_ID"
+                  fi
+                  
+                  PD_DNS_CHECK=$(curl -s "https://api.cloudflare.com/client/v4/zones/${PD_ZONE_ID}/dns_records?name=${PROXY_DOMAIN}" \
+                    -H "X-Auth-Email: ${PD_CF_EMAIL}" -H "X-Auth-Key: ${PD_CF_KEY}")
+                  
+                  PD_DNS_ID=$(echo "$PD_DNS_CHECK" | jq -r '.result[0].id // empty')
+                  PD_DNS_IP=$(echo "$PD_DNS_CHECK" | jq -r '.result[0].content // empty')
+                  
+                  MASKED_PD=$(mask_domain "$PROXY_DOMAIN")
+                  if [ -z "$PD_DNS_ID" ]; then
+                    echo ">>> 创建 proxy_domain DNS A 记录: $MASKED_PD -> $SERVER_IP"
+                    PD_RESULT=$(curl -s -X POST "https://api.cloudflare.com/client/v4/zones/${PD_ZONE_ID}/dns_records" \
+                      -H "X-Auth-Email: ${PD_CF_EMAIL}" -H "X-Auth-Key: ${PD_CF_KEY}" \
+                      -H "Content-Type: application/json" \
+                      -d "{\"type\":\"A\",\"name\":\"${PROXY_DOMAIN}\",\"content\":\"${SERVER_IP}\",\"proxied\":false}")
+                    if echo "$PD_RESULT" | jq -e '.success' > /dev/null; then
+                      echo "✅ proxy_domain DNS A 记录已创建"
+                    else
+                      echo "❌ proxy_domain DNS 创建失败"
+                      echo "$PD_RESULT" | jq '.errors'
+                    fi
+                  elif [ "$PD_DNS_IP" != "$SERVER_IP" ]; then
+                    echo ">>> 更新 proxy_domain DNS A 记录: $MASKED_PD ($PD_DNS_IP -> $SERVER_IP)"
+                    PD_RESULT=$(curl -s -X PUT "https://api.cloudflare.com/client/v4/zones/${PD_ZONE_ID}/dns_records/${PD_DNS_ID}" \
+                      -H "X-Auth-Email: ${PD_CF_EMAIL}" -H "X-Auth-Key: ${PD_CF_KEY}" \
+                      -H "Content-Type: application/json" \
+                      -d "{\"type\":\"A\",\"name\":\"${PROXY_DOMAIN}\",\"content\":\"${SERVER_IP}\",\"proxied\":false}")
+                    if echo "$PD_RESULT" | jq -e '.success' > /dev/null; then
+                      echo "✅ proxy_domain DNS A 记录已更新"
+                    else
+                      echo "❌ proxy_domain DNS 更新失败"
+                      echo "$PD_RESULT" | jq '.errors'
+                    fi
+                  else
+                    echo "✅ proxy_domain DNS 记录已存在且正确 ($MASKED_PD -> $SERVER_IP)"
+                  fi
+                else
+                  echo "⚠️ 无法获取服务器公网 IP，跳过 proxy_domain DNS 检查"
+                fi
+              fi
+              
               SKIPPED_COUNT=$((SKIPPED_COUNT + 1))
               
               # 生成两个链接
@@ -367,6 +424,63 @@ jobs:
               fi
             else
               echo "✅ DNS 记录已存在且正确"
+            fi
+            
+            # 检查 proxy_domains 的 DNS A 记录
+            if [ "$PROXY_DOMAIN" != "null" ] && [ -n "$PROXY_DOMAIN" ]; then
+              echo ">>> 检查 proxy_domain DNS: $(mask_domain "$PROXY_DOMAIN")"
+              SERVER_IP=$(sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" \
+                'curl -s --connect-timeout 5 ifconfig.me || curl -s --connect-timeout 5 icanhazip.com' 2>/dev/null | tr -d '[:space:]')
+              
+              if [ -n "$SERVER_IP" ]; then
+                # 根据 proxy_domain 选择 CF 账户
+                if echo "$PROXY_DOMAIN" | grep -q "555606.xyz"; then
+                  PD_CF_EMAIL="$CF_API_EMAIL_555606"
+                  PD_CF_KEY="$CF_API_KEY_555606"
+                  PD_ZONE_ID="$CF_ZONE_ID_555606"
+                else
+                  PD_CF_EMAIL="$CF_API_EMAIL"
+                  PD_CF_KEY="$CF_API_KEY"
+                  PD_ZONE_ID="$CF_ZONE_ID"
+                fi
+                
+                PD_DNS_CHECK=$(curl -s "https://api.cloudflare.com/client/v4/zones/${PD_ZONE_ID}/dns_records?name=${PROXY_DOMAIN}" \
+                  -H "X-Auth-Email: ${PD_CF_EMAIL}" -H "X-Auth-Key: ${PD_CF_KEY}")
+                
+                PD_DNS_ID=$(echo "$PD_DNS_CHECK" | jq -r '.result[0].id // empty')
+                PD_DNS_IP=$(echo "$PD_DNS_CHECK" | jq -r '.result[0].content // empty')
+                
+                MASKED_PD=$(mask_domain "$PROXY_DOMAIN")
+                if [ -z "$PD_DNS_ID" ]; then
+                  echo ">>> 创建 proxy_domain DNS A 记录: $MASKED_PD -> $SERVER_IP"
+                  PD_RESULT=$(curl -s -X POST "https://api.cloudflare.com/client/v4/zones/${PD_ZONE_ID}/dns_records" \
+                    -H "X-Auth-Email: ${PD_CF_EMAIL}" -H "X-Auth-Key: ${PD_CF_KEY}" \
+                    -H "Content-Type: application/json" \
+                    -d "{\"type\":\"A\",\"name\":\"${PROXY_DOMAIN}\",\"content\":\"${SERVER_IP}\",\"proxied\":false}")
+                  if echo "$PD_RESULT" | jq -e '.success' > /dev/null; then
+                    echo "✅ proxy_domain DNS A 记录已创建"
+                  else
+                    echo "❌ proxy_domain DNS 创建失败"
+                    echo "$PD_RESULT" | jq '.errors'
+                  fi
+                elif [ "$PD_DNS_IP" != "$SERVER_IP" ]; then
+                  echo ">>> 更新 proxy_domain DNS A 记录: $MASKED_PD ($PD_DNS_IP -> $SERVER_IP)"
+                  PD_RESULT=$(curl -s -X PUT "https://api.cloudflare.com/client/v4/zones/${PD_ZONE_ID}/dns_records/${PD_DNS_ID}" \
+                    -H "X-Auth-Email: ${PD_CF_EMAIL}" -H "X-Auth-Key: ${PD_CF_KEY}" \
+                    -H "Content-Type: application/json" \
+                    -d "{\"type\":\"A\",\"name\":\"${PROXY_DOMAIN}\",\"content\":\"${SERVER_IP}\",\"proxied\":false}")
+                  if echo "$PD_RESULT" | jq -e '.success' > /dev/null; then
+                    echo "✅ proxy_domain DNS A 记录已更新"
+                  else
+                    echo "❌ proxy_domain DNS 更新失败"
+                    echo "$PD_RESULT" | jq '.errors'
+                  fi
+                else
+                  echo "✅ proxy_domain DNS 记录已存在且正确 ($MASKED_PD -> $SERVER_IP)"
+                fi
+              else
+                echo "⚠️ 无法获取服务器公网 IP，跳过 proxy_domain DNS 检查"
+              fi
             fi
             
             # ============================================
