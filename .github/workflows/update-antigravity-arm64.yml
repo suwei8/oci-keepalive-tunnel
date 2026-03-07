@@ -170,14 +170,14 @@ jobs:
           if ! nc -z 127.0.0.1 2222; then
              echo "❌ Tunnel failed"
              kill $TUNNEL_PID 2>/dev/null || true
-             echo "status=tunnel_failed" >> $GITHUB_OUTPUT
-             echo "old_version=N/A" >> $GITHUB_OUTPUT
-             echo "new_version=N/A" >> $GITHUB_OUTPUT
+             # 保存结果文件
+             mkdir -p results
+             echo "${HOST_NAME}|N/A|N/A|tunnel_failed" > "results/host_${{ matrix.index }}.txt"
              exit 1
           fi
           echo "✅ Tunnel ready"
           
-          # 执行更新
+          # 执行更新 (使用 dpkg -s 解析版本号，避免 ${Version} 被 bash 吞掉)
           echo ">>> Checking and updating Antigravity..."
           UPDATE_OUTPUT=$(sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -p 2222 "${SSH_USERNAME}@127.0.0.1" '
             # 检查 antigravity 是否已安装
@@ -188,8 +188,8 @@ jobs:
               exit 0
             fi
             
-            # 获取旧版本号
-            OLD_VER=$(dpkg-query -W -f="${Version}" antigravity 2>/dev/null)
+            # 获取旧版本号 (使用 dpkg -s 解析，避免格式字符串转义问题)
+            OLD_VER=$(dpkg -s antigravity 2>/dev/null | grep "^Version:" | cut -d" " -f2)
             echo "OLD_VERSION:${OLD_VER}"
             
             # 更新包缓存
@@ -206,7 +206,7 @@ jobs:
             APT_EXIT=$?
             
             # 获取新版本号
-            NEW_VER=$(dpkg-query -W -f="${Version}" antigravity 2>/dev/null)
+            NEW_VER=$(dpkg -s antigravity 2>/dev/null | grep "^Version:" | cut -d" " -f2)
             echo "NEW_VERSION:${NEW_VER}"
             
             if [ $APT_EXIT -eq 0 ]; then
@@ -223,77 +223,110 @@ jobs:
           NEW_VERSION=$(echo "$UPDATE_OUTPUT" | grep "^NEW_VERSION:" | tail -1 | cut -d: -f2)
           STATUS=$(echo "$UPDATE_OUTPUT" | grep "^STATUS:" | tail -1 | cut -d: -f2)
           
-          echo "old_version=${OLD_VERSION:-N/A}" >> $GITHUB_OUTPUT
-          echo "new_version=${NEW_VERSION:-N/A}" >> $GITHUB_OUTPUT
-          echo "status=${STATUS:-unknown}" >> $GITHUB_OUTPUT
+          # 保存结果到文件 (供汇总 Job 使用)
+          mkdir -p results
+          echo "${HOST_NAME}|${OLD_VERSION:-N/A}|${NEW_VERSION:-N/A}|${STATUS:-unknown}" > "results/host_${{ matrix.index }}.txt"
           
           # 清理
           kill $TUNNEL_PID 2>/dev/null || true
           echo ""
           echo "✅ Done: $HOST_NAME | $OLD_VERSION -> $NEW_VERSION | $STATUS"
 
-      - name: Send Telegram Notification
+      - name: Upload result
         if: steps.host.outputs.skip != 'true' && always()
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          HOST_NAME: ${{ steps.host.outputs.name }}
-          OLD_VERSION: ${{ steps.update.outputs.old_version }}
-          NEW_VERSION: ${{ steps.update.outputs.new_version }}
-          UPDATE_STATUS: ${{ steps.update.outputs.status }}
-        run: |
-          # 构建通知消息
-          if [ "$UPDATE_STATUS" = "success" ]; then
-            if [ "$OLD_VERSION" = "$NEW_VERSION" ]; then
-              ICON="✅"
-              STATUS_TEXT="已是最新"
-            else
-              ICON="🚀"
-              STATUS_TEXT="更新成功"
-            fi
-          elif [ "$UPDATE_STATUS" = "not_installed" ]; then
-            ICON="⏭️"
-            STATUS_TEXT="未安装，已跳过"
-          elif [ "$UPDATE_STATUS" = "tunnel_failed" ]; then
-            ICON="❌"
-            STATUS_TEXT="隧道连接失败"
-          else
-            ICON="❌"
-            STATUS_TEXT="更新失败"
-          fi
-          
-          # 发送 Telegram 消息
-          MESSAGE="${ICON} <b>${HOST_NAME}</b>
-          <code>${OLD_VERSION:-N/A}</code> → <code>${NEW_VERSION:-N/A}</code>
-          状态: ${STATUS_TEXT}"
-          
-          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
-            -d chat_id="${TELEGRAM_CHAT_ID}" \
-            -d parse_mode="HTML" \
-            --data-urlencode "text=${MESSAGE}" > /dev/null 2>&1 || echo "⚠️ Telegram notification failed"
+        uses: actions/upload-artifact@v4
+        with:
+          name: result-${{ matrix.index }}
+          path: results/host_${{ matrix.index }}.txt
+          if-no-files-found: ignore
+          retention-days: 1
 
-  # 汇总通知
-  summary:
+  # 汇总通知 (只发送一条消息)
+  notify:
     name: Summary Notification
     needs: update
     if: always()
     runs-on: ubuntu-latest
     steps:
+      - name: Download all results
+        uses: actions/download-artifact@v4
+        with:
+          path: all-results
+          pattern: result-*
+        continue-on-error: true
+
       - name: Send Summary to Telegram
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          TOTAL="${{ strategy.job-total || '30' }}"
-          SUCCESS_COUNT=$(echo '${{ toJson(needs.update.result) }}' | grep -c "success" || echo "0")
-          
           TIMESTAMP=$(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S')
           
-          MESSAGE="📋 <b>Antigravity 批量更新完成</b>
+          # 构建汇总消息
+          HEADER="📦 <b>Antigravity 更新报告</b>
           🕐 ${TIMESTAMP} (北京时间)
-          📊 整体状态: ${{ needs.update.result }}"
+          ━━━━━━━━━━━━━━━━━━"
+          
+          BODY=""
+          UPDATED=0
+          LATEST=0
+          SKIPPED=0
+          FAILED=0
+          
+          if [ -d all-results ]; then
+            # 遍历所有结果文件
+            for result_dir in all-results/result-*; do
+              if [ -d "$result_dir" ]; then
+                for f in "$result_dir"/*.txt; do
+                  [ -f "$f" ] || continue
+                  LINE=$(cat "$f")
+                  HOST=$(echo "$LINE" | cut -d'|' -f1)
+                  OLD_VER=$(echo "$LINE" | cut -d'|' -f2)
+                  NEW_VER=$(echo "$LINE" | cut -d'|' -f3)
+                  STATUS=$(echo "$LINE" | cut -d'|' -f4)
+                  
+                  if [ "$STATUS" = "success" ]; then
+                    if [ "$OLD_VER" = "$NEW_VER" ]; then
+                      ICON="✅"
+                      LATEST=$((LATEST + 1))
+                    else
+                      ICON="🚀"
+                      UPDATED=$((UPDATED + 1))
+                    fi
+                    BODY="${BODY}
+          ${ICON} <b>${HOST}</b>  <code>${OLD_VER}</code> → <code>${NEW_VER}</code>"
+                  elif [ "$STATUS" = "not_installed" ]; then
+                    SKIPPED=$((SKIPPED + 1))
+                  elif [ "$STATUS" = "tunnel_failed" ]; then
+                    ICON="❌"
+                    FAILED=$((FAILED + 1))
+                    BODY="${BODY}
+          ${ICON} <b>${HOST}</b>  隧道连接失败"
+                  else
+                    ICON="❌"
+                    FAILED=$((FAILED + 1))
+                    BODY="${BODY}
+          ${ICON} <b>${HOST}</b>  更新失败"
+                  fi
+                done
+              fi
+            done
+          fi
+          
+          # 统计摘要
+          SUMMARY="
+          ━━━━━━━━━━━━━━━━━━
+          🚀 已更新: ${UPDATED}  ✅ 已是最新: ${LATEST}  ⏭️ 未安装: ${SKIPPED}  ❌ 失败: ${FAILED}"
+          
+          # 如果没有任何结果
+          if [ -z "$BODY" ] && [ $SKIPPED -eq 0 ]; then
+            BODY="
+          ⚠️ 没有找到需要处理的主机"
+          fi
+          
+          MESSAGE="${HEADER}${BODY}${SUMMARY}"
           
           curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
             -d chat_id="${TELEGRAM_CHAT_ID}" \
             -d parse_mode="HTML" \
-            --data-urlencode "text=${MESSAGE}" > /dev/null 2>&1 || true
+            --data-urlencode "text=${MESSAGE}" > /dev/null 2>&1 || echo "⚠️ Telegram notification failed"
