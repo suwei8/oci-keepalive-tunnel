@@ -189,7 +189,7 @@ jobs:
           done < "$TEMP_RULES"
           rm -f "$TEMP_RULES"
           
-          # 2. 核心：查出机器的默认公网网卡，并对上面所有的监听端口执行 DROP
+          # 2. 识别外网网卡
           EXT_IF=$(ip route get 8.8.8.8 | grep -oP 'dev \K\S+' | head -n 1)
           if [ -z "$EXT_IF" ]; then
               echo "⚠️ 无法找到默认外网网卡，放弃自动 DROP 策略以防止误封断网。"
@@ -197,10 +197,21 @@ jobs:
           fi
           echo "[-] 识别到公网主网卡: $EXT_IF"
           
-          # 获取监听在 0.0.0.0 或 [::] 的所有 TCP/UDP 端口
-          OPEN_PORTS=$(sudo ss -tulpn | awk 'NR>1 && $1 ~ /tcp|udp/ && $5 ~ /0\.0\.0\.0:|\[::\]:/' | awk '{print $5}' | awk -F':' '{print $NF}' | sort -n | uniq)
-          
           DROP_COUNT=0
+          
+          # 3. 处理 Docker 端口暴露 (Docker 直接通过 PREROUTING 转发，绕过 INPUT)
+          if sudo iptables -L DOCKER-USER >/dev/null 2>&1; then
+              # 阻断外网网卡直接访问 Docker 容器
+              if ! sudo iptables -C DOCKER-USER -i "$EXT_IF" -j DROP 2>/dev/null; then
+                  echo "[-] 强行阻断公网网卡入口到 Docker 容器"
+                  sudo iptables -I DOCKER-USER 1 -i "$EXT_IF" -j DROP
+                  DROP_COUNT=$((DROP_COUNT+1))
+              fi
+          fi
+          
+          # 4. 获取监听在 0.0.0.0, [::] 或者是 * 的所有 TCP/UDP 端口
+          OPEN_PORTS=$(sudo ss -tulpn | awk 'NR>1 && $1 ~ /tcp|udp/ && $5 ~ /0\.0\.0\.0:|\[::\]:|\*:/' | awk '{print $5}' | awk -F':' '{print $NF}' | sort -n | uniq)
+          
           for PORT in $OPEN_PORTS; do
               # 绝对不能阻塞 22
               if [ "$PORT" = "22" ]; then continue; fi
@@ -219,7 +230,7 @@ jobs:
               fi
           done
 
-          # 再额外确保已知的高危端口一定被封禁 (即使当前没服务在监听)
+          # 5. 再额外确保已知的高危端口一定被封禁 (即使当前没服务在监听)
           for PORT in 3389 5432 3306 631 111 80 443 8080 8443 5443 2443 5201; do
               if ! sudo iptables -C INPUT -i "$EXT_IF" -p tcp --dport "$PORT" -j DROP 2>/dev/null; then
                   sudo iptables -I INPUT 1 -i "$EXT_IF" -p tcp --dport "$PORT" -j DROP 2>/dev/null || true
@@ -233,7 +244,7 @@ jobs:
               echo "✅ 全部公网暴露端口都已被阻断，无需新增规则."
           fi
           
-          # 3. 保存规则以便重启依然生效
+          # 6. 保存规则以便重启依然生效
           if command -v netfilter-persistent >/dev/null; then
               sudo netfilter-persistent save >/dev/null 2>&1
           elif command -v iptables-save >/dev/null; then
