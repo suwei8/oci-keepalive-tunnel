@@ -165,64 +165,81 @@ jobs:
           
           # 生成清理脚本并在远程执行 (Base64 编码方式传输)
           CLEANUP_SCRIPT=$(cat << 'EOF'
-          echo "=== 开始扫描对外公网暴露的端口 (排除22, 本地, 内网) ==="
+          echo "=== 开始安全加固：阻断非必要公网端口 (排除22) ==="
+          
+          # 1. 之前如果有旧的多余 ACCEPT 规则，我们还是顺手清理掉
           TEMP_RULES=$(mktemp)
-          # 获取 INPUT 链的所有规则
           sudo iptables -S INPUT > "$TEMP_RULES" 2>/dev/null || true
-          
-          CLOSED_COUNT=0
-          
           while read -r rule; do
-              # 我们仅关心:
-              # 1. ACCEPT 规则
-              # 2. 带有 --dport 的规则
               if [[ "$rule" == *"-A INPUT"* ]] && [[ "$rule" == *"-j ACCEPT"* ]] && [[ "$rule" == *"--dport"* ]]; then
-                  
-                  # 排除端口 22 (SSH)
-                  if [[ "$rule" == *"--dport 22 "* ]] || [[ "$rule" == *"--dport 22" ]]; then
+                  # 排除端口 22，以及本地接口
+                  if [[ "$rule" == *"--dport 22 "* ]] || [[ "$rule" == *"--dport 22" ]] || [[ "$rule" == *"-i lo "* ]] || [[ "$rule" == *"-i lo" ]]; then
                       continue
                   fi
-          
-                  # 排除本地接口 (-i lo)
-                  if [[ "$rule" == *"-i lo "* ]] || [[ "$rule" == *"-i lo" ]]; then
-                      continue
-                  fi
-          
-                  # 排除限制了源 IP 的规则 (除非源 IP 是所有公网 0.0.0.0/0)
+                  # 排除特定源IP
                   if [[ "$rule" == *"-s "* ]]; then
                        SRC=$(echo "$rule" | grep -oP -- "-s \K[^\s]+")
                        if [[ "$SRC" != "0.0.0.0/0" ]] && [[ "$SRC" != "0.0.0.0/0/0" ]]; then
                            continue
                        fi
                   fi
-          
-                  # 提取端口号和协议
-                  PORT=$(echo "$rule" | grep -oP -- "--dport \K[0-9]+")
-                  PROTO="tcp"
-                  if [[ "$rule" == *"-p udp"* ]]; then PROTO="udp"; fi
-                  
-                  echo "[-] 检测到暴露的端口 $PORT/$PROTO, 准备关闭..."
-                  
-                  # 将 -A 替换为 -D 以执行删除操作
                   DEL_CMD=$(echo "$rule" | sed 's/^-A INPUT/-D INPUT/')
-                  sudo iptables $DEL_CMD
-                  CLOSED_COUNT=$((CLOSED_COUNT+1))
+                  sudo iptables $DEL_CMD || true
               fi
           done < "$TEMP_RULES"
           rm -f "$TEMP_RULES"
           
-          if [ $CLOSED_COUNT -gt 0 ]; then
-              echo "✅ 共关闭了 $CLOSED_COUNT 个暴露的端口允许规则."
-              # 保存规则以便重启依然生效
-              if command -v netfilter-persistent >/dev/null; then
-                  sudo netfilter-persistent save >/dev/null 2>&1
-              elif command -v iptables-save >/dev/null; then
-                  sudo bash -c 'iptables-save > /etc/iptables/rules.v4' 2>/dev/null || true
-              fi
-              echo "✅ Iptables 规则已保存."
-          else
-              echo "✅ 没有发现需要关闭的对公网暴露端口."
+          # 2. 核心：查出机器的默认公网网卡，并对上面所有的监听端口执行 DROP
+          EXT_IF=$(ip route get 8.8.8.8 | grep -oP 'dev \K\S+' | head -n 1)
+          if [ -z "$EXT_IF" ]; then
+              echo "⚠️ 无法找到默认外网网卡，放弃自动 DROP 策略以防止误封断网。"
+              exit 0
           fi
+          echo "[-] 识别到公网主网卡: $EXT_IF"
+          
+          # 获取监听在 0.0.0.0 或 [::] 的所有 TCP/UDP 端口
+          OPEN_PORTS=$(sudo ss -tulpn | awk 'NR>1 && $1 ~ /tcp|udp/ && $5 ~ /0\.0\.0\.0:|\[::\]:/' | awk '{print $5}' | awk -F':' '{print $NF}' | sort -n | uniq)
+          
+          DROP_COUNT=0
+          for PORT in $OPEN_PORTS; do
+              # 绝对不能阻塞 22
+              if [ "$PORT" = "22" ]; then continue; fi
+              
+              # tcp IPv4
+              if ! sudo iptables -C INPUT -i "$EXT_IF" -p tcp --dport "$PORT" -j DROP 2>/dev/null; then
+                  echo "[-] 强行阻断公网网卡入口 (IPv4 TCP): $PORT"
+                  sudo iptables -I INPUT 1 -i "$EXT_IF" -p tcp --dport "$PORT" -j DROP
+                  DROP_COUNT=$((DROP_COUNT+1))
+              fi
+              # udp IPv4
+              if ! sudo iptables -C INPUT -i "$EXT_IF" -p udp --dport "$PORT" -j DROP 2>/dev/null; then
+                  echo "[-] 强行阻断公网网卡入口 (IPv4 UDP): $PORT"
+                  sudo iptables -I INPUT 1 -i "$EXT_IF" -p udp --dport "$PORT" -j DROP
+                  DROP_COUNT=$((DROP_COUNT+1))
+              fi
+          done
+
+          # 再额外确保已知的高危端口一定被封禁 (即使当前没服务在监听)
+          for PORT in 3389 5432 3306 631 111 80 443 8080 8443 5443 2443 5201; do
+              if ! sudo iptables -C INPUT -i "$EXT_IF" -p tcp --dport "$PORT" -j DROP 2>/dev/null; then
+                  sudo iptables -I INPUT 1 -i "$EXT_IF" -p tcp --dport "$PORT" -j DROP 2>/dev/null || true
+                  DROP_COUNT=$((DROP_COUNT+1))
+              fi
+          done
+          
+          if [ $DROP_COUNT -gt 0 ]; then
+              echo "✅ 共新增加了 $DROP_COUNT 个公网入口 DROP 规则."
+          else
+              echo "✅ 全部公网暴露端口都已被阻断，无需新增规则."
+          fi
+          
+          # 3. 保存规则以便重启依然生效
+          if command -v netfilter-persistent >/dev/null; then
+              sudo netfilter-persistent save >/dev/null 2>&1
+          elif command -v iptables-save >/dev/null; then
+              sudo bash -c 'iptables-save > /etc/iptables/rules.v4' 2>/dev/null || true
+          fi
+          echo "✅ Iptables 规则已保存."
           EOF
           )
           
