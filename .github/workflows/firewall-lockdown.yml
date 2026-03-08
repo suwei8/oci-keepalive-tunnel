@@ -199,44 +199,26 @@ jobs:
           
           DROP_COUNT=0
           
-          # 3. 处理 Docker 端口暴露 (Docker 直接通过 PREROUTING 转发，绕过 INPUT)
-          if sudo iptables -L DOCKER-USER >/dev/null 2>&1; then
-              # 阻断外网网卡直接访问 Docker 容器
-              if ! sudo iptables -C DOCKER-USER -i "$EXT_IF" -j DROP 2>/dev/null; then
-                  echo "[-] 强行阻断公网网卡入口到 Docker 容器"
-                  sudo iptables -I DOCKER-USER 1 -i "$EXT_IF" -j DROP
-                  DROP_COUNT=$((DROP_COUNT+1))
-              fi
-          fi
-          
-          # 4. 获取监听在 0.0.0.0, [::] 或者是 * 的所有 TCP/UDP 端口
-          OPEN_PORTS=$(sudo ss -tulpn | awk 'NR>1 && $1 ~ /tcp|udp/ && $5 ~ /0\.0\.0\.0:|\[::\]:|\*:/' | awk '{print $5}' | awk -F':' '{print $NF}' | sort -n | uniq)
-          
-          for PORT in $OPEN_PORTS; do
-              # 绝对不能阻塞 22
-              if [ "$PORT" = "22" ]; then continue; fi
-              
+          # 3. 稳妥处理：仅针对部分绝对不应该外网直连的高危端口进行 DROP，白名单云面板默认。
+          # 鉴于全局扫描可能会误阻断 cloudflared/DNS/系统 UDP 随机高端口，此处改为确定性阻断策略。
+          for PORT in 3389 5432 3306 631 111 80 443 8080 8443 5443 2443 5201 5106 41863; do
               # tcp IPv4
               if ! sudo iptables -C INPUT -i "$EXT_IF" -p tcp --dport "$PORT" -j DROP 2>/dev/null; then
                   echo "[-] 强行阻断公网网卡入口 (IPv4 TCP): $PORT"
-                  sudo iptables -I INPUT 1 -i "$EXT_IF" -p tcp --dport "$PORT" -j DROP
-                  DROP_COUNT=$((DROP_COUNT+1))
-              fi
-              # udp IPv4
-              if ! sudo iptables -C INPUT -i "$EXT_IF" -p udp --dport "$PORT" -j DROP 2>/dev/null; then
-                  echo "[-] 强行阻断公网网卡入口 (IPv4 UDP): $PORT"
-                  sudo iptables -I INPUT 1 -i "$EXT_IF" -p udp --dport "$PORT" -j DROP
-                  DROP_COUNT=$((DROP_COUNT+1))
-              fi
-          done
-
-          # 5. 再额外确保已知的高危端口一定被封禁 (即使当前没服务在监听)
-          for PORT in 3389 5432 3306 631 111 80 443 8080 8443 5443 2443 5201; do
-              if ! sudo iptables -C INPUT -i "$EXT_IF" -p tcp --dport "$PORT" -j DROP 2>/dev/null; then
                   sudo iptables -I INPUT 1 -i "$EXT_IF" -p tcp --dport "$PORT" -j DROP 2>/dev/null || true
                   DROP_COUNT=$((DROP_COUNT+1))
               fi
           done
+
+          # 4. Docker 网桥专门处理：只阻断上述高危 TCP 端口外网访问 Docker
+          if sudo iptables -L DOCKER-USER >/dev/null 2>&1; then
+              for PORT in 3389 5432 3306 8080 8443 80 443; do
+                  if ! sudo iptables -C DOCKER-USER -i "$EXT_IF" -p tcp --dport "$PORT" -j DROP 2>/dev/null; then
+                      sudo iptables -I DOCKER-USER 1 -i "$EXT_IF" -p tcp --dport "$PORT" -j DROP 2>/dev/null || true
+                      DROP_COUNT=$((DROP_COUNT+1))
+                  fi
+              done
+          fi
           
           if [ $DROP_COUNT -gt 0 ]; then
               echo "✅ 共新增加了 $DROP_COUNT 个公网入口 DROP 规则."
@@ -244,7 +226,7 @@ jobs:
               echo "✅ 全部公网暴露端口都已被阻断，无需新增规则."
           fi
           
-          # 6. 保存规则以便重启依然生效
+          # 5. 保存规则以便重启依然生效
           if command -v netfilter-persistent >/dev/null; then
               sudo netfilter-persistent save >/dev/null 2>&1
           elif command -v iptables-save >/dev/null; then
