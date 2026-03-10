@@ -114,11 +114,7 @@ jobs:
               continue
             fi
             
-            
-            if ([ "$VLESS_HOST" = "null" ] || [ -z "$VLESS_HOST" ]) && ([ "$PROXY_DOMAIN" = "null" ] || [ -z "$PROXY_DOMAIN" ]); then
-              echo ">>> 跳过 $HOST_NAME (vless_host 和 proxy_domains 均为空)"
-              continue
-            fi
+            # 移除提前跳过，进入主机后再判断是否清理
             
             if [ -n "$TARGET_HOST" ] && [ "$HOST_NAME" != "$TARGET_HOST" ]; then
               continue
@@ -145,6 +141,20 @@ jobs:
             
             if ! kill -0 $TUNNEL_PID 2>/dev/null; then
               echo "❌ Tunnel 连接失败"
+              continue
+            fi
+            
+            # 如果 vless_host 和 proxy_domains 均为空，则清理 VLESS 服务
+            if ([ "$VLESS_HOST" = "null" ] || [ -z "$VLESS_HOST" ]) && ([ "$PROXY_DOMAIN" = "null" ] || [ -z "$PROXY_DOMAIN" ]); then
+              echo ">>> 节点配置为空，清理 Xray VLESS 服务并跳过..."
+              sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${CURRENT_SSH_USER}@127.0.0.1" "
+                sudo systemctl stop xray-vless 2>/dev/null || true
+                sudo systemctl disable xray-vless 2>/dev/null || true
+                sudo rm -rf /etc/systemd/system/xray-vless.service /usr/local/bin/xray /etc/xray /usr/local/share/xray 2>/dev/null || true
+                sudo systemctl daemon-reload 2>/dev/null || true
+              " 2>&1 || true
+              echo "✅ 清理完成: $HOST_NAME"
+              kill $TUNNEL_PID 2>/dev/null || true
               continue
             fi
             
@@ -529,7 +539,12 @@ jobs:
             echo ">>> 创建 Xray 配置 (使用 jq 生成)..."
             
             # 使用 jq 在 Runner 本地生成安全的 JSON 配置
-            if [ "$PROXY_DOMAIN" != "null" ] && [ -n "$PROXY_DOMAIN" ]; then
+            HAS_TUNNEL="false"
+            HAS_DIRECT="false"
+            if [ "$VLESS_HOST" != "null" ] && [ -n "$VLESS_HOST" ]; then HAS_TUNNEL="true"; fi
+            if [ "$PROXY_DOMAIN" != "null" ] && [ -n "$PROXY_DOMAIN" ]; then HAS_DIRECT="true"; fi
+
+            if [ "$HAS_TUNNEL" = "true" ] && [ "$HAS_DIRECT" = "true" ]; then
               # 双入口配置 (Tunnel + Direct No-TLS)
               XRAY_CONFIG=$(jq -n \
                 --arg uuid "$VLESS_UUID" \
@@ -555,31 +570,46 @@ jobs:
                   outbounds: [{protocol: "freedom", settings: {domainStrategy: "UseIPv4"}}]
                 }')
               echo "✅ 配置包含: Tunnel + Direct VLESS (无 TLS)"
+            elif [ "$HAS_DIRECT" = "true" ]; then
+              # 单入口配置 (仅 Direct No-TLS)
+              XRAY_CONFIG=$(jq -n \
+                --arg uuid "$VLESS_UUID" \
+                --arg host "a.189.cn" \
+                '{
+                  log: {loglevel: "warning"},
+                  inbounds: [
+                    {
+                      port: 5443,
+                      listen: "0.0.0.0",
+                      protocol: "vless",
+                      settings: {clients: [{id: $uuid, level: 0}], decryption: "none"},
+                      streamSettings: {network: "ws", wsSettings: {path: "/", headers: {Host: $host}}}
+                    }
+                  ],
+                  outbounds: [{protocol: "freedom", settings: {domainStrategy: "UseIPv4"}}]
+                }')
+              echo "✅ 配置包含: 仅 Direct VLESS (无 TLS)"
+            elif [ "$HAS_TUNNEL" = "true" ]; then
+               # 单入口配置 (仅 Tunnel)
+              XRAY_CONFIG=$(jq -n \
+                --arg uuid "$VLESS_UUID" \
+                '{
+                  log: {loglevel: "warning"},
+                  inbounds: [
+                    {
+                      port: 10086,
+                      listen: "127.0.0.1",
+                      protocol: "vless",
+                      settings: {clients: [{id: $uuid, level: 0}], decryption: "none"},
+                      streamSettings: {network: "ws", wsSettings: {path: "/library1629"}}
+                    }
+                  ],
+                  outbounds: [{protocol: "freedom", settings: {domainStrategy: "UseIPv4"}}]
+                }')
+              echo "✅ 配置包含: 仅 Tunnel"
             else
-               # 单入口配置 (仅 Tunnel) - 前提是 vless_host 存在
-              if [ "$VLESS_HOST" != "null" ] && [ -n "$VLESS_HOST" ]; then
-                XRAY_CONFIG=$(jq -n \
-                  --arg uuid "$VLESS_UUID" \
-                  '{
-                    log: {loglevel: "warning"},
-                    inbounds: [
-                      {
-                        port: 10086,
-                        listen: "127.0.0.1",
-                        protocol: "vless",
-                        settings: {clients: [{id: $uuid, level: 0}], decryption: "none"},
-                        streamSettings: {network: "ws", wsSettings: {path: "/library1629"}}
-                      }
-                    ],
-                    outbounds: [{protocol: "freedom", settings: {domainStrategy: "UseIPv4"}}]
-                  }')
-                echo "✅ 配置包含: 仅 Tunnel"
-              else
-                # 异常情况: vless_host 为空但 proxy_domains 也为空 (已被 skip 拦截)，或 logic error
-                # 这种情况下应该不会进入这里，除非 proxy_domains 有值但 entering single-entry block
-                echo "❌ 错误: 无 vless_host 且无 proxy_domains，无法生成配置"
-                exit 1
-              fi
+              echo "❌ 错误: 无 vless_host 且无 proxy_domains，应当已被跳过处理，逻辑异常"
+              exit 1
             fi
             
             # 使用 base64 传输 JSON 以避免转义问题

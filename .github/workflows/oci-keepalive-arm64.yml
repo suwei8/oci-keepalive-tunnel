@@ -59,6 +59,13 @@ jobs:
             exit 0
           fi
           
+          # 排除特定主机
+          if [ "$HOST_NAME" = "SG1-新加坡3-arm2" ] || [ "$HOST_NAME" = "JP-东京1-arm2-Mini" ]; then
+            echo "skip=true" >> $GITHUB_OUTPUT
+            echo "Skipping excluded host: $HOST_NAME"
+            exit 0
+          fi
+          
           # 如果主机名包含 "Mini"，跳过 (最小配置机器)
           if echo "$HOST_NAME" | grep -qi "Mini"; then
             echo "skip=true" >> $GITHUB_OUTPUT

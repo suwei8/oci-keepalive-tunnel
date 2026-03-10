@@ -121,17 +121,8 @@ jobs:
               continue
             fi
             
-            # 跳过条件: vless_host 和 proxy_domains 均为空
-            if ([ "$VLESS_HOST" = "null" ] || [ -z "$VLESS_HOST" ]) && ([ "$PROXY_DOMAIN" = "null" ] || [ -z "$PROXY_DOMAIN" ]); then
-              echo ">>> 跳过 $HOST_NAME (vless_host 和 proxy_domains 均为空)"
-              continue
-            fi
-            
-            # Hysteria 特定检查: 必须有 proxy_domains
-            if [ "$PROXY_DOMAIN" = "null" ] || [ -z "$PROXY_DOMAIN" ]; then
-              echo ">>> 跳过 $HOST_NAME (Hysteria 必须配置 proxy_domains)"
-              continue
-            fi
+            # 跳过条件: vless_host 和 proxy_domains 均为空的，提前跳是不对的，我们需要进主机清理。但是原逻辑是：
+            # 如果没有配置 proxy_domain 但配了 vless_host，对 Hysteria 仍然是无效节点，应当清理 Hysteria。
             
             echo ""
             echo "==========================================="
@@ -146,6 +137,19 @@ jobs:
             
             if ! kill -0 $TUNNEL_PID 2>/dev/null; then
               echo "❌ Tunnel 连接失败"
+              continue
+            fi
+            
+            # 如果 proxy_domains 为空，则清理 Hysteria 容器服务
+            if [ "$PROXY_DOMAIN" = "null" ] || [ -z "$PROXY_DOMAIN" ]; then
+              echo ">>> proxy_domains 为空，清理 Hysteria Docker 服务并跳过..."
+              sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" "
+                cd /home/sw/docker_root/hy 2>/dev/null && sudo docker compose down 2>/dev/null || true
+                sudo docker rm -f hysteria-server 2>/dev/null || true
+                sudo rm -rf /home/sw/docker_root/hy 2>/dev/null || true
+              " 2>&1 || true
+              echo "✅ 清理完成: $HOST_NAME"
+              kill $TUNNEL_PID 2>/dev/null || true
               continue
             fi
             
