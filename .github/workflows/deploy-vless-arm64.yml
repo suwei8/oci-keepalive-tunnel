@@ -151,7 +151,7 @@ jobs:
             fi
             
             # 检查 xray-vless 服务状态 (使用 systemd)
-            SERVICE_ACTIVE=$(sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" "echo '#!/bin/sh' > ~/.askpass.sh; echo 'echo \"\$SSH_PASSWORD\"' >> ~/.askpass.sh; chmod +x ~/.askpass.sh; export SUDO_ASKPASS=~/.askpass.sh; sudo() { command sudo -A \"\$@\"; }; export -f sudo; sudo systemctl is-active xray-vless 2>/dev/null || echo 'inactive'" 2>&1 | tail -1) || true
+            SERVICE_ACTIVE=$(sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" "echo '#!/bin/sh' > ~/.askpass.sh; echo 'echo \"$SSH_PASSWORD\"' >> ~/.askpass.sh; chmod +x ~/.askpass.sh; export SUDO_ASKPASS=~/.askpass.sh; sudo() { command sudo -A \"\$@\"; }; export -f sudo; sudo systemctl is-active xray-vless 2>/dev/null || echo 'inactive'" 2>&1 | tail -1) || true
             
             if [ "$SERVICE_ACTIVE" = "active" ] && [ "$FORCE_REDEPLOY" != "true" ]; then
               echo "⏭️ 服务运行中，检查配置后跳过"
@@ -604,11 +604,11 @@ jobs:
             
             # 使用 base64 传输 JSON 以避免转义问题
             CONFIG_B64=$(echo "$XRAY_CONFIG" | base64 -w 0)
-            sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" "echo '#!/bin/sh' > ~/.askpass.sh; echo 'echo \"\$SSH_PASSWORD\"' >> ~/.askpass.sh; chmod +x ~/.askpass.sh; export SUDO_ASKPASS=~/.askpass.sh; sudo() { command sudo -A \"\$@\"; }; export -f sudo; sudo mkdir -p /etc/xray && echo '$CONFIG_B64' | base64 -d | sudo tee /etc/xray/config.json > /dev/null" 2>&1 || true
+            sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" "echo '#!/bin/sh' > ~/.askpass.sh; echo 'echo \"$SSH_PASSWORD\"' >> ~/.askpass.sh; chmod +x ~/.askpass.sh; export SUDO_ASKPASS=~/.askpass.sh; sudo() { command sudo -A \"\$@\"; }; export -f sudo; sudo mkdir -p /etc/xray && echo '$CONFIG_B64' | base64 -d | sudo tee /etc/xray/config.json > /dev/null" 2>&1 || true
             
             echo ">>> 创建 systemd 服务..."
             SYSTEMD_SERVICE="W1VuaXRdCkRlc2NyaXB0aW9uPVhyYXkgVkxFU1MgU2VydmljZQpBZnRlcj1uZXR3b3JrLnRhcmdldAoKW1NlcnZpY2VdClR5cGU9c2ltcGxlCkV4ZWNTdGFydD0vdXNyL2xvY2FsL2Jpbi94cmF5IHJ1biAtY29uZmlnIC9ldGMveHJheS9jb25maWcuanNvbgpSZXN0YXJ0PW9uLWZhaWx1cmUKUmVzdGFydFNlYz0zCgpbSW5zdGFsbF0KV2FudGVkQnk9bXVsdGktdXNlci50YXJnZXQK"
-            sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" "echo '#!/bin/sh' > ~/.askpass.sh; echo 'echo \"\$SSH_PASSWORD\"' >> ~/.askpass.sh; chmod +x ~/.askpass.sh; export SUDO_ASKPASS=~/.askpass.sh; sudo() { command sudo -A \"\$@\"; }; export -f sudo; echo '$SYSTEMD_SERVICE' | base64 -d | sudo tee /etc/systemd/system/xray-vless.service > /dev/null && sudo systemctl daemon-reload" 2>&1 || true
+            sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" "echo '#!/bin/sh' > ~/.askpass.sh; echo 'echo \"$SSH_PASSWORD\"' >> ~/.askpass.sh; chmod +x ~/.askpass.sh; export SUDO_ASKPASS=~/.askpass.sh; sudo() { command sudo -A \"\$@\"; }; export -f sudo; echo '$SYSTEMD_SERVICE' | base64 -d | sudo tee /etc/systemd/system/xray-vless.service > /dev/null && sudo systemctl daemon-reload" 2>&1 || true
             
             echo ">>> 启动 Xray 服务..."
             SERVICE_OK="no"
