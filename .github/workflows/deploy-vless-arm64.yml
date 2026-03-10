@@ -139,7 +139,7 @@ jobs:
             if ([ "$VLESS_HOST" = "null" ] || [ -z "$VLESS_HOST" ]) && ([ "$PROXY_DOMAIN" = "null" ] || [ -z "$PROXY_DOMAIN" ]); then
               echo ">>> 节点配置为空，清理 Xray VLESS 服务并跳过..."
               sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" "
-                echo 'echo \"$SSH_PASSWORD\"' > /tmp/askpass.sh; chmod +x /tmp/askpass.sh; export SUDO_ASKPASS=/tmp/askpass.sh; sudo() { command sudo -A \"\$@\"; };
+                echo '#!/bin/sh' > /tmp/askpass.sh; echo 'echo \"$SSH_PASSWORD\"' >> /tmp/askpass.sh; chmod +x /tmp/askpass.sh; export SUDO_ASKPASS=/tmp/askpass.sh; sudo() { command sudo -A \"\$@\"; };
                 sudo systemctl stop xray-vless 2>/dev/null || true
                 sudo systemctl disable xray-vless 2>/dev/null || true
                 sudo rm -rf /etc/systemd/system/xray-vless.service /usr/local/bin/xray /etc/xray /usr/local/share/xray 2>/dev/null || true
@@ -500,7 +500,7 @@ jobs:
             # ============================================
             echo ">>> 检查/安装 Xray..."
             sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" "
-              echo 'echo \"$SSH_PASSWORD\"' > /tmp/askpass.sh; chmod +x /tmp/askpass.sh; export SUDO_ASKPASS=/tmp/askpass.sh; sudo() { command sudo -A \"\$@\"; };
+              echo '#!/bin/sh' > /tmp/askpass.sh; echo 'echo \"$SSH_PASSWORD\"' >> /tmp/askpass.sh; chmod +x /tmp/askpass.sh; export SUDO_ASKPASS=/tmp/askpass.sh; sudo() { command sudo -A \"\$@\"; };
               # 安装必要工具 (Firewall & Unzip)
               export DEBIAN_FRONTEND=noninteractive
               sudo apt-get update -qq 2>/dev/null || true
@@ -615,7 +615,7 @@ jobs:
             for RETRY in 1 2 3; do
               echo ">>> 尝试启动 (第 $RETRY 次)..."
               sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" "
-                echo 'echo \"$SSH_PASSWORD\"' > /tmp/askpass.sh; chmod +x /tmp/askpass.sh; export SUDO_ASKPASS=/tmp/askpass.sh; sudo() { command sudo -A \"\$@\"; };
+                echo '#!/bin/sh' > /tmp/askpass.sh; echo 'echo \"$SSH_PASSWORD\"' >> /tmp/askpass.sh; chmod +x /tmp/askpass.sh; export SUDO_ASKPASS=/tmp/askpass.sh; sudo() { command sudo -A \"\$@\"; };
                 sudo systemctl stop xray-vless 2>/dev/null || true
                 sudo systemctl enable xray-vless
                 sudo systemctl start xray-vless
