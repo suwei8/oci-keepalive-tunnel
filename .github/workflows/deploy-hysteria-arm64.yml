@@ -482,7 +482,7 @@ jobs:
           echo "完成: 新部署 $DEPLOYED_COUNT, 更新 $UPDATED_COUNT, 跳过 $SKIPPED_COUNT"
           echo "==========================================="
           
-          echo -e "$NODES_INFO" > /tmp/nodes_info.txt
+          echo -en "$NODES_INFO" > /tmp/nodes_info.txt
 
       - name: Send Telegram notification
         env:
