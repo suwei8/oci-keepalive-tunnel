@@ -1,0 +1,266 @@
+{
+    "name": "SG1-新加坡",
+    "cpu_type": "arm64",
+    "ssh_host": "singapore-1-ssh.555606.xyz",
+    "proxy_domains": "py.sjp1.hhwpxh.com",
+    "vless_host": "cf-xjp.555606.xyz"
+},
+{
+    "name": "SG1-新加坡3",
+    "cpu_type": "arm64",
+    "ssh_host": "singapore3-arm1-ssh.555606.xyz",
+    "proxy_domains": "py.sjp3.hhwpxh.com",
+    "vless_host": "cf-xjp3.555606.xyz"
+},
+{
+    "name": "SG2-新加坡西5",
+    "cpu_type": "arm64",
+    "ssh_host": "singapore-west5-ssh.hhwpxh.com",
+    "proxy_domains": "py.xjpx5.hhwpxh.com",
+    "vless_host": "cf-xjpx5.hhwpxh.com"
+},
+{
+    "name": "US-凤凰城",
+    "cpu_type": "arm64",
+    "ssh_host": "us-phoenix-1-arm-ssh.555606.xyz",
+    "proxy_domains": "py.fhc1.hhwpxh.com",
+    "vless_host": "cf-fhc1.555606.xyz"
+},
+{
+    "name": "US-凤凰城0权-arm",
+    "cpu_type": "arm64",
+    "ssh_host": "ssh-us-phoenix-4.555606.xyz",
+    "proxy_domains": "py.fhc4.hhwpxh.com",
+    "vless_host": "cf-fhc4.555606.xyz"
+},
+{
+    "name": "KR-首尔1",
+    "cpu_type": "arm64",
+    "ssh_host": "seoul-1-arm-ssh.555606.xyz",
+    "proxy_domains": "py.sr1.hhwpxh.com",
+    "vless_host": "cf-sr1.555606.xyz"
+},
+{
+    "name": "JP-东京1-arm1",
+    "cpu_type": "arm64",
+    "ssh_host": "tokyo-1-arm1-3h-22g-ssh.555606.xyz",
+    "proxy_domains": "py.dj.hhwpxh.com",
+    "vless_host": "cf-jd1.555606.xyz"
+},
+{
+    "name": "JP-东京1-arm2-Mini",
+    "cpu_type": "arm64",
+    "ssh_host": "tokyo-1-arm2-1h-2g-ssh.555606.xyz",
+    "proxy_domains": "py.dj2.hhwpxh.com",
+    "vless_host": "cf-jd2.555606.xyz"
+},
+{
+    "name": "JBP-马来西亚2",
+    "cpu_type": "arm64",
+    "ssh_host": "kulai2-ssh.hhwpxh.com",
+    "proxy_domains": "py.kulai2.hhwpxh.com",
+    "vless_host": "cf-kulai2.hhwpxh.com"
+},
+{
+    "name": "JP-东京1-amd",
+    "cpu_type": "amd64",
+    "ssh_host": "tokyo-1-amd1-1h-1g-ssh.555606.xyz",
+    "proxy_domains": "py.tokyo-1-amd.hhwpxh.com",
+    "vless_host": "cf-tokyo-1-amd.555606.xyz"
+},
+{
+    "name": "JP-东京2-amd",
+    "cpu_type": "amd64",
+    "ssh_host": "tokyo2-amd1-ssh.555606.xyz",
+    "proxy_domains": "py.tokyo2-amd1.hhwpxh.com",
+    "vless_host": "cf-tokyo2-amd1.555606.xyz"
+},
+{
+    "name": "US-凤凰城3-amd1",
+    "cpu_type": "amd64",
+    "ssh_host": "phoenix-3-amd1-ssh.555606.xyz",
+    "proxy_domains": "py.phoenix-3-amd1.hhwpxh.com",
+    "vless_host": "cf-phoenix-3-amd1.555606.xyz"
+},
+{
+    "name": "US-凤凰城3-amd2",
+    "cpu_type": "amd64",
+    "ssh_host": "phoenix-3-amd2-ssh.555606.xyz",
+    "proxy_domains": "py.phoenix-3-amd2.hhwpxh.com",
+    "vless_host": "cf-phoenix-3-amd2.555606.xyz"
+},
+{
+    "name": "US-圣何塞-amd1",
+    "cpu_type": "amd64",
+    "ssh_host": "sanjose-2-amd1-ssh.hhwpxh.com",
+    "proxy_domains": "py.sanjose-2-amd1.hhwpxh.com",
+    "vless_host": "cf-sanjose-2-amd1.hhwpxh.com"
+},
+{
+    "name": "US-圣何塞-amd2",
+    "cpu_type": "amd64",
+    "ssh_host": "sanjose-2-amd2-ssh.555606.xyz",
+    "proxy_domains": "py.sanjose-2-amd2.hhwpxh.com",
+    "vless_host": "cf-sanjose-2-amd2.555606.xyz"
+},
+{
+    "name": "JP-大版-amd",
+    "cpu_type": "amd64",
+    "ssh_host": "osaka-amd-ssh.hhwpxh.com",
+    "proxy_domains": "py.osaka-amd.hhwpxh.com",
+    "vless_host": "cf-osaka-amd.hhwpxh.com"
+},
+{
+    "name": "AWS",
+    "cpu_type": "amd64",
+    "ssh_host": "aws-ssh.hhwpxh.com",
+    "proxy_domains": "py-aws-hhwpxh.com",
+    "vless_host": "cf-aws.hhwpxh.com"
+},
+{
+    "name": "US-GCP俄勒冈",
+    "cpu_type": "amd64",
+    "ssh_host": "gcp-ssh.555606.xyz",
+    "proxy_domains": "py-gcp.hhwpxh.com",
+    "vless_host": "cf-gcp.555606.xyz"
+},
+{
+    "name": "ID-巴淡岛1",
+    "cpu_type": "arm64",
+    "ssh_host": "batam-1-arm-ssh.555606.xyz",
+    "proxy_domains": "",
+    "vless_host": ""
+},
+{
+    "name": "ID-巴淡岛2",
+    "cpu_type": "arm64",
+    "ssh_host": "batam2-arm-ssh.555606.xyz",
+    "proxy_domains": "",
+    "vless_host": ""
+},
+{
+    "name": "ID-巴淡岛3",
+    "cpu_type": "arm64",
+    "ssh_host": "batam3-arm-ssh.hhwpxh.com",
+    "proxy_domains": "",
+    "vless_host": ""
+},
+{
+    "name": "ID-巴淡岛4",
+    "cpu_type": "arm64",
+    "ssh_host": "batam4-arm-ssh.hhwpxh.com",
+    "proxy_domains": "",
+    "vless_host": ""
+},
+{
+    "name": "SG2-新加坡西1",
+    "cpu_type": "arm64",
+    "ssh_host": "singapore-west-4h24g-ssh.555606.xyz",
+    "proxy_domains": "",
+    "vless_host": ""
+},
+{
+    "name": "SG2-新加坡西2",
+    "cpu_type": "arm64",
+    "ssh_host": "singapore-west2-ssh.555606.xyz",
+    "proxy_domains": "",
+    "vless_host": ""
+},
+{
+    "name": "SG2-新加坡西3",
+    "cpu_type": "arm64",
+    "ssh_host": "singapore-west3-ssh.555606.xyz",
+    "proxy_domains": "",
+    "vless_host": ""
+},
+{
+    "name": "SG2-新加坡西4",
+    "cpu_type": "arm64",
+    "ssh_host": "singapore-west4-ssh.555606.xyz",
+    "proxy_domains": "",
+    "vless_host": ""
+},
+{
+    "name": "SG2-新加坡西6",
+    "cpu_type": "arm64",
+    "ssh_host": "singapore-west6-arm1-ssh.hhwpxh.com",
+    "proxy_domains": "",
+    "vless_host": ""
+},
+{
+    "name": "SG2-新加坡西7",
+    "cpu_type": "arm64",
+    "ssh_host": "singapore-west7-ssh.hhwpxh.com",
+    "proxy_domains": "",
+    "vless_host": ""
+},
+{
+    "name": "US-凤凰城2-arm1",
+    "cpu_type": "arm64",
+    "ssh_host": "phoenix-2-arm1-2h12g-ssh.555606.xyz",
+    "proxy_domains": "",
+    "vless_host": ""
+},
+{
+    "name": "US-凤凰城2-arm2",
+    "cpu_type": "arm64",
+    "ssh_host": "phoenix-2-arm2-2h12g-ssh.555606.xyz",
+    "proxy_domains": "",
+    "vless_host": ""
+},
+{
+    "name": "KR-首尔2",
+    "cpu_type": "arm64",
+    "ssh_host": "seoul-2-arm-ssh.555606.xyz",
+    "proxy_domains": "",
+    "vless_host": ""
+},
+{
+    "name": "ES-马德里3-3",
+    "cpu_type": "arm64",
+    "ssh_host": "madrid-3-3-arm-4h24g-ssh.555606.xyz",
+    "proxy_domains": "py-madrid-3-3.555606.xyz",
+    "vless_host": "cf-madrid-3-3.555606.xyz"
+},
+{
+    "name": "ES-马德里3-4",
+    "cpu_type": "arm64",
+    "ssh_host": "madrid-3-4-arm-4h24g-ssh.555606.xyz",
+    "proxy_domains": "",
+    "vless_host": ""
+},
+{
+    "name": "ES-马德里3-5",
+    "cpu_type": "arm64",
+    "ssh_host": "madrid-3-5-ssh.hhwpxh.com",
+    "proxy_domains": "",
+    "vless_host": ""
+},
+{
+    "name": "DU-迪拜",
+    "cpu_type": "arm64",
+    "ssh_host": "dubai-arm-ssh.hhwpxh.com",
+    "proxy_domains": "",
+    "vless_host": ""
+},
+{
+    "name": "IT-都灵",
+    "cpu_type": "arm64",
+    "ssh_host": "eu-turin-ssh.555606.xyz",
+    "proxy_domains": "",
+    "vless_host": ""
+},
+{
+    "name": "AU-悉尼",
+    "cpu_type": "arm64",
+    "ssh_host": "sydney1-arm-ssh.555606.xyz",
+    "proxy_domains": "",
+    "vless_host": ""
+},
+{
+    "name": "JBP-马来西亚",
+    "cpu_type": "arm64",
+    "ssh_host": "kulai-ssh.hhwpxh.com",
+    "proxy_domains": "",
+    "vless_host": ""
+}

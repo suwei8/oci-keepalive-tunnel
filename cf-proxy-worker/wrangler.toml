@@ -1,0 +1,13 @@
+name = "secure-proxy-worker"
+main = "worker.js"
+compatibility_date = "2024-03-05"
+account_id = "4eecf209347fdb0ef4626d2263c6f5b5"
+
+# 使用没有任何特征前缀的自定义名称
+routes = [
+  { pattern = "sso.555606.xyz", custom_domain = true }
+]
+
+[vars]
+# 更换更隐蔽的环境变量键名
+APP_TOKEN = "219f4d83-59e0-457f-b596-6a7e87dbc971"
