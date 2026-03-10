@@ -417,10 +417,10 @@ jobs:
           fi
           
           TIMESTAMP=$(date -u +'%Y-%m-%d %H:%M UTC')
-          NODE_COUNT=$(cat /tmp/nodes_info.txt | grep -v "^$" | wc -l)
+          NODE_COUNT=$(cat /tmp/nodes_info.txt | grep -v "^$" | wc -l || true)
           
           # 节点列表
-          NODES_FULL=$(cat /tmp/nodes_info.txt | grep -v "^$" | head -20)
+          NODES_FULL=$(cat /tmp/nodes_info.txt | grep -v "^$" | head -20 || true)
           
           FINAL_MSG=$(printf "🚀 *Hysteria v2 部署完成 (AMD64 - Binary)*\n\n📅 %s\n\n✅ *共 %s 个节点*\n\n📋 *客户端连接信息:*\n\`\`\`\n%s\n\`\`\`\n\n🔗 *订阅地址:*\nhttps://v.555606.xyz/hy2\_amd64.txt\n\n💡 复制上方链接导入客户端即可使用" "$TIMESTAMP" "$NODE_COUNT" "$NODES_FULL")
           
@@ -469,7 +469,7 @@ jobs:
           echo "# Hysteria v2 节点列表 (AMD64)" > hy2_amd64.txt
           echo "# 更新时间: $TIMESTAMP" >> hy2_amd64.txt
           echo "" >> hy2_amd64.txt
-          cat /tmp/nodes_info.txt | grep -v "^$" >> hy2_amd64.txt
+          cat /tmp/nodes_info.txt | grep -v "^$" >> hy2_amd64.txt || true
           
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"

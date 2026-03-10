@@ -496,10 +496,10 @@ jobs:
           fi
           
           TIMESTAMP=$(date -u +'%Y-%m-%d %H:%M UTC')
-          NODE_COUNT=$(cat /tmp/nodes_info.txt | grep -v "^$" | wc -l)
+          NODE_COUNT=$(cat /tmp/nodes_info.txt | grep -v "^$" | wc -l || true)
           
           # 节点列表 (完整 URI)
-          NODES_FULL=$(cat /tmp/nodes_info.txt | grep -v "^$" | head -20)
+          NODES_FULL=$(cat /tmp/nodes_info.txt | grep -v "^$" | head -20 || true)
           
           FINAL_MSG=$(printf "🚀 *Hysteria v2 部署完成*\n\n📅 %s\n\n✅ *共 %s 个节点*\n\n📋 *客户端连接信息:*\n\`\`\`\n%s\n\`\`\`\n\n💡 复制上方链接导入客户端即可使用" "$TIMESTAMP" "$NODE_COUNT" "$NODES_FULL")
           
@@ -549,7 +549,7 @@ jobs:
           echo "# Hysteria v2 节点列表" > hy2.txt
           echo "# 更新时间: $TIMESTAMP" >> hy2.txt
           echo "" >> hy2.txt
-          cat /tmp/nodes_info.txt | grep -v "^$" >> hy2.txt
+          cat /tmp/nodes_info.txt | grep -v "^$" >> hy2.txt || true
           
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -569,7 +569,7 @@ jobs:
           if [ -s /tmp/nodes_info.txt ]; then
             echo "### ✅ 节点列表" >> $GITHUB_STEP_SUMMARY
             echo '```' >> $GITHUB_STEP_SUMMARY
-            cat /tmp/nodes_info.txt | grep -v "^$" >> $GITHUB_STEP_SUMMARY
+            cat /tmp/nodes_info.txt | grep -v "^$" >> $GITHUB_STEP_SUMMARY || true
             echo '```' >> $GITHUB_STEP_SUMMARY
           else
             echo "无节点信息" >> $GITHUB_STEP_SUMMARY
