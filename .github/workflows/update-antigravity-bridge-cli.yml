@@ -220,7 +220,7 @@ jobs:
           
           # 更新 Antigravity-Bridge 和 Antigravity CLI
           echo ">>> Updating Antigravity-Bridge and CLI..."
-          sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -p 2222 "${SSH_USERNAME}@127.0.0.1" << 'EOF' || echo "⚠️ Bridge/CLI update failed"
+          sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -p 2222 "${SSH_USERNAME}@127.0.0.1" <<- 'EOF' || echo "⚠️ Bridge/CLI update failed"
             echo ">>> Updating Antigravity-Bridge..."
             wget -q -O manage.sh https://raw.githubusercontent.com/suwei8/antigravity-Bridge/main/manage.sh || true
             chmod +x manage.sh || true
@@ -233,7 +233,7 @@ jobs:
 
             echo ">>> Updating Antigravity CLI..."
             { export GH_TOKEN="${{ secrets.BLOG_GITHUB_TOKEN }}" && ASSET_URL=$(curl -s -H "Authorization: Bearer $GH_TOKEN" https://api.github.com/repos/suwei8/antigravity-cli/releases/latest | grep -o "https://api.github.com/repos/suwei8/antigravity-cli/releases/assets/[0-9]*" | head -n 1) && curl -L -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/octet-stream" "$ASSET_URL" -o antigravity-cli && chmod +x antigravity-cli; } || true
-EOF
+          EOF
           
           # 解析输出
           OLD_VERSION=$(echo "$UPDATE_OUTPUT" | grep "^OLD_VERSION:" | tail -1 | cut -d: -f2)
