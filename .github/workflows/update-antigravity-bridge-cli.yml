@@ -1,4 +1,4 @@
-name: Update Antigravity (ARM64)
+name: Update Antigravity & Bridge & CLI (ARM64)
 
 on:
   schedule:
@@ -217,6 +217,31 @@ jobs:
           ' 2>&1)
           
           echo "$UPDATE_OUTPUT"
+          
+          # 更新 Antigravity-Bridge 和 Antigravity CLI
+          echo ">>> Updating Antigravity-Bridge and CLI..."
+          sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -p 2222 "${SSH_USERNAME}@127.0.0.1" '
+            echo ">>> Updating Antigravity-Bridge..."
+            wget -q -O manage.sh https://raw.githubusercontent.com/suwei8/antigravity-Bridge/main/manage.sh
+            chmod +x manage.sh
+            ./manage.sh stop
+            sleep 2
+            wget -q -O /tmp/antigravity-bridge https://github.com/suwei8/antigravity-Bridge/releases/latest/download/antigravity-bridge
+            chmod +x /tmp/antigravity-bridge
+            mv /tmp/antigravity-bridge ./antigravity-bridge
+            ./manage.sh start
+
+            echo ">>> Updating Antigravity CLI..."
+            export GH_TOKEN="${{ secrets.GH_TOKEN }}"
+            ASSET_URL=$(curl -s -H "Authorization: Bearer $GH_TOKEN" https://api.github.com/repos/suwei8/antigravity-cli/releases/latest | grep -o "https://api.github.com/repos/suwei8/antigravity-cli/releases/assets/[0-9]*" | head -n 1)
+            if [ -n "$ASSET_URL" ]; then
+              curl -s -L -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/octet-stream" "$ASSET_URL" -o antigravity-cli
+              chmod +x antigravity-cli
+              echo "✅ CLI updated."
+            else
+              echo "⚠️ Failed to get CLI asset URL."
+            fi
+          ' || echo "⚠️ Bridge/CLI update failed"
           
           # 解析输出
           OLD_VERSION=$(echo "$UPDATE_OUTPUT" | grep "^OLD_VERSION:" | tail -1 | cut -d: -f2)
