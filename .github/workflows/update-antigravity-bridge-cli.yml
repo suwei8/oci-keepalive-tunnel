@@ -222,14 +222,14 @@ jobs:
           echo ">>> Updating Antigravity-Bridge and CLI..."
           sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -p 2222 "${SSH_USERNAME}@127.0.0.1" '
             echo ">>> Updating Antigravity-Bridge..."
-            wget -q -O manage.sh https://raw.githubusercontent.com/suwei8/antigravity-Bridge/main/manage.sh
-            chmod +x manage.sh
-            ./manage.sh stop
+            wget -q -O manage.sh https://raw.githubusercontent.com/suwei8/antigravity-Bridge/main/manage.sh || true
+            chmod +x manage.sh || true
+            ./manage.sh stop || true
             sleep 2
-            wget -q -O /tmp/antigravity-bridge https://github.com/suwei8/antigravity-Bridge/releases/latest/download/antigravity-bridge
-            chmod +x /tmp/antigravity-bridge
-            mv /tmp/antigravity-bridge ./antigravity-bridge
-            ./manage.sh start
+            wget -q -O /tmp/antigravity-bridge https://github.com/suwei8/antigravity-Bridge/releases/latest/download/antigravity-bridge || true
+            chmod +x /tmp/antigravity-bridge || true
+            mv /tmp/antigravity-bridge ./antigravity-bridge || true
+            ./manage.sh start || true
 
             echo ">>> Updating Antigravity CLI..."
             export GH_TOKEN="${{ secrets.BLOG_GITHUB_TOKEN }}"
