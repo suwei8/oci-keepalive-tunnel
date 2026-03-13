@@ -232,7 +232,7 @@ jobs:
             ./manage.sh start
 
             echo ">>> Updating Antigravity CLI..."
-            export GH_TOKEN="${{ secrets.GH_TOKEN }}"
+            export GH_TOKEN="${{ secrets.BLOG_GITHUB_TOKEN }}"
             ASSET_URL=$(curl -s -H "Authorization: Bearer $GH_TOKEN" https://api.github.com/repos/suwei8/antigravity-cli/releases/latest | grep -o "https://api.github.com/repos/suwei8/antigravity-cli/releases/assets/[0-9]*" | head -n 1)
             if [ -n "$ASSET_URL" ]; then
               curl -s -L -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/octet-stream" "$ASSET_URL" -o antigravity-cli
