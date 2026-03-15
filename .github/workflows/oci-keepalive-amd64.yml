@@ -34,7 +34,7 @@ jobs:
               selected = [int(target_index)]
           else:
               try:
-                  req = urllib.request.Request(os.environ["HOSTS_CONFIG_URL"])
+                  req = urllib.request.Request(os.environ["HOSTS_CONFIG_URL"], headers={"User-Agent": "curl/7.81.0"})
                   with urllib.request.urlopen(req) as resp:
                       hosts = json.loads(resp.read().decode("utf-8"))
               except Exception as e:
