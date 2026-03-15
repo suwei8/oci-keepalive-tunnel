@@ -990,6 +990,7 @@ class LotteryTask:
     def stream_parse_and_stats(self, sql_file):
         """流式解析 SQL 并统计福彩3D数据"""
         stats_cnt = 0
+        line_cnt = 0
         target_table = "lottery_results_3d"
         # 仅保留最近 200 条数据用于分析
         recent_data = []
@@ -999,6 +1000,7 @@ class LotteryTask:
         # 逐行读取，防止 OOM
         with open(sql_file, 'r', encoding='utf-8', errors='ignore') as f:
             for line in f:
+                line_cnt += 1
                 if target_table in line and "INSERT INTO" in line:
                     # 粗略解析 VALUES
                     # 假设格式: VALUES (id, 'issue', 'd1', 'd2', 'd3', ...)
@@ -1027,9 +1029,9 @@ class LotteryTask:
                     except:
                         pass
                 
-                # 每 10000 行 插入微小 sleep 模拟 CPU 呼吸
-                if stats_cnt % 5000 == 0 and stats_cnt > 0:
-                     time.sleep(0.001)
+                # 平滑 CPU 负载: 每读取 2000 行强制休眠 10ms，有效将单核 CPU 压低至 80% 以下
+                if line_cnt % 2000 == 0:
+                     time.sleep(0.01)
 
         print(f"[Lottery] ✅ 解析完成，提取记录: {stats_cnt} 条, 耗时 {time.time()-start_t:.1f}s")
         
