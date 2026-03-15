@@ -1,5 +1,14 @@
 
 2026-03-16 00:49:25,US-凤凰城,2026065,1,0,1,pure_python
+2026-03-15 18:38:56,DU-迪拜-amd1,99999,0,0,0,micro_mode_simulation
+2026-03-15 18:38:34,AU-墨尔本2-amd1,99999,0,0,0,micro_mode_simulation
+2026-03-15 18:38:29,AU-悉尼2-amd2,99999,0,0,0,micro_mode_simulation
+2026-03-15 18:35:55,KR-春川-amd2,99999,0,0,0,micro_mode_simulation
+2026-03-15 18:34:56,JP-东京1-amd,99999,0,0,0,micro_mode_simulation
+2026-03-15 18:34:32,JP-东京2-amd,99999,0,0,0,micro_mode_simulation
+2026-03-15 18:32:15,US-圣何塞-amd2,99999,0,0,0,micro_mode_simulation
+2026-03-15 18:32:01,SG1-新加坡2-amd2,99999,0,0,0,micro_mode_simulation
+2026-03-15 18:31:46,US-凤凰城3-amd1,99999,0,0,0,micro_mode_simulation
 2026-03-15 17:22:29,JP-东京1-arm1,2026065,1,9,0,pure_python
 2026-03-15 17:11:37,US-凤凰城0权-arm,2026065,7,9,0,pure_python
 2026-03-15 17:01:09,US-凤凰城2-arm1,2026065,5,0,0,pure_python
