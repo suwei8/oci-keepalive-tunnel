@@ -42,9 +42,14 @@ jobs:
                   exit(1)
               
               groups = {}
+              blacklist = ["US-GCP俄勒冈", "AWS", "US-bestvm-232-amd", "US-bestvm-235-amd"]
+              
               for idx, host in enumerate(hosts):
                   if host.get("cpu_type") == "amd64":
                       name = host.get("name", "")
+                      if name in blacklist:
+                          continue
+                          
                       match = re.search(r"^(.*?)-amd\d*$", name)
                       if match:
                           prefix = match.group(1)
