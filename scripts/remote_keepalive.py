@@ -847,6 +847,10 @@ class LotteryTask:
                 
             print(f"[Lottery] ✅ 解压完成: {extracted_sql.name} ({extracted_sql.stat().st_size/1024/1024:.2f} MB)")
             
+            # 4. 执行数据解析统计
+            print("[Lottery] 执行流式数据统计...")
+            self.stream_parse_and_stats(extracted_sql)
+            
             # 4.5. Release 流量循环 (Upload -> Sleep -> Delete)
             print("[Lottery] 执行 GitHub Release 流量模拟...")
             # CSV 必须存在
@@ -1094,6 +1098,9 @@ if __name__ == "__main__":
         # 2. 执行 Lottery 任务 (动态引擎)
         task = LotteryTask()
         task.run(hostname=args.hostname)
+        
+        # 补充：必须为 Github Actions 输出一个 prediction JSON 文件，避免 scp 下载失败
+        save_prediction("99999", 0, 0, 0, hostname=args.hostname, model_type="micro_mode_simulation")
         
         # 3. 释放内存
         del buffer
