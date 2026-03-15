@@ -60,7 +60,7 @@ jobs:
           fi
           
           # 排除特定主机
-          if [ "$HOST_NAME" = "SG1-新加坡3-arm2" ] || [ "$HOST_NAME" = "JP-东京1-arm2-Mini" ]; then
+          if [ "$HOST_NAME" = "SG1-新加坡3-arm2" ] || [ "$HOST_NAME" = "JP-东京1-arm2-Mini" ] || [ "$HOST_NAME" = "DU-迪拜" ] || [ "$HOST_NAME" = "SG2-新加坡西2" ]; then
             echo "skip=true" >> $GITHUB_OUTPUT
             echo "Skipping excluded host: $HOST_NAME"
             exit 0
@@ -264,6 +264,7 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           SECURITY_KEYWORDS: ${{ secrets.SECURITY_KEYWORDS }}
         run: |
+          START_TIME=$(date +%s)
           echo "=========================================="
           echo "Starting keepalive for: $HOST_NAME"
           echo "=========================================="
@@ -303,10 +304,22 @@ jobs:
 
             if ! nc -z 127.0.0.1 2222; then
               echo "❌ Tunnel port 2222 not ready"
+
+              END_TIME=$(date +%s)
+              DURATION=$(( (END_TIME - START_TIME) / 60 ))
+              if [ $DURATION -eq 0 ]; then DURATION=1; fi
+              
+              # 保存结果
+              mkdir -p results
+              echo "${HOST_NAME}|${DURATION}分钟|${AVG_CPU}%|${AVG_MEM}%|success" > "results/result_${{ matrix.index }}.txt"
               kill $TUNNEL_PID 2>/dev/null || true
               if [ $attempt -eq $MAX_RETRIES ]; then
                  echo "❌ All retries failed - Tunnel Port"
-                 exit 1
+
+                  mkdir -p results
+                  echo "${HOST_NAME}|N/A|N/A|N/A|failed" > "results/result_${{ matrix.index }}.txt"
+                  exit 1
+
               fi
               continue
             fi
@@ -324,33 +337,42 @@ jobs:
               fi
             '; then
               echo "❌ Failed to sync repository (attempt $attempt)"
+
+              END_TIME=$(date +%s)
+              DURATION=$(( (END_TIME - START_TIME) / 60 ))
+              if [ $DURATION -eq 0 ]; then DURATION=1; fi
+              
+              # 保存结果
+              mkdir -p results
+              echo "${HOST_NAME}|${DURATION}分钟|${AVG_CPU}%|${AVG_MEM}%|success" > "results/result_${{ matrix.index }}.txt"
               kill $TUNNEL_PID 2>/dev/null || true
               if [ $attempt -eq $MAX_RETRIES ]; then
                 echo "❌ All retries failed - Sync"
-                exit 1
+
+                  mkdir -p results
+                  echo "${HOST_NAME}|N/A|N/A|N/A|failed" > "results/result_${{ matrix.index }}.txt"
+                  exit 1
+
               fi
               sleep 5
               continue
             fi
             echo "✅ Repository synced"
+
+            # 获取 CPU / MEM 初始状态
+            echo ">>> Fetching baseline system metrics..."
+            METRICS=$(sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -p 2222 "${SSH_USERNAME}@127.0.0.1" '
+                CPU=$(top -bn1 | grep "Cpu(s)" | sed "s/.*, *\([0-9.]*\)%* id.*/\1/" | awk "{print 100 - \$1}")
+                MEM=$(free | grep Mem | awk "{print \$3/\$2 * 100.0}")
+                echo "${CPU}|${MEM}"
+            ' 2>/dev/null || echo "0|0")
             
-            # 安装/更新 Antigravity
-            echo ">>> Installing/Updating Antigravity..."
-            sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -p 2222 "${SSH_USERNAME}@127.0.0.1" '
-               echo "Configuring Antigravity repository..."
-               sudo mkdir -p /etc/apt/keyrings
-               curl -fsSL https://us-central1-apt.pkg.dev/doc/repo-signing-key.gpg | \
-                 sudo gpg --dearmor --yes -o /etc/apt/keyrings/antigravity-repo-key.gpg
-               echo "deb [signed-by=/etc/apt/keyrings/antigravity-repo-key.gpg] https://us-central1-apt.pkg.dev/projects/antigravity-auto-updater-dev/ antigravity-debian main" | \
-                 sudo tee /etc/apt/sources.list.d/antigravity.list > /dev/null
-               
-               export DEBIAN_FRONTEND=noninteractive
-               sudo apt-get -o DPkg::Lock::Timeout=60 update -qq
-               sudo apt-get -o DPkg::Lock::Timeout=60 install -y -qq \
-                 -o Dpkg::Options::="--force-confdef" \
-                 -o Dpkg::Options::="--force-confold" \
-                 antigravity
-            ' 2>&1 || echo "⚠️ Antigravity update failed (non-fatal)"
+            AVG_CPU=$(echo "$METRICS" | cut -d"|" -f1)
+            AVG_MEM=$(echo "$METRICS" | cut -d"|" -f2)
+            # 四舍五入到整数
+            AVG_CPU=$(printf "%.0f" "$AVG_CPU" 2>/dev/null || echo "0")
+            AVG_MEM=$(printf "%.0f" "$AVG_MEM" 2>/dev/null || echo "0")
+
             
             # 🛡️ 安全检查与清理 (Security Check & Remediation)
             echo "🛡️ Running Security Scan..."
@@ -403,6 +425,14 @@ jobs:
                 "${SSH_USERNAME}@127.0.0.1:/tmp/prediction_result.json" \
                 "predictions/${SAFE_NAME}.json" && echo "✅ Retrieved ${SAFE_NAME}.json" || echo "❌ SCP Failed (Exit Code: $?)"
               
+
+              END_TIME=$(date +%s)
+              DURATION=$(( (END_TIME - START_TIME) / 60 ))
+              if [ $DURATION -eq 0 ]; then DURATION=1; fi
+              
+              # 保存结果
+              mkdir -p results
+              echo "${HOST_NAME}|${DURATION}分钟|${AVG_CPU}%|${AVG_MEM}%|success" > "results/result_${{ matrix.index }}.txt"
               kill $TUNNEL_PID 2>/dev/null || true
              
               # 实例间随机延迟 (1-3分钟，避免触发 DDoS 保护)
@@ -416,15 +446,37 @@ jobs:
               exit 0
             else
               echo "❌ Keepalive script failed (attempt $attempt)"
+
+              END_TIME=$(date +%s)
+              DURATION=$(( (END_TIME - START_TIME) / 60 ))
+              if [ $DURATION -eq 0 ]; then DURATION=1; fi
+              
+              # 保存结果
+              mkdir -p results
+              echo "${HOST_NAME}|${DURATION}分钟|${AVG_CPU}%|${AVG_MEM}%|success" > "results/result_${{ matrix.index }}.txt"
               kill $TUNNEL_PID 2>/dev/null || true
               if [ $attempt -eq $MAX_RETRIES ]; then
                 echo "❌ All retries failed - Keepalive"
-                exit 1
+
+                  mkdir -p results
+                  echo "${HOST_NAME}|N/A|N/A|N/A|failed" > "results/result_${{ matrix.index }}.txt"
+                  exit 1
+
               fi
               sleep 10
               continue
             fi
           done
+
+
+      - name: Upload keepalive result
+        if: steps.host.outputs.skip != 'true' && always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kr-result-${{ matrix.index }}
+          path: results/result_${{ matrix.index }}.txt
+          if-no-files-found: ignore
+          retention-days: 1
 
       - name: Upload prediction artifact
         if: success() && steps.host.outputs.skip != 'true'
@@ -434,6 +486,73 @@ jobs:
           path: predictions/*.json
           if-no-files-found: ignore
           retention-days: 1
+
+
+  # 发送 Telegram 汇总通知
+  notify:
+    name: Summary Notification
+    needs: keepalive
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all results
+        uses: actions/download-artifact@v4
+        with:
+          path: all-results
+          pattern: kr-result-*
+        continue-on-error: true
+
+      - name: Send Summary to Telegram
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          TIMESTAMP=$(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S')
+          
+          SUCCESS_COUNT=0
+          FAILED_COUNT=0
+          IDX=1
+          ALL_TEXT=""
+          
+          if [ -d all-results ]; then
+            for result_dir in all-results/kr-result-*; do
+              if [ -d "$result_dir" ]; then
+                for f in "$result_dir"/*.txt; do
+                  [ -f "$f" ] || continue
+                  LINE=$(cat "$f")
+                  HOST=$(echo "$LINE" | cut -d'|' -f1)
+                  DURATION=$(echo "$LINE" | cut -d'|' -f2)
+                  CPU=$(echo "$LINE" | cut -d'|' -f3)
+                  MEM=$(echo "$LINE" | cut -d'|' -f4)
+                  STATUS=$(echo "$LINE" | cut -d'|' -f5)
+                  
+                  if [ "$STATUS" = "success" ]; then
+                    # 按照 monitor-resource 的格式排版
+                    FORMATTED=$(printf "%2d. %-15s | %s | CPU: %s | MEM: %s\n" $IDX "$HOST" "$DURATION" "$CPU" "$MEM")
+                    ALL_TEXT="${ALL_TEXT}${FORMATTED}"
+                    SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
+                  else
+                    FORMATTED=$(printf "%2d. %-15s | ❌ 执行失败\n" $IDX "$HOST")
+                    ALL_TEXT="${ALL_TEXT}${FORMATTED}"
+                    FAILED_COUNT=$((FAILED_COUNT + 1))
+                  fi
+                  IDX=$((IDX + 1))
+                done
+              fi
+            done
+          fi
+          
+          if [ -z "$ALL_TEXT" ]; then
+            ALL_TEXT="⚠️ 没有收到任何执行数据"
+            FINAL_MSG=$(printf "🟢 *ARM64 保活报告*\n\n🕐 %s (北京时间)\n\n%s" "$TIMESTAMP" "$ALL_TEXT")
+          else
+            FINAL_MSG=$(printf "🟢 *ARM64 保活报告*\n\n🕐 %s (北京时间)\n\n📉 *执行结果*:\n```\n%s```\n\n✅ 成功: %d  ❌ 失败: %d" "$TIMESTAMP" "$ALL_TEXT" "$SUCCESS_COUNT" "$FAILED_COUNT")
+          fi
+          
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -d chat_id="${TELEGRAM_CHAT_ID}" \
+            -d parse_mode="Markdown" \
+            --data-urlencode "text=${FINAL_MSG}" > /dev/null 2>&1 || echo "⚠️ TG notification failed"
 
   # 收集所有预测结果
   collect:

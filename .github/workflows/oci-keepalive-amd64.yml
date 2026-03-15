@@ -175,6 +175,7 @@ jobs:
           SSH_HOST=$(echo $HOST_INFO | jq -r '.ssh_host')
           # CPU_TYPE 已在 define-matrix 阶段过滤，此处无需再次检查
           
+          START_TIME=$(date +%s)
           echo "=========================================="
           echo "🚀 Starting Keepalive for $NAME ($SSH_HOST) [AMD64]"
           echo "=========================================="
@@ -205,6 +206,21 @@ jobs:
           USER_NAME="${AMD_SSH_USERNAME:-root}"
           echo "Using SSH User: $USER_NAME"
           
+
+          # 获取 CPU / MEM 初始状态
+          echo ">>> Fetching baseline system metrics..."
+          METRICS=$(sshpass -p "$SSH_PASSWORD" ssh -vvv -o PreferredAuthentications=password -o PubkeyAuthentication=no -p 2222 -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no $USER_NAME@localhost '
+              CPU=$(top -bn1 | grep "Cpu(s)" | sed "s/.*, *\([0-9.]*\)%* id.*/\1/" | awk "{print 100 - \$1}")
+              MEM=$(free | grep Mem | awk "{print \$3/\$2 * 100.0}")
+              echo "${CPU}|${MEM}"
+          ' 2>/dev/null || echo "0|0")
+          
+          AVG_CPU=$(echo "$METRICS" | cut -d"|" -f1 | tail -n1)
+          AVG_MEM=$(echo "$METRICS" | cut -d"|" -f2 | tail -n1)
+          # 四舍五入到整数
+          AVG_CPU=$(printf "%.0f" "$AVG_CPU" 2>/dev/null || echo "0")
+          AVG_MEM=$(printf "%.0f" "$AVG_MEM" 2>/dev/null || echo "0")
+
           echo "Copying scripts to $NAME..."
           sshpass -p "$SSH_PASSWORD" scp -P 2222 -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no scripts/remote_keepalive.py $USER_NAME@localhost:~/
           
@@ -228,8 +244,26 @@ jobs:
              "$USER_NAME@localhost:/tmp/prediction_result.json" \
              "predictions/${SAFE_NAME}.json" && echo "✅ Retrieved ${SAFE_NAME}.json" || echo "❌ SCP Failed"
 
+
+          # 计算耗时和保存结果
+          END_TIME=$(date +%s)
+          DURATION=$(( (END_TIME - START_TIME) / 60 ))
+          if [ $DURATION -eq 0 ]; then DURATION=1; fi
+          mkdir -p results
+          echo "${NAME}|${DURATION}分钟|${AVG_CPU}%|${AVG_MEM}%|success" > "results/result_${{ matrix.host_id }}.txt"
+
           # 清理 Tunnel
           kill $TUNNEL_PID
+
+
+      - name: Upload keepalive result
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kr-result-${{ matrix.host_id }}
+          path: results/result_${{ matrix.host_id }}.txt
+          if-no-files-found: ignore
+          retention-days: 1
 
       - name: Upload prediction artifact
         if: success()
@@ -239,6 +273,73 @@ jobs:
           path: predictions/*.json
           if-no-files-found: ignore
           retention-days: 1
+
+
+  # 发送 Telegram 汇总通知
+  notify:
+    name: Summary Notification
+    needs: keepalive-matrix
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all results
+        uses: actions/download-artifact@v4
+        with:
+          path: all-results
+          pattern: kr-result-*
+        continue-on-error: true
+
+      - name: Send Summary to Telegram
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          TIMESTAMP=$(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S')
+          
+          SUCCESS_COUNT=0
+          FAILED_COUNT=0
+          IDX=1
+          ALL_TEXT=""
+          
+          if [ -d all-results ]; then
+            for result_dir in all-results/kr-result-*; do
+              if [ -d "$result_dir" ]; then
+                for f in "$result_dir"/*.txt; do
+                  [ -f "$f" ] || continue
+                  LINE=$(cat "$f")
+                  HOST=$(echo "$LINE" | cut -d'|' -f1)
+                  DURATION=$(echo "$LINE" | cut -d'|' -f2)
+                  CPU=$(echo "$LINE" | cut -d'|' -f3)
+                  MEM=$(echo "$LINE" | cut -d'|' -f4)
+                  STATUS=$(echo "$LINE" | cut -d'|' -f5)
+                  
+                  if [ "$STATUS" = "success" ]; then
+                    # 按照 monitor-resource 的格式排版
+                    FORMATTED=$(printf "%2d. %-15s | %s | CPU: %s | MEM: %s\n" $IDX "$HOST" "$DURATION" "$CPU" "$MEM")
+                    ALL_TEXT="${ALL_TEXT}${FORMATTED}"
+                    SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
+                  else
+                    FORMATTED=$(printf "%2d. %-15s | ❌ 执行失败\n" $IDX "$HOST")
+                    ALL_TEXT="${ALL_TEXT}${FORMATTED}"
+                    FAILED_COUNT=$((FAILED_COUNT + 1))
+                  fi
+                  IDX=$((IDX + 1))
+                done
+              fi
+            done
+          fi
+          
+          if [ -z "$ALL_TEXT" ]; then
+            ALL_TEXT="⚠️ 没有收到任何执行数据"
+            FINAL_MSG=$(printf "🟢 *AMD64 保活报告*\n\n🕐 %s (北京时间)\n\n%s" "$TIMESTAMP" "$ALL_TEXT")
+          else
+            FINAL_MSG=$(printf "🟢 *AMD64 保活报告*\n\n🕐 %s (北京时间)\n\n📉 *执行结果*:\n```\n%s```\n\n✅ 成功: %d  ❌ 失败: %d" "$TIMESTAMP" "$ALL_TEXT" "$SUCCESS_COUNT" "$FAILED_COUNT")
+          fi
+          
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -d chat_id="${TELEGRAM_CHAT_ID}" \
+            -d parse_mode="Markdown" \
+            --data-urlencode "text=${FINAL_MSG}" > /dev/null 2>&1 || echo "⚠️ TG notification failed"
 
   # 收集所有预测结果
   collect:
