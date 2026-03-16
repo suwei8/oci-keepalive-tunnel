@@ -298,8 +298,9 @@ jobs:
           
           SUCCESS_COUNT=0
           FAILED_COUNT=0
-          IDX=1
-          ALL_TEXT=""
+          
+          # 创建临时文件用于排序
+          TMP_CSV=$(mktemp)
           
           if [ -d all-results ]; then
             for result_dir in all-results/kr-result-*; do
@@ -313,30 +314,85 @@ jobs:
                   MEM=$(echo "$LINE" | cut -d'|' -f4)
                   STATUS=$(echo "$LINE" | cut -d'|' -f5)
                   
-                  if [ "$STATUS" = "success" ]; then
-                    ALL_TEXT="${ALL_TEXT}${IDX}. ${HOST} | ${DURATION} | CPU: ${CPU} | MEM: ${MEM}"$'\n'
-                    SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
-                  else
-                    ALL_TEXT="${ALL_TEXT}${IDX}. ${HOST} | ❌ 执行失败"$'\n'
+                  # 剥离单位和符号以便排序
+                  # CPU/MEM 的格式可能是 "X%"，需要剥离 "%"
+                  CPU_VAL=$(echo "$CPU" | tr -d '%')
+                  MEM_VAL=$(echo "$MEM" | tr -d '%')
+                  
+                  # 时长格式是 "X分钟"，需要剥离 "分钟"
+                  DUR_VAL=$(echo "$DURATION" | tr -d '分钟')
+                  
+                  # 1. 优先级计算 
+                  # 0 = 失败 (最严重)
+                  # 1 = 异常 (耗时>10分钟 或 CPU>=80 或 MEM>=30)
+                  # 2 = 正常
+                  PRIORITY=2
+                  
+                  if [ "$STATUS" != "success" ]; then
+                    PRIORITY=0
                     FAILED_COUNT=$((FAILED_COUNT + 1))
+                  else
+                    SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
+                    
+                    # 判断是否异常
+                    if [ -n "$DUR_VAL" ] && [ "$DUR_VAL" -gt 10 ] 2>/dev/null; then
+                      PRIORITY=1
+                    elif [ -n "$CPU_VAL" ] && [ "$CPU_VAL" -ge 80 ] 2>/dev/null; then
+                      PRIORITY=1
+                    elif [ -n "$MEM_VAL" ] && [ "$MEM_VAL" -ge 30 ] 2>/dev/null; then
+                      PRIORITY=1
+                    fi
                   fi
-                  IDX=$((IDX + 1))
+                  
+                  # 将记录写入临时 CSV 文件: 优先级, 主机名, 原始文本行
+                  # 对于相同优先级的，按主机名(区域前缀)字母排序
+                  if [ "$STATUS" = "success" ]; then
+                    echo "${PRIORITY}|${HOST}|${HOST} | ${DURATION} | CPU: ${CPU} | MEM: ${MEM}" >> "$TMP_CSV"
+                  else
+                    echo "${PRIORITY}|${HOST}|${HOST} | ❌ 执行失败" >> "$TMP_CSV"
+                  fi
                 done
               fi
             done
           fi
           
+          # 执行排序并将结果格式化为最终文本
+          ALL_TEXT=""
+          IDX=1
+          
+          if [ -s "$TMP_CSV" ]; then
+             # 先按优先级升序 (0, 1, 2)，遇到同优先级按主机名 (第2列) 字母升序排序
+             SORTED_DATA=$(sort -t '|' -k1,1n -k2,2 "$TMP_CSV")
+             
+             CURRENT_PRIO="-1"
+             
+             while IFS='|' read -r prio host line_text; do
+                 # 如果优先级发生变化，可以考虑加入分隔行或标记，但为了保持简洁只给高优先级的加上特定 Emoji
+                 PREFIX=""
+                 if [ "$prio" = "0" ]; then
+                     PREFIX="🚨 "
+                 elif [ "$prio" = "1" ]; then
+                     PREFIX="⚠️ "
+                 fi
+                 
+                 ALL_TEXT="${ALL_TEXT}${IDX}. ${PREFIX}${line_text}"$'\n'
+                 IDX=$((IDX + 1))
+             done <<< "$SORTED_DATA"
+          fi
+          
+          rm -f "$TMP_CSV"
+          
           if [ -z "$ALL_TEXT" ]; then
             FINAL_MSG="🟢 *AMD64 保活报告*
-
+          
           🕐 ${TIMESTAMP} (北京时间)
-
+          
           ⚠️ 没有收到任何执行数据"
           else
             FINAL_MSG="🟢 *AMD64 保活报告*
-
+          
           🕐 ${TIMESTAMP} (北京时间)
-
+          
           📉 *执行结果*:
           \`\`\`
           ${ALL_TEXT}\`\`\`

@@ -69,6 +69,29 @@ def get_system_stats():
     
     print("=" * 50 + "\n")
 
+def check_current_cpu_usage() -> float:
+    """实时检测当前 CPU 使用率 (1秒窗口)"""
+    try:
+        def get_cpu_times():
+            with open("/proc/stat", "r") as f:
+                parts = f.readline().split()[1:]
+                idle = float(parts[3])
+                total = sum(float(x) for x in parts)
+                return idle, total
+                
+        idle1, total1 = get_cpu_times()
+        time.sleep(1.0)
+        idle2, total2 = get_cpu_times()
+        
+        idle_delta = idle2 - idle1
+        total_delta = total2 - total1
+        
+        if total_delta > 0:
+            return 100.0 * (1.0 - idle_delta / total_delta)
+    except Exception as e:
+        print(f"[警告] 读取 CPU 状态失败: {e}")
+    return 0.0
+
 # 数据文件路径 (从仓库根目录读取)
 # 脚本位于 scripts/remote_keepalive.py，数据在 data/fc3d_history.csv
 SCRIPT_DIR = Path(__file__).parent.resolve()
@@ -593,6 +616,18 @@ def main(hostname: str = None):
     # 1. 自适应资源检测
     cpu_count = os.cpu_count() or 1
     
+    print("\n" + "-" * 40)
+    print("环境负载与安全检测...")
+    current_cpu_usage = check_current_cpu_usage()
+    print(f"[环境] 当前系统 CPU 负载: {current_cpu_usage:.1f}%")
+    
+    if current_cpu_usage > 60.0:
+        print("\n" + "!" * 60)
+        print(f"⛔ 系统当前负载过高 (>60%)，主动触发防封号保护机制！")
+        print("为避免叠加高负载触发 OCI 风控强关机，本次保活任务主动退出。")
+        print("!" * 60)
+        return
+        
     mem_total_kb = 0
     with open("/proc/meminfo") as f:
         for line in f:

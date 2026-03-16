@@ -106,6 +106,10 @@ class SecurityChecker:
                             # 跳过用户白名单应用
                             if 'com.fluxpay.monitor' in cmd:
                                 continue
+                                
+                            # 跳过 Playwright 相关浏览器进程 (避免误报 SG2-新加坡西7)
+                            if 'chromium_headless_shell' in cmd or 'ms-playwright' in line:
+                                continue
                             
                             self.add_issue("CRITICAL", f"疑似挖矿进程 (PID: {pid})", cmd)
                             found_suspicious = True
@@ -120,7 +124,7 @@ class SecurityChecker:
         """检查 /tmp 中的可疑文件"""
         print("\n[安全] 检查 /tmp 可疑文件...")
         # 白名单目录 - AppImage 挂载点等正常目录
-        whitelist_dirs = ['.mount_', '_MEI', 'pyrefly']  # AppImage 运行时挂载点, PyInstaller 临时目录, Pyrefly 类型存根
+        whitelist_dirs = ['.mount_', '_MEI', 'pyrefly', 'Antigravity-Manager']  # AppImage 运行时挂载点, PyInstaller 临时目录, Pyrefly 类型存根, 用户开源项目
         
         try:
             suspicious_files = []
