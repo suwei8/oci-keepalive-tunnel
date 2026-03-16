@@ -314,13 +314,10 @@ jobs:
                   STATUS=$(echo "$LINE" | cut -d'|' -f5)
                   
                   if [ "$STATUS" = "success" ]; then
-                    # 按照 monitor-resource 的格式排版
-                    FORMATTED=$(printf "%2d. %-15s | %s | CPU: %s | MEM: %s\n" $IDX "$HOST" "$DURATION" "$CPU" "$MEM")
-                    ALL_TEXT="${ALL_TEXT}${FORMATTED}"
+                    ALL_TEXT="${ALL_TEXT}${IDX}. ${HOST} | ${DURATION} | CPU: ${CPU} | MEM: ${MEM}"$'\n'
                     SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
                   else
-                    FORMATTED=$(printf "%2d. %-15s | ❌ 执行失败\n" $IDX "$HOST")
-                    ALL_TEXT="${ALL_TEXT}${FORMATTED}"
+                    ALL_TEXT="${ALL_TEXT}${IDX}. ${HOST} | ❌ 执行失败"$'\n'
                     FAILED_COUNT=$((FAILED_COUNT + 1))
                   fi
                   IDX=$((IDX + 1))
@@ -330,10 +327,20 @@ jobs:
           fi
           
           if [ -z "$ALL_TEXT" ]; then
-            ALL_TEXT="⚠️ 没有收到任何执行数据"
-            FINAL_MSG=$(printf "🟢 *AMD64 保活报告*\n\n🕐 %s (北京时间)\n\n%s" "$TIMESTAMP" "$ALL_TEXT")
+            FINAL_MSG="🟢 *AMD64 保活报告*
+
+          🕐 ${TIMESTAMP} (北京时间)
+
+          ⚠️ 没有收到任何执行数据"
           else
-            FINAL_MSG=$(printf "🟢 *AMD64 保活报告*\n\n🕐 %s (北京时间)\n\n📉 *执行结果*:\n```\n%s```\n\n✅ 成功: %d  ❌ 失败: %d" "$TIMESTAMP" "$ALL_TEXT" "$SUCCESS_COUNT" "$FAILED_COUNT")
+            FINAL_MSG="🟢 *AMD64 保活报告*
+
+          🕐 ${TIMESTAMP} (北京时间)
+
+          📉 *执行结果*:
+          \`\`\`
+          ${ALL_TEXT}\`\`\`
+          ✅ 成功: ${SUCCESS_COUNT}  ❌ 失败: ${FAILED_COUNT}"
           fi
           
           curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
