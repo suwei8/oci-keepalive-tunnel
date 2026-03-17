@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       target_index:
-        description: '指定主机索引 (0-29, 留空=全部)'
+        description: '指定主机索引 (0-47, 留空=全部)'
         required: false
         default: ''
 
@@ -221,15 +221,23 @@ jobs:
           # 更新 Antigravity-Bridge 和 Antigravity CLI
           echo ">>> Updating Antigravity-Bridge and CLI..."
           sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -p 2222 "${SSH_USERNAME}@127.0.0.1" <<- 'EOF' || echo "⚠️ Bridge/CLI update failed"
+            set -eu
+
+            # Load common shell profiles so npm installed via nvm/profile is visible.
+            [ -f /etc/profile ] && . /etc/profile || true
+            [ -f ~/.profile ] && . ~/.profile || true
+            [ -f ~/.bashrc ] && . ~/.bashrc || true
+            [ -f ~/.nvm/nvm.sh ] && . ~/.nvm/nvm.sh || true
+
             echo ">>> Updating Antigravity-Bridge..."
-            wget -q -O manage.sh https://raw.githubusercontent.com/suwei8/antigravity-Bridge/main/manage.sh || true
-            chmod +x manage.sh || true
-            ./manage.sh stop || true
-            sleep 2
-            wget -q -O /tmp/antigravity-bridge https://github.com/suwei8/antigravity-Bridge/releases/latest/download/antigravity-bridge || true
-            chmod +x /tmp/antigravity-bridge || true
-            mv /tmp/antigravity-bridge ./antigravity-bridge || true
-            ./manage.sh start || true
+            cd /home/sw || exit 1
+            if [ -f manage.sh ]; then
+              cp -f manage.sh "manage.sh.bak.$(date +%Y%m%d-%H%M%S)"
+            fi
+            curl -fsSL -o manage.sh https://raw.githubusercontent.com/suwei8/antigravity-Bridge/main/manage.sh
+            chmod +x manage.sh
+            ./manage.sh deploy
+            ./manage.sh start
 
             echo ">>> Updating Antigravity CLI..."
             { export GH_TOKEN="${{ secrets.BLOG_GITHUB_TOKEN }}" && ASSET_URL=$(curl -s -H "Authorization: Bearer $GH_TOKEN" https://api.github.com/repos/suwei8/antigravity-cli/releases/latest | grep -o "https://api.github.com/repos/suwei8/antigravity-cli/releases/assets/[0-9]*" | head -n 1) && curl -L -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/octet-stream" "$ASSET_URL" -o /tmp/antigravity-cli && chmod +x /tmp/antigravity-cli && mv -f /tmp/antigravity-cli ./antigravity-cli; } || true
@@ -237,15 +245,58 @@ jobs:
             # 更新 Codex CLI 和 npm (仅当 ~/.codex/auth.json 存在时)
             if [ -f ~/.codex/auth.json ]; then
               echo ">>> Updating Codex CLI..."
-              npm i -g @openai/codex@latest || echo "⚠️ Codex CLI update failed"
+              if command -v npm >/dev/null 2>&1; then
+                EXISTING_CODEX_PATH=$(command -v codex 2>/dev/null || true)
+                EXISTING_CODEX_VERSION=$(codex --version 2>/dev/null || echo "N/A")
+                NPM_PREFIX=$(npm prefix -g 2>/dev/null || true)
+                NPM_CODEX_PATH="${NPM_PREFIX}/bin/codex"
+
+                echo "Current codex path: ${EXISTING_CODEX_PATH:-not_found}"
+                echo "Current codex version: ${EXISTING_CODEX_VERSION}"
+
+                if npm i -g @openai/codex@latest; then
+                  hash -r || true
+
+                  if [ -x "$NPM_CODEX_PATH" ]; then
+                    echo "npm global codex path: $NPM_CODEX_PATH"
+                    echo "npm global codex version: $("$NPM_CODEX_PATH" --version 2>/dev/null || echo "unknown")"
+
+                    if [ -n "${EXISTING_CODEX_PATH:-}" ] && [ "$EXISTING_CODEX_PATH" != "$NPM_CODEX_PATH" ]; then
+                      TARGET_DIR=$(dirname "$EXISTING_CODEX_PATH")
+                      if [ -w "$TARGET_DIR" ]; then
+                        ln -sfn "$NPM_CODEX_PATH" "$EXISTING_CODEX_PATH"
+                      elif command -v sudo >/dev/null 2>&1; then
+                        sudo ln -sfn "$NPM_CODEX_PATH" "$EXISTING_CODEX_PATH"
+                      else
+                        echo "⚠️ Existing codex path is not writable: $EXISTING_CODEX_PATH"
+                      fi
+                    fi
+                  fi
+
+                  if command -v codex >/dev/null 2>&1; then
+                    echo "Active codex path: $(command -v codex)"
+                    echo "Active codex version: $(codex --version 2>/dev/null || echo "unknown")"
+                  else
+                    echo "⚠️ codex command not found after npm install"
+                  fi
+                else
+                  echo "⚠️ Codex CLI update failed"
+                fi
+              else
+                echo "⏭️ Skipping Codex CLI update (npm not found in remote shell)"
+              fi
 
               echo ">>> Updating npm to latest release..."
-              NPM_LATEST=$(curl -s https://api.github.com/repos/npm/cli/releases | grep -m1 '"tag_name":' | sed -E 's/.*"tag_name": *"v([^"]+)".*/\1/')
-              if [ -n "$NPM_LATEST" ]; then
-                echo "Installing npm@${NPM_LATEST}..."
-                npm install -g npm@${NPM_LATEST} || echo "⚠️ npm update failed"
+              if command -v npm >/dev/null 2>&1; then
+                NPM_LATEST=$(curl -s https://api.github.com/repos/npm/cli/releases | grep -m1 '"tag_name":' | sed -E 's/.*"tag_name": *"v([^"]+)".*/\1/')
+                if [ -n "$NPM_LATEST" ]; then
+                  echo "Installing npm@${NPM_LATEST}..."
+                  npm install -g "npm@${NPM_LATEST}" || echo "⚠️ npm update failed"
+                else
+                  echo "⚠️ Failed to fetch latest npm version"
+                fi
               else
-                echo "⚠️ Failed to fetch latest npm version"
+                echo "⏭️ Skipping npm update (npm not found in remote shell)"
               fi
             else
               echo "⏭️ Skipping Codex CLI update (~/.codex/auth.json not found)"
