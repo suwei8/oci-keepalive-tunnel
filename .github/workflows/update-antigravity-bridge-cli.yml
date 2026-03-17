@@ -172,7 +172,7 @@ jobs:
              kill $TUNNEL_PID 2>/dev/null || true
              # 保存结果文件
              mkdir -p results
-             echo "${HOST_NAME}|N/A|N/A|tunnel_failed" > "results/host_${{ matrix.index }}.txt"
+             echo "${HOST_NAME}|N/A|N/A|tunnel_failed|skipped|skipped|N/A" > "results/host_${{ matrix.index }}.txt"
              exit 1
           fi
           echo "✅ Tunnel ready"
@@ -221,7 +221,7 @@ jobs:
           # 更新 Antigravity-Bridge 和 Antigravity CLI
           echo ">>> Updating Antigravity-Bridge and CLI..."
           BRIDGE_CLI_RC=0
-          sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -p 2222 "${SSH_USERNAME}@127.0.0.1" <<- 'EOF' || BRIDGE_CLI_RC=$?
+          BRIDGE_CLI_OUTPUT=$(sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -p 2222 "${SSH_USERNAME}@127.0.0.1" <<- 'EOF' 2>&1) || BRIDGE_CLI_RC=$?
             set -e
 
             # Load common shell profiles so npm installed via nvm/profile is visible.
@@ -303,6 +303,28 @@ jobs:
               echo "⏭️ Skipping Codex CLI update (~/.codex/auth.json not found)"
             fi
           EOF
+          echo "$BRIDGE_CLI_OUTPUT"
+
+          BRIDGE_STATUS="success"
+          if [ "$BRIDGE_CLI_RC" -ne 0 ]; then
+            BRIDGE_STATUS="failed"
+          fi
+
+          CODEX_STATUS="unknown"
+          CODEX_VERSION="N/A"
+          if echo "$BRIDGE_CLI_OUTPUT" | grep -Fq "⏭️ Skipping Codex CLI update (~/.codex/auth.json not found)"; then
+            CODEX_STATUS="skipped_no_auth"
+          elif echo "$BRIDGE_CLI_OUTPUT" | grep -Fq "⏭️ Skipping Codex CLI update (npm not found in remote shell)"; then
+            CODEX_STATUS="skipped_no_npm"
+          elif echo "$BRIDGE_CLI_OUTPUT" | grep -Fq "⚠️ Codex CLI update failed"; then
+            CODEX_STATUS="failed"
+          elif echo "$BRIDGE_CLI_OUTPUT" | grep -Fq "Active codex version:"; then
+            CODEX_STATUS="success"
+            CODEX_VERSION=$(echo "$BRIDGE_CLI_OUTPUT" | grep -F "Active codex version:" | tail -1 | sed 's/.*Active codex version: //')
+          else
+            CODEX_STATUS="not_applicable"
+          fi
+
           if [ "$BRIDGE_CLI_RC" -ne 0 ]; then
             echo "❌ Bridge/CLI update failed on $HOST_NAME"
           fi
@@ -314,7 +336,7 @@ jobs:
           
           # 保存结果到文件 (供汇总 Job 使用)
           mkdir -p results
-          echo "${HOST_NAME}|${OLD_VERSION:-N/A}|${NEW_VERSION:-N/A}|${STATUS:-unknown}" > "results/host_${{ matrix.index }}.txt"
+          echo "${HOST_NAME}|${OLD_VERSION:-N/A}|${NEW_VERSION:-N/A}|${STATUS:-unknown}|${BRIDGE_STATUS}|${CODEX_STATUS}|${CODEX_VERSION}" > "results/host_${{ matrix.index }}.txt"
           
           # 清理
           kill $TUNNEL_PID 2>/dev/null || true
@@ -365,6 +387,10 @@ jobs:
           LATEST=0
           SKIPPED=0
           FAILED=0
+          BRIDGE_FAILED=0
+          CODEX_OK=0
+          CODEX_SKIPPED=0
+          CODEX_FAILED=0
           
           if [ -d all-results ]; then
             # 遍历所有结果文件
@@ -377,6 +403,37 @@ jobs:
                   OLD_VER=$(echo "$LINE" | cut -d'|' -f2)
                   NEW_VER=$(echo "$LINE" | cut -d'|' -f3)
                   STATUS=$(echo "$LINE" | cut -d'|' -f4)
+                  BRIDGE_STATUS=$(echo "$LINE" | cut -d'|' -f5)
+                  CODEX_STATUS=$(echo "$LINE" | cut -d'|' -f6)
+                  CODEX_VERSION=$(echo "$LINE" | cut -d'|' -f7)
+                  
+                  [ -n "$BRIDGE_STATUS" ] || BRIDGE_STATUS="unknown"
+                  [ -n "$CODEX_STATUS" ] || CODEX_STATUS="unknown"
+                  [ -n "$CODEX_VERSION" ] || CODEX_VERSION="N/A"
+
+                  BRIDGE_TAG=""
+                  CODEX_TAG=""
+
+                  if [ "$BRIDGE_STATUS" = "failed" ]; then
+                    BRIDGE_TAG=" | Bridge/CLI:❌"
+                    BRIDGE_FAILED=$((BRIDGE_FAILED + 1))
+                  elif [ "$BRIDGE_STATUS" = "success" ]; then
+                    BRIDGE_TAG=" | Bridge/CLI:✅"
+                  fi
+
+                  if [ "$CODEX_STATUS" = "success" ]; then
+                    CODEX_TAG=" | Codex:✅ ${CODEX_VERSION}"
+                    CODEX_OK=$((CODEX_OK + 1))
+                  elif [ "$CODEX_STATUS" = "skipped_no_auth" ]; then
+                    CODEX_TAG=" | Codex:⏭️ auth"
+                    CODEX_SKIPPED=$((CODEX_SKIPPED + 1))
+                  elif [ "$CODEX_STATUS" = "skipped_no_npm" ]; then
+                    CODEX_TAG=" | Codex:⏭️ npm"
+                    CODEX_SKIPPED=$((CODEX_SKIPPED + 1))
+                  elif [ "$CODEX_STATUS" = "failed" ]; then
+                    CODEX_TAG=" | Codex:❌"
+                    CODEX_FAILED=$((CODEX_FAILED + 1))
+                  fi
                   
                   if [ "$STATUS" = "success" ]; then
                     if [ "$OLD_VER" = "$NEW_VER" ]; then
@@ -387,10 +444,10 @@ jobs:
                       UPDATED=$((UPDATED + 1))
                     fi
                     BODY="${BODY}
-          ${ICON} <b>${HOST}</b>  <code>${OLD_VER}</code> → <code>${NEW_VER}</code>"
+          ${ICON} <b>${HOST}</b>  <code>${OLD_VER}</code> → <code>${NEW_VER}</code>${BRIDGE_TAG}${CODEX_TAG}"
                   elif [ "$STATUS" = "not_installed" ]; then
                     BODY="${BODY}
-          ⏭️ ${HOST}  未安装"
+          ⏭️ ${HOST}  未安装${BRIDGE_TAG}${CODEX_TAG}"
                     SKIPPED=$((SKIPPED + 1))
                   elif [ "$STATUS" = "tunnel_failed" ]; then
                     ICON="❌"
@@ -411,7 +468,8 @@ jobs:
           # 统计摘要
           SUMMARY="
           ━━━━━━━━━━━━━━━━━━
-          🚀 已更新: ${UPDATED}  ✅ 已是最新: ${LATEST}  ⏭️ 未安装: ${SKIPPED}  ❌ 失败: ${FAILED}"
+          🚀 已更新: ${UPDATED}  ✅ 已是最新: ${LATEST}  ⏭️ 未安装: ${SKIPPED}  ❌ 失败: ${FAILED}
+          🔧 Bridge/CLI失败: ${BRIDGE_FAILED}  🤖 Codex成功: ${CODEX_OK}  ⏭️ Codex跳过: ${CODEX_SKIPPED}  ❌ Codex失败: ${CODEX_FAILED}"
           
           # 如果没有任何结果
           if [ -z "$BODY" ] && [ $SKIPPED -eq 0 ]; then
