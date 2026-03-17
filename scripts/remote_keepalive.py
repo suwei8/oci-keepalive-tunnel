@@ -1111,9 +1111,162 @@ if __name__ == "__main__":
                 mem_total_kb = int(line.split()[1])
                 break
     mem_total_gb = mem_total_kb / 1024 / 1024
-    
-    # Micro Mode 判定 (内存小于 2GB)
-    if mem_total_gb < 2.0:
+    cpu_count = os.cpu_count() or 1
+
+    # ==========================================
+    # Nano Mode (内存 ≤ 1GB) — 超低配保活
+    # ==========================================
+    if mem_total_gb <= 1.0:
+        print("\n" + "*" * 50)
+        print(f"🔬 检测到超低配实例 ({mem_total_gb:.1f}GB, {cpu_count}核)")
+        print("🔬 自动切换至 Nano Mode (超轻量保活模式)")
+        print("*" * 50)
+
+        # 安全检测 (best effort)
+        try:
+            from security_check import run_security_checks
+            issues, has_critical = run_security_checks(args.hostname)
+            if issues:
+                print(f"⛔ 发现 {len(issues)} 个安全问题，中止保活任务！")
+                sys.exit(0)
+            print("✅ 安全检测通过")
+        except Exception as e:
+            print(f"[安全] ⚠️ 安全检测出错: {e}")
+
+        # CPU 负载检查
+        current_cpu = check_current_cpu_usage()
+        print(f"[Nano] 当前 CPU 负载: {current_cpu:.1f}%")
+        if current_cpu > 60.0:
+            print("⛔ CPU 负载过高，跳过本次保活")
+            sys.exit(0)
+
+        os.system("uname -a")
+        os.system("uptime")
+        get_system_stats()
+
+        # === 1. 轻量内存占位 (20% 可用内存) ===
+        mem_avail_kb = 0
+        with open("/proc/meminfo") as f:
+            for line in f:
+                if line.startswith("MemAvailable:"):
+                    mem_avail_kb = int(line.split()[1])
+                    break
+        target_mem = int(mem_avail_kb * 1024 * 0.20)  # 20% 可用内存
+        target_mem = max(target_mem, 64 * 1024 * 1024)  # 最小 64MB
+        target_mem = min(target_mem, 200 * 1024 * 1024)  # 最大 200MB
+        print(f"[Nano] 分配轻量内存底座: {target_mem/1024/1024:.0f} MB (20%)")
+        buffer = bytearray(target_mem)
+        for i in range(0, len(buffer), 4096):
+            buffer[i] = 1
+
+        # === 2. 轻量 BPNN 训练 (缩小网络 + 节流 CPU) ===
+        print("\n[Nano] 启动轻量 BPNN 训练...")
+        history = load_history()
+        d1, d2, d3 = 0, 0, 0
+
+        if len(history) >= 50:
+            seq_len = min(20, len(history) - 10)  # 缩短序列
+            nano_duration = 300  # 5 分钟
+
+            # 使用更小的网络: input -> 32 -> 16 -> 10
+            input_size = seq_len * 3
+            nn_d1 = DeepBPNN(input_size, 32, 16, 10, learning_rate=0.05)
+            nn_d2 = DeepBPNN(input_size, 32, 16, 10, learning_rate=0.05)
+            nn_d3 = DeepBPNN(input_size, 32, 16, 10, learning_rate=0.05)
+
+            # 准备训练数据
+            train_data = []
+            for i in range(len(history) - seq_len):
+                inputs = []
+                for j in range(seq_len):
+                    item = history[i + j]
+                    inputs.extend([item["d1"]/9.0, item["d2"]/9.0, item["d3"]/9.0])
+                target = history[i + seq_len]
+                train_data.append({
+                    "inputs": inputs,
+                    "d1": target["d1"], "d2": target["d2"], "d3": target["d3"]
+                })
+
+            print(f"[Nano] 网络: {input_size}→32→16→10, 样本: {len(train_data)}, 目标: {nano_duration}s")
+
+            start_time = time.time()
+            epoch = 0
+            samples = 0
+
+            while time.time() - start_time < nano_duration:
+                epoch += 1
+                for sample in train_data:
+                    out1 = nn_d1.forward(sample["inputs"])
+                    nn_d1.backward(one_hot_encode(sample["d1"]))
+                    out2 = nn_d2.forward(sample["inputs"])
+                    nn_d2.backward(one_hot_encode(sample["d2"]))
+                    out3 = nn_d3.forward(sample["inputs"])
+                    nn_d3.backward(one_hot_encode(sample["d3"]))
+                    samples += 1
+
+                    # CPU 节流: 每处理 50 个样本休眠 50ms (目标 CPU ~50%)
+                    if samples % 50 == 0:
+                        time.sleep(0.05)
+
+                    if samples % 200 == 0 and time.time() - start_time >= nano_duration:
+                        break
+
+                if epoch % 20 == 0:
+                    elapsed = time.time() - start_time
+                    print(f"[Nano] 轮次 {epoch}, 样本 {samples}, 耗时 {elapsed:.0f}s/{nano_duration}s")
+
+            # 预测
+            last_seq = []
+            for i in range(seq_len):
+                item = history[-(seq_len - i)]
+                last_seq.extend([item["d1"]/9.0, item["d2"]/9.0, item["d3"]/9.0])
+            prob_d1 = nn_d1.forward(last_seq)
+            prob_d2 = nn_d2.forward(last_seq)
+            prob_d3 = nn_d3.forward(last_seq)
+            d1 = prob_d1.index(max(prob_d1))
+            d2 = prob_d2.index(max(prob_d2))
+            d3 = prob_d3.index(max(prob_d3))
+
+            total_time = time.time() - start_time
+            print(f"[Nano] ✅ 训练完成: {epoch} 轮, {samples} 样本, {total_time:.0f}s")
+            print(f"[Nano] 预测: {d1} {d2} {d3}")
+        else:
+            print("[Nano] 数据不足，使用随机占位训练")
+            # 即使没有数据也要消耗时间
+            start_time = time.time()
+            while time.time() - start_time < 300:
+                _ = [random.random() ** 0.5 for _ in range(10000)]
+                time.sleep(0.1)
+
+        # === 3. 轻量内存活动 (温和读写 3 分钟) ===
+        print("\n[Nano] 轻量内存活动 (180s)...")
+        mem_start = time.time()
+        mem_end = mem_start + 180
+        step = 4096  # 较大步长减少 CPU 消耗
+        while time.time() < mem_end:
+            for i in range(0, len(buffer), step):
+                buffer[i] = (buffer[i] + 1) & 0xFF
+                if time.time() > mem_end:
+                    break
+            time.sleep(0.5)  # 大量休眠降低 CPU 占用
+            elapsed = time.time() - mem_start
+            if int(elapsed) % 60 == 0 and int(elapsed) > 0:
+                print(f"[Nano] 内存活动中... 剩余 {180 - elapsed:.0f}s")
+
+        print("[Nano] ✅ 内存活动完成")
+
+        # 保存预测结果
+        next_issue = str(int(history[-1]["issue"]) + 1) if history else "99999"
+        save_prediction(next_issue, d1, d2, d3, hostname=args.hostname, model_type="nano_mode")
+
+        get_system_stats()
+        del buffer
+        print("\n[Nano] ✅ Nano Mode 保活任务完成")
+
+    # ==========================================
+    # Micro Mode (1GB < 内存 < 2GB) — 低配保活
+    # ==========================================
+    elif mem_total_gb < 2.0:
         print("\n" + "*" * 50)
         print(f"🚀 检测到低配实例 ({mem_total_gb:.1f}GB < 2.0GB)")
         print("🚀 自动切换至 Micro Mode (微创保活模式)")
@@ -1143,6 +1296,9 @@ if __name__ == "__main__":
         del buffer
         print("[Micro] ✅ 任务完成，资源释放")
         
+    # ==========================================
+    # Normal Mode (内存 ≥ 2GB) — 标准保活
+    # ==========================================
     else:
-        # 正常模式 (High Spec)
         main(hostname=args.hostname)
+
