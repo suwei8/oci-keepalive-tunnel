@@ -2,6 +2,15 @@
 2026-03-17 13:46:35,AU-墨尔本,2026066,5,4,4,pure_python
 2026-03-17 12:14:38,KR-首尔1,2026066,2,4,4,pure_python
 2026-03-17 11:30:10,US-凤凰城,2026066,8,3,4,pure_python
+2026-03-17 07:05:59,AU-悉尼2-amd1,99999,0,0,0,micro_mode_simulation
+2026-03-17 07:05:44,DU-迪拜-amd2,99999,0,0,0,micro_mode_simulation
+2026-03-17 07:04:52,AU-墨尔本2-amd2,99999,0,0,0,micro_mode_simulation
+2026-03-17 07:02:52,JP-东京1-amd,99999,0,0,0,micro_mode_simulation
+2026-03-17 07:02:32,JP-东京2-amd,99999,0,0,0,micro_mode_simulation
+2026-03-17 07:02:04,KR-春川-amd1,99999,0,0,0,micro_mode_simulation
+2026-03-17 06:59:42,US-圣何塞-amd2,99999,0,0,0,micro_mode_simulation
+2026-03-17 06:59:26,US-凤凰城3-amd2,99999,0,0,0,micro_mode_simulation
+2026-03-17 06:58:59,SG1-新加坡2-amd1,99999,0,0,0,micro_mode_simulation
 2026-03-17 06:31:19,ES-马德里3-6,2026066,2,4,4,pure_python
 2026-03-17 06:20:04,ES-马德里3-5,2026066,2,4,7,pure_python
 2026-03-17 06:09:22,ES-马德里3-4,2026066,2,4,3,pure_python
