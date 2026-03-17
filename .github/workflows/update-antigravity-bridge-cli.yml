@@ -233,6 +233,23 @@ jobs:
 
             echo ">>> Updating Antigravity CLI..."
             { export GH_TOKEN="${{ secrets.BLOG_GITHUB_TOKEN }}" && ASSET_URL=$(curl -s -H "Authorization: Bearer $GH_TOKEN" https://api.github.com/repos/suwei8/antigravity-cli/releases/latest | grep -o "https://api.github.com/repos/suwei8/antigravity-cli/releases/assets/[0-9]*" | head -n 1) && curl -L -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/octet-stream" "$ASSET_URL" -o /tmp/antigravity-cli && chmod +x /tmp/antigravity-cli && mv -f /tmp/antigravity-cli ./antigravity-cli; } || true
+
+            # 更新 Codex CLI 和 npm (仅当 ~/.codex/auth.json 存在时)
+            if [ -f ~/.codex/auth.json ]; then
+              echo ">>> Updating Codex CLI..."
+              npm i -g @openai/codex@latest || echo "⚠️ Codex CLI update failed"
+
+              echo ">>> Updating npm to latest release..."
+              NPM_LATEST=$(curl -s https://api.github.com/repos/npm/cli/releases | grep -m1 '"tag_name":' | sed -E 's/.*"tag_name": *"v([^"]+)".*/\1/')
+              if [ -n "$NPM_LATEST" ]; then
+                echo "Installing npm@${NPM_LATEST}..."
+                npm install -g npm@${NPM_LATEST} || echo "⚠️ npm update failed"
+              else
+                echo "⚠️ Failed to fetch latest npm version"
+              fi
+            else
+              echo "⏭️ Skipping Codex CLI update (~/.codex/auth.json not found)"
+            fi
           EOF
           
           # 解析输出
