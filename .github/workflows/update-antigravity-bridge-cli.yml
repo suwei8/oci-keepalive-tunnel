@@ -413,6 +413,7 @@ jobs:
 
                   BRIDGE_TAG=""
                   CODEX_TAG=""
+                  ISSUE_TEXT=""
 
                   if [ "$BRIDGE_STATUS" = "failed" ]; then
                     BRIDGE_TAG=" | Bridge/CLI:❌"
@@ -437,28 +438,39 @@ jobs:
                   
                   if [ "$STATUS" = "success" ]; then
                     if [ "$OLD_VER" = "$NEW_VER" ]; then
-                      ICON="✅"
                       LATEST=$((LATEST + 1))
                     else
-                      ICON="🚀"
                       UPDATED=$((UPDATED + 1))
                     fi
-                    BODY="${BODY}
-          ${ICON} <b>${HOST}</b>  <code>${OLD_VER}</code> → <code>${NEW_VER}</code>${BRIDGE_TAG}${CODEX_TAG}"
                   elif [ "$STATUS" = "not_installed" ]; then
-                    BODY="${BODY}
-          ⏭️ ${HOST}  未安装${BRIDGE_TAG}${CODEX_TAG}"
                     SKIPPED=$((SKIPPED + 1))
                   elif [ "$STATUS" = "tunnel_failed" ]; then
-                    ICON="❌"
                     FAILED=$((FAILED + 1))
-                    BODY="${BODY}
-          ${ICON} <b>${HOST}</b>  隧道连接失败"
+                    ISSUE_TEXT="隧道连接失败"
                   else
-                    ICON="❌"
                     FAILED=$((FAILED + 1))
+                    ISSUE_TEXT="Antigravity更新失败"
+                  fi
+
+                  if [ "$BRIDGE_STATUS" = "failed" ]; then
+                    if [ -n "$ISSUE_TEXT" ]; then
+                      ISSUE_TEXT="${ISSUE_TEXT} | Bridge/CLI失败"
+                    else
+                      ISSUE_TEXT="Bridge/CLI失败"
+                    fi
+                  fi
+
+                  if [ "$CODEX_STATUS" = "failed" ]; then
+                    if [ -n "$ISSUE_TEXT" ]; then
+                      ISSUE_TEXT="${ISSUE_TEXT} | Codex失败"
+                    else
+                      ISSUE_TEXT="Codex失败"
+                    fi
+                  fi
+
+                  if [ -n "$ISSUE_TEXT" ]; then
                     BODY="${BODY}
-          ${ICON} <b>${HOST}</b>  更新失败"
+          ❌ <b>${HOST}</b>  ${ISSUE_TEXT}"
                   fi
                 done
               fi
@@ -472,9 +484,12 @@ jobs:
           🔧 Bridge/CLI失败: ${BRIDGE_FAILED}  🤖 Codex成功: ${CODEX_OK}  ⏭️ Codex跳过: ${CODEX_SKIPPED}  ❌ Codex失败: ${CODEX_FAILED}"
           
           # 如果没有任何结果
-          if [ -z "$BODY" ] && [ $SKIPPED -eq 0 ]; then
+          if [ -n "$BODY" ]; then
             BODY="
-          ⚠️ 没有找到需要处理的主机"
+          异常主机:${BODY}"
+          elif [ $SKIPPED -eq 0 ]; then
+            BODY="
+          ✅ 本次无异常主机"
           fi
           
           MESSAGE="${HEADER}${BODY}${SUMMARY}"
