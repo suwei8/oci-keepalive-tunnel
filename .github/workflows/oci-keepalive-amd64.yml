@@ -221,8 +221,14 @@ jobs:
           AVG_CPU=$(printf "%.0f" "$AVG_CPU" 2>/dev/null || echo "0")
           AVG_MEM=$(printf "%.0f" "$AVG_MEM" 2>/dev/null || echo "0")
 
-          echo "Copying scripts to $NAME..."
-          sshpass -p "$SSH_PASSWORD" scp -P 2222 -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no scripts/remote_keepalive.py $USER_NAME@localhost:~/
+          echo "Copying scripts and data to $NAME..."
+          # 创建远程目录结构 (确保路径计算正确: ~/scripts/../data/fc3d_history.csv)
+          sshpass -p "$SSH_PASSWORD" ssh -o PreferredAuthentications=password -o PubkeyAuthentication=no -p 2222 -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no $USER_NAME@localhost \
+              "mkdir -p ~/scripts ~/data"
+          # 传输脚本文件
+          sshpass -p "$SSH_PASSWORD" scp -P 2222 -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no scripts/remote_keepalive.py scripts/security_check.py $USER_NAME@localhost:~/scripts/
+          # 传输训练数据
+          sshpass -p "$SSH_PASSWORD" scp -P 2222 -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no data/fc3d_history.csv $USER_NAME@localhost:~/data/
           
           echo "Executing remote keepalive..."
           # 传递 GITHUB_TOKEN 给远程脚本
@@ -230,7 +236,7 @@ jobs:
               "export GITHUB_TOKEN='$GITHUB_TOKEN' && \
                export REPO_OWNER='$REPO_OWNER' && \
                export REPO_NAME='$REPO_NAME' && \
-               python3 ~/remote_keepalive.py --hostname '$NAME'"
+               python3 ~/scripts/remote_keepalive.py --hostname '$NAME'"
           
           # 回传预测结果
           echo ">>> Retrieve Prediction Result..."
