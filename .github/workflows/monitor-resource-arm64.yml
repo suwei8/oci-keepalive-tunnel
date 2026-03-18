@@ -158,18 +158,34 @@ jobs:
                   # MemAvailable: ...
                   # Use MemAvailable for accurate "free" logic, or just (Total-Available)/Total
                   
-                  MEM_INFO=$(grep -E "MemTotal|MemAvailable" /proc/meminfo)
-                  TOTAL_KB=$(echo "$MEM_INFO" | grep "MemTotal" | awk "{print \$2}")
-                  AVAIL_KB=$(echo "$MEM_INFO" | grep "MemAvailable" | awk "{print \$2}")
-                  
+                  TOTAL_KB=$(awk "/^MemTotal:/ {print \$2}" /proc/meminfo)
+                  AVAIL_KB=$(awk "/^MemAvailable:/ {print \$2}" /proc/meminfo)
+
+                  if [ -z "$TOTAL_KB" ] || [ "$TOTAL_KB" -le 0 ] 2>/dev/null; then
+                    echo "WARN::meminfo_missing_total"
+                    continue
+                  fi
+
                   if [ -z "$AVAIL_KB" ]; then
-                     # Fallback for old kernels without MemAvailable
-                     FREE_KB=$(grep "MemFree" /proc/meminfo | awk "{print \$2}")
-                     BUFF_KB=$(grep "Buffers" /proc/meminfo | awk "{print \$2}")
-                     CACH_KB=$(grep "^Cached" /proc/meminfo | awk "{print \$2}")
+                     # Fallback for kernels without MemAvailable
+                     FREE_KB=$(awk "/^MemFree:/ {print \$2}" /proc/meminfo)
+                     BUFF_KB=$(awk "/^Buffers:/ {print \$2}" /proc/meminfo)
+                     CACH_KB=$(awk "/^Cached:/ {print \$2}" /proc/meminfo)
+                     [ -n "$FREE_KB" ] || FREE_KB=0
+                     [ -n "$BUFF_KB" ] || BUFF_KB=0
+                     [ -n "$CACH_KB" ] || CACH_KB=0
                      AVAIL_KB=$((FREE_KB + BUFF_KB + CACH_KB))
                   fi
-                  
+
+                  if [ -z "$AVAIL_KB" ] || [ "$AVAIL_KB" -lt 0 ] 2>/dev/null; then
+                    echo "WARN::meminfo_missing_available"
+                    continue
+                  fi
+
+                  if [ "$AVAIL_KB" -gt "$TOTAL_KB" ] 2>/dev/null; then
+                    AVAIL_KB=$TOTAL_KB
+                  fi
+
                   MEM_USED_KB=$((TOTAL_KB - AVAIL_KB))
                   MEM_USAGE=$((100 * MEM_USED_KB / TOTAL_KB))
                   
@@ -178,10 +194,15 @@ jobs:
                   COUNT=$((COUNT + 1))
                 done
                 
+                if [ "$COUNT" -eq 0 ]; then
+                  echo "ERROR::no_samples_collected"
+                  exit 1
+                fi
+
                 AVG_CPU=$((CPU_SUM / COUNT))
                 AVG_MEM=$((MEM_SUM / COUNT))
-                
-                echo "RESULT::$AVG_CPU::$AVG_MEM"
+
+                echo "RESULT|$AVG_CPU|$AVG_MEM"
               ' 2>&1)
               
               RET_CODE=$?
@@ -192,10 +213,10 @@ jobs:
                  exit 1
               fi
               
-              RESULT_LINE=$(echo "$STATS" | grep "RESULT::")
+              RESULT_LINE=$(echo "$STATS" | grep "^RESULT|")
               if [ -n "$RESULT_LINE" ]; then
-                 AVG_CPU=$(echo "$RESULT_LINE" | awk -F:: '{print $2}')
-                 AVG_MEM=$(echo "$RESULT_LINE" | awk -F:: '{print $3}')
+                 AVG_CPU=$(echo "$RESULT_LINE" | cut -d'|' -f2)
+                 AVG_MEM=$(echo "$RESULT_LINE" | cut -d'|' -f3)
                  echo "✅ 监控完成: CPU=${AVG_CPU}%, MEM=${AVG_MEM}%"
                  
                  TIMESTAMP=$(date -u +"%Y-%m-%d %H:%M:%S")
@@ -204,6 +225,7 @@ jobs:
               else
                  echo "❌ 监控失败或无数据返回"
                  echo "$STATS"
+                 echo "Host $HOST_NAME: No result line" >> "$DEBUG_FILE"
               fi
             ) || echo "⚠️  Skipping host due to error"
             

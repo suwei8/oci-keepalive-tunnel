@@ -36,8 +36,10 @@ jobs:
           HOST_INDEX: ${{ matrix.index }}
           TARGET_INDEX: ${{ github.event.inputs.target_index }}
         run: |
+          set -euo pipefail
+
           # 获取配置
-          HOSTS_CONFIG=$(curl -s $HOSTS_CONFIG_URL) || true
+          HOSTS_CONFIG=$(curl -fsSL "$HOSTS_CONFIG_URL")
           
           # 如果指定了目标索引且不匹配，跳过
           if [ -n "$TARGET_INDEX" ] && [ "$TARGET_INDEX" != "$HOST_INDEX" ]; then
@@ -54,6 +56,13 @@ jobs:
           if [ "$HOST_NAME" = "null" ] || [ -z "$HOST_NAME" ]; then
             echo "skip=true" >> $GITHUB_OUTPUT
             echo "No host at index $HOST_INDEX"
+            exit 0
+          fi
+
+          # 排除已知不参与更新的主机
+          if [ "$HOST_NAME" = "JP-东京1-arm2-Mini" ]; then
+            echo "skip=true" >> $GITHUB_OUTPUT
+            echo "Skipping excluded host: $HOST_NAME"
             exit 0
           fi
           
@@ -81,6 +90,8 @@ jobs:
       - name: Setup SSH
         if: steps.host.outputs.skip != 'true'
         run: |
+          set -euo pipefail
+
           mkdir -p ~/.ssh
           cat >> ~/.ssh/config << 'EOF'
           Host *
@@ -88,12 +99,14 @@ jobs:
             UserKnownHostsFile /dev/null
             LogLevel ERROR
           EOF
-          sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+          sudo apt-get update -qq && sudo apt-get install -y -qq sshpass netcat-openbsd
 
       - name: Whitelist GitHub Actions IP
         if: steps.host.outputs.skip != 'true'
         env:
+          HOST_NAME: ${{ steps.host.outputs.name }}
           SSH_HOST: ${{ steps.host.outputs.ssh_host }}
+          HOST_INDEX: ${{ matrix.index }}
           CF_API_EMAIL: ${{ secrets.CF_API_EMAIL }}
           CF_API_KEY: ${{ secrets.CF_API_KEY }}
           CF_ZONE_ID: ${{ secrets.CF_ZONE_ID }}
@@ -101,6 +114,8 @@ jobs:
           CF_API_KEY_555606: ${{ secrets.CF_API_KEY_555606 }}
           CF_ZONE_ID_555606: ${{ secrets.CF_ZONE_ID_555606 }}
         run: |
+          set -euo pipefail
+
           echo "=========================================="
           echo "Whitelisting GitHub Actions IPs"
           echo "=========================================="
@@ -120,6 +135,8 @@ jobs:
             ZONE_ID="$CF_ZONE_ID"
           else
             echo "❌ Unknown domain: $DOMAIN"
+            mkdir -p results
+            echo "${HOST_NAME}|N/A|N/A|whitelist_failed|skipped|skipped|N/A" > "results/host_${HOST_INDEX}.txt"
             exit 1
           fi
           
@@ -131,11 +148,19 @@ jobs:
           
           # Add current Runner IP Specifically
           echo "Checking/Adding IP to whitelist..."
-          curl -s -X POST "https://api.cloudflare.com/client/v4/zones/$ZONE_ID/firewall/access_rules/rules" \
+          CF_RESPONSE=$(curl -fsSL -X POST "https://api.cloudflare.com/client/v4/zones/$ZONE_ID/firewall/access_rules/rules" \
             -H "X-Auth-Email: $API_EMAIL" \
             -H "X-Auth-Key: $API_KEY" \
             -H "Content-Type: application/json" \
-            --data '{"mode":"whitelist","configuration":{"target":"ip","value":"'$RUNNER_IP'"},"notes":"GitHub Actions Runner IP (Auto)"}' > /dev/null
+            --data '{"mode":"whitelist","configuration":{"target":"ip","value":"'$RUNNER_IP'"},"notes":"GitHub Actions Runner IP (Auto)"}')
+
+          if ! echo "$CF_RESPONSE" | jq -e '.success == true or (.errors | length == 0)' > /dev/null 2>&1; then
+            echo "❌ Failed to whitelist runner IP"
+            echo "$CF_RESPONSE"
+            mkdir -p results
+            echo "${HOST_NAME}|N/A|N/A|whitelist_failed|skipped|skipped|N/A" > "results/host_${HOST_INDEX}.txt"
+            exit 1
+          fi
             
           echo "⏳ Waiting 3 seconds for propagation..."
           sleep 3
@@ -149,6 +174,16 @@ jobs:
           HOST_NAME: ${{ steps.host.outputs.name }}
           SSH_HOST: ${{ steps.host.outputs.ssh_host }}
         run: |
+          set -Eeuo pipefail
+
+          TUNNEL_PID=""
+          cleanup() {
+            if [ -n "${TUNNEL_PID:-}" ]; then
+              kill "$TUNNEL_PID" 2>/dev/null || true
+            fi
+          }
+          trap cleanup EXIT
+
           echo "=========================================="
           echo "Updating Antigravity on: $HOST_NAME"
           echo "=========================================="
@@ -179,6 +214,7 @@ jobs:
           
           # 执行更新 (使用 dpkg -s 解析版本号，避免 ${Version} 被 bash 吞掉)
           echo ">>> Checking and updating Antigravity..."
+          set +e
           UPDATE_OUTPUT=$(sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -p 2222 "${SSH_USERNAME}@127.0.0.1" '
             # 检查 antigravity 是否已安装
             if ! dpkg -s antigravity >/dev/null 2>&1; then
@@ -215,13 +251,17 @@ jobs:
               echo "STATUS:failed"
             fi
           ' 2>&1)
+          UPDATE_RC=$?
+          set -e
           
           echo "$UPDATE_OUTPUT"
+          echo "Antigravity update exit code: $UPDATE_RC"
           
           # 更新 Antigravity-Bridge 和 Antigravity CLI
           echo ">>> Updating Antigravity-Bridge and CLI..."
           BRIDGE_CLI_RC=0
-          BRIDGE_CLI_OUTPUT=$(sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -p 2222 "${SSH_USERNAME}@127.0.0.1" <<- 'EOF' 2>&1) || BRIDGE_CLI_RC=$?
+          set +e
+          BRIDGE_CLI_OUTPUT=$(sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -p 2222 "${SSH_USERNAME}@127.0.0.1" 'bash -s' <<'EOF' 2>&1)
             set -e
 
             # Load common shell profiles so npm installed via nvm/profile is visible.
@@ -233,12 +273,15 @@ jobs:
             echo ">>> Updating Antigravity-Bridge..."
             cd /home/sw || exit 1
             if [ -f manage.sh ]; then
-              cp -f manage.sh "manage.sh.bak.$(date +%Y%m%d-%H%M%S)"
+              bash ./manage.sh stop
             fi
+            rm -rf manage.sh
+            rm -rf antigravity-bridge
+            curl -fsSL -o antigravity-bridge https://github.com/suwei8/antigravity-Bridge/releases/latest/download/antigravity-bridge
             curl -fsSL -o manage.sh https://raw.githubusercontent.com/suwei8/antigravity-Bridge/main/manage.sh
+            chmod +x antigravity-bridge
             chmod +x manage.sh
-            ./manage.sh deploy
-            ./manage.sh start
+            bash ./manage.sh start
 
             echo ">>> Updating Antigravity CLI..."
             { export GH_TOKEN="${{ secrets.BLOG_GITHUB_TOKEN }}" && ASSET_URL=$(curl -s -H "Authorization: Bearer $GH_TOKEN" https://api.github.com/repos/suwei8/antigravity-cli/releases/latest | grep -o "https://api.github.com/repos/suwei8/antigravity-cli/releases/assets/[0-9]*" | head -n 1) && curl -L -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/octet-stream" "$ASSET_URL" -o /tmp/antigravity-cli && chmod +x /tmp/antigravity-cli && mv -f /tmp/antigravity-cli ./antigravity-cli; } || true
@@ -303,6 +346,8 @@ jobs:
               echo "⏭️ Skipping Codex CLI update (~/.codex/auth.json not found)"
             fi
           EOF
+          BRIDGE_CLI_RC=$?
+          set -e
           echo "$BRIDGE_CLI_OUTPUT"
 
           BRIDGE_STATUS="success"
@@ -333,17 +378,18 @@ jobs:
           OLD_VERSION=$(echo "$UPDATE_OUTPUT" | grep "^OLD_VERSION:" | tail -1 | cut -d: -f2)
           NEW_VERSION=$(echo "$UPDATE_OUTPUT" | grep "^NEW_VERSION:" | tail -1 | cut -d: -f2)
           STATUS=$(echo "$UPDATE_OUTPUT" | grep "^STATUS:" | tail -1 | cut -d: -f2)
+          if [ -z "${STATUS:-}" ]; then
+            STATUS="failed"
+          fi
           
           # 保存结果到文件 (供汇总 Job 使用)
           mkdir -p results
           echo "${HOST_NAME}|${OLD_VERSION:-N/A}|${NEW_VERSION:-N/A}|${STATUS:-unknown}|${BRIDGE_STATUS}|${CODEX_STATUS}|${CODEX_VERSION}" > "results/host_${{ matrix.index }}.txt"
           
-          # 清理
-          kill $TUNNEL_PID 2>/dev/null || true
           echo ""
           echo "✅ Done: $HOST_NAME | $OLD_VERSION -> $NEW_VERSION | $STATUS"
           
-          if [ "$BRIDGE_CLI_RC" -ne 0 ]; then
+          if [ "$UPDATE_RC" -ne 0 ] || [ "$BRIDGE_CLI_RC" -ne 0 ]; then
             exit 1
           fi
 
@@ -444,6 +490,9 @@ jobs:
                     fi
                   elif [ "$STATUS" = "not_installed" ]; then
                     SKIPPED=$((SKIPPED + 1))
+                  elif [ "$STATUS" = "whitelist_failed" ]; then
+                    FAILED=$((FAILED + 1))
+                    ISSUE_TEXT="白名单添加失败"
                   elif [ "$STATUS" = "tunnel_failed" ]; then
                     FAILED=$((FAILED + 1))
                     ISSUE_TEXT="隧道连接失败"

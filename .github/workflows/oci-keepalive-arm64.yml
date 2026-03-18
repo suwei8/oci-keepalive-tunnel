@@ -271,7 +271,28 @@ jobs:
           fetch_metrics() {
             sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -p 2222 "${SSH_USERNAME}@127.0.0.1" '
               CPU=$(top -bn1 | grep "Cpu(s)" | sed "s/.*, *\([0-9.]*\)%* id.*/\1/" | awk "{print 100 - \$1}")
-              MEM=$(free | awk "/^Mem:/ {print \$3/\$2 * 100.0}")
+              TOTAL_KB=$(awk "/^MemTotal:/ {print \$2}" /proc/meminfo)
+              AVAIL_KB=$(awk "/^MemAvailable:/ {print \$2}" /proc/meminfo)
+
+              if [ -z "$AVAIL_KB" ]; then
+                FREE_KB=$(awk "/^MemFree:/ {print \$2}" /proc/meminfo)
+                BUFF_KB=$(awk "/^Buffers:/ {print \$2}" /proc/meminfo)
+                CACH_KB=$(awk "/^Cached:/ {print \$2}" /proc/meminfo)
+                [ -n "$FREE_KB" ] || FREE_KB=0
+                [ -n "$BUFF_KB" ] || BUFF_KB=0
+                [ -n "$CACH_KB" ] || CACH_KB=0
+                AVAIL_KB=$((FREE_KB + BUFF_KB + CACH_KB))
+              fi
+
+              if [ -n "$TOTAL_KB" ] && [ "$TOTAL_KB" -gt 0 ] 2>/dev/null && [ -n "$AVAIL_KB" ] && [ "$AVAIL_KB" -ge 0 ] 2>/dev/null; then
+                if [ "$AVAIL_KB" -gt "$TOTAL_KB" ] 2>/dev/null; then
+                  AVAIL_KB=$TOTAL_KB
+                fi
+                MEM=$((100 * (TOTAL_KB - AVAIL_KB) / TOTAL_KB))
+              else
+                MEM="N/A"
+              fi
+
               echo "${CPU}|${MEM}"
             ' 2>/dev/null || echo "N/A|N/A"
           }
