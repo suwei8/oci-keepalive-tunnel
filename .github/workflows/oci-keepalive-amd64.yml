@@ -71,6 +71,7 @@ jobs:
   keepalive-matrix:
     needs: define-matrix
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     permissions:
       contents: write
     strategy:
@@ -87,11 +88,13 @@ jobs:
           TARGET_INDEX: ${{ inputs.target_index }}
           CURRENT_INDEX: ${{ matrix.host_id }}
         run: |
+          set -euo pipefail
+
           # 获取配置
-          HOSTS_CONFIG=$(curl -s $HOSTS_CONFIG_URL) || true
+          HOSTS_CONFIG=$(curl -fsSL "$HOSTS_CONFIG_URL")
           
           # 提取主机信息
-          HOST_INFO=$(echo $HOSTS_CONFIG | jq -r --argjson idx $CURRENT_INDEX '.[$idx]')
+          HOST_INFO=$(printf '%s' "$HOSTS_CONFIG" | jq -c --argjson idx "$CURRENT_INDEX" '.[$idx]')
 
           # 检查是否存在
           if [ "$HOST_INFO" == "null" ] || [ -z "$HOST_INFO" ]; then
@@ -135,7 +138,7 @@ jobs:
         if: steps.host.outputs.skip != 'true'
         run: |
           sudo apt-get update
-          sudo apt-get install -y sshpass jq unzip
+          sudo apt-get install -y sshpass jq unzip netcat-openbsd
           
           # Install cloudflared from local bin
           sudo cp bin/cloudflared /usr/local/bin/cloudflared
@@ -159,20 +162,30 @@ jobs:
           REPO_NAME: ${{ github.event.repository.name }}
         if: steps.host.outputs.skip != 'true'
         run: |
+          set -Eeuo pipefail
+
+          TUNNEL_PID=""
+          cleanup() {
+            if [ -n "${TUNNEL_PID:-}" ]; then
+              kill "$TUNNEL_PID" 2>/dev/null || true
+            fi
+          }
+          trap cleanup EXIT
+
           # 获取配置
-          HOSTS_CONFIG=$(curl -s $HOSTS_CONFIG_URL) || true
+          HOSTS_CONFIG=$(curl -fsSL "$HOSTS_CONFIG_URL")
           
           # 解析配置
           # No decoding needed for static matrix
-          HOST_INFO=$(echo $HOSTS_CONFIG | jq -r --argjson idx $CURRENT_INDEX '.[$idx]')
+          HOST_INFO=$(printf '%s' "$HOSTS_CONFIG" | jq -c --argjson idx "$CURRENT_INDEX" '.[$idx]')
           
           if [ "$HOST_INFO" == "null" ]; then
             echo "Host config not found for index $CURRENT_INDEX"
             exit 0
           fi
 
-          NAME=$(echo $HOST_INFO | jq -r '.name')
-          SSH_HOST=$(echo $HOST_INFO | jq -r '.ssh_host')
+          NAME=$(printf '%s' "$HOST_INFO" | jq -r '.name')
+          SSH_HOST=$(printf '%s' "$HOST_INFO" | jq -r '.ssh_host')
           # CPU_TYPE 已在 define-matrix 阶段过滤，此处无需再次检查
           
           START_TIME=$(date +%s)
@@ -182,26 +195,22 @@ jobs:
           
           # 建立 Tunnel
           echo "Creating Cloudflare Tunnel..."
-          cloudflared access tcp --hostname $SSH_HOST --url tcp://localhost:2222 > /dev/null 2>&1 &
+          cloudflared access tcp --hostname "$SSH_HOST" --url tcp://localhost:2222 > /dev/null 2>&1 &
           TUNNEL_PID=$!
-          sleep 5
-          
-          # 准备脚本
-          cat > setup_env.sh << 'EOF'
-          export LC_ALL=C.UTF-8
-          export LANG=C.UTF-8
-          # 检查 python3 和 unzip
-          if ! command -v python3 &> /dev/null || ! command -v unzip &> /dev/null; then
-              echo "Installing Dependencies..."
-              if command -v apt-get &> /dev/null; then
-                  sudo apt-get update && sudo apt-get install -y python3 python3-pip unzip
-              elif command -v yum &> /dev/null; then
-                  sudo yum install -y python3 unzip
-              fi
+          for i in {1..15}; do
+            if nc -z 127.0.0.1 2222; then
+              break
+            fi
+            sleep 1
+          done
+
+          if ! nc -z 127.0.0.1 2222; then
+            echo "❌ Tunnel failed to become ready"
+            mkdir -p results
+            echo "${NAME}|0分0秒|0秒|0%|0%|failed" > "results/result_${{ matrix.host_id }}.txt"
+            exit 1
           fi
-          EOF
           
-          # 发送并执行脚本
           # 注意：AMD64 实例强制使用 AMD_SSH_USERNAME (通常为 root)
           USER_NAME="${AMD_SSH_USERNAME:-root}"
           echo "Using SSH User: $USER_NAME"
@@ -209,7 +218,7 @@ jobs:
 
           # 获取 CPU / MEM 初始状态
           echo ">>> Fetching baseline system metrics..."
-          METRICS=$(sshpass -p "$SSH_PASSWORD" ssh -vvv -o PreferredAuthentications=password -o PubkeyAuthentication=no -p 2222 -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no $USER_NAME@localhost '
+          METRICS=$(sshpass -p "$SSH_PASSWORD" ssh -vvv -o PreferredAuthentications=password -o PubkeyAuthentication=no -p 2222 -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no "$USER_NAME@localhost" '
               CPU=$(top -bn1 | grep "Cpu(s)" | sed "s/.*, *\([0-9.]*\)%* id.*/\1/" | awk "{print 100 - \$1}")
               MEM=$(free | grep Mem | awk "{print \$3/\$2 * 100.0}")
               echo "${CPU}|${MEM}"
@@ -223,47 +232,78 @@ jobs:
 
           echo "Copying scripts and data to $NAME..."
           # 创建远程目录结构 (确保路径计算正确: ~/scripts/../data/fc3d_history.csv)
-          sshpass -p "$SSH_PASSWORD" ssh -o PreferredAuthentications=password -o PubkeyAuthentication=no -p 2222 -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no $USER_NAME@localhost \
+          sshpass -p "$SSH_PASSWORD" ssh -o PreferredAuthentications=password -o PubkeyAuthentication=no -p 2222 -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no "$USER_NAME@localhost" \
               "mkdir -p ~/scripts ~/data"
           # 传输脚本文件
-          sshpass -p "$SSH_PASSWORD" scp -P 2222 -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no scripts/remote_keepalive.py scripts/security_check.py $USER_NAME@localhost:~/scripts/
+          sshpass -p "$SSH_PASSWORD" scp -P 2222 -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no scripts/remote_keepalive.py scripts/security_check.py "$USER_NAME@localhost:~/scripts/"
           # 传输训练数据
-          sshpass -p "$SSH_PASSWORD" scp -P 2222 -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no data/fc3d_history.csv $USER_NAME@localhost:~/data/
+          sshpass -p "$SSH_PASSWORD" scp -P 2222 -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no data/fc3d_history.csv "$USER_NAME@localhost:~/data/"
           
           echo "Executing remote keepalive..."
+          sshpass -p "$SSH_PASSWORD" ssh -o PreferredAuthentications=password -o PubkeyAuthentication=no -p 2222 -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no "$USER_NAME@localhost" \
+              "rm -f /tmp/prediction_result.json"
+
           # 传递 GITHUB_TOKEN 给远程脚本
-          sshpass -p "$SSH_PASSWORD" ssh -vvv -o PreferredAuthentications=password -o PubkeyAuthentication=no -p 2222 -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no $USER_NAME@localhost \
+          set +e
+          REMOTE_RUN_START_TIME=$(date +%s)
+          sshpass -p "$SSH_PASSWORD" ssh -vvv -o PreferredAuthentications=password -o PubkeyAuthentication=no -p 2222 -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no "$USER_NAME@localhost" \
               "export GITHUB_TOKEN='$GITHUB_TOKEN' && \
                export REPO_OWNER='$REPO_OWNER' && \
                export REPO_NAME='$REPO_NAME' && \
                python3 ~/scripts/remote_keepalive.py --hostname '$NAME'"
+          REMOTE_EXIT_CODE=$?
+          set -e
+          echo "Remote keepalive exit code: ${REMOTE_EXIT_CODE}"
           
           # 回传预测结果
           echo ">>> Retrieve Prediction Result..."
           mkdir -p predictions
           SAFE_NAME=$(echo "$NAME" | tr ' ' '_')
           
-          sshpass -p "$SSH_PASSWORD" ssh -vvv -o PreferredAuthentications=password -o PubkeyAuthentication=no -p 2222 -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no $USER_NAME@localhost \
+          sshpass -p "$SSH_PASSWORD" ssh -vvv -o PreferredAuthentications=password -o PubkeyAuthentication=no -p 2222 -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no "$USER_NAME@localhost" \
               "ls -lh /tmp/prediction_result.json && echo 'File exists' || echo '❌ Remote file missing'"
+
+          REMOTE_RESULT_MTIME=$(sshpass -p "$SSH_PASSWORD" ssh -o PreferredAuthentications=password -o PubkeyAuthentication=no -p 2222 -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no "$USER_NAME@localhost" \
+              "if [ -f /tmp/prediction_result.json ]; then stat -c %Y /tmp/prediction_result.json 2>/dev/null || python3 -c 'import os; print(int(os.path.getmtime(\"/tmp/prediction_result.json\")))'; fi" \
+              2>/dev/null | tr -d '\r' | tail -n1)
+          RESULT_FILE_FRESH=false
+          if [[ "$REMOTE_RESULT_MTIME" =~ ^[0-9]+$ ]] && [ "$REMOTE_RESULT_MTIME" -ge "$REMOTE_RUN_START_TIME" ]; then
+            RESULT_FILE_FRESH=true
+          else
+            echo "❌ Remote prediction file is missing or stale (mtime=${REMOTE_RESULT_MTIME:-unknown}, start=${REMOTE_RUN_START_TIME})"
+          fi
           
-          sshpass -p "$SSH_PASSWORD" scp -P 2222 -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no \
+          PREDICTION_RETRIEVED=false
+          if [ "$RESULT_FILE_FRESH" = "true" ] && sshpass -p "$SSH_PASSWORD" scp -P 2222 -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no \
              "$USER_NAME@localhost:/tmp/prediction_result.json" \
-             "predictions/${SAFE_NAME}.json" && echo "✅ Retrieved ${SAFE_NAME}.json" || echo "❌ SCP Failed"
+             "predictions/${SAFE_NAME}.json"; then
+            PREDICTION_RETRIEVED=true
+            echo "✅ Retrieved ${SAFE_NAME}.json"
+          else
+            echo "❌ SCP Failed"
+          fi
 
 
           # 计算耗时和保存结果
           END_TIME=$(date +%s)
-          DURATION=$(( (END_TIME - START_TIME) / 60 ))
-          if [ $DURATION -eq 0 ]; then DURATION=1; fi
+          DURATION_SECONDS=$((END_TIME - START_TIME))
+          DURATION_MINUTES=$((DURATION_SECONDS / 60))
+          DURATION_REMAINDER=$((DURATION_SECONDS % 60))
+          DURATION_HUMAN="${DURATION_MINUTES}分${DURATION_REMAINDER}秒"
+          STATUS="success"
+          if [ "$REMOTE_EXIT_CODE" -ne 0 ] || [ "$RESULT_FILE_FRESH" != "true" ] || [ "$PREDICTION_RETRIEVED" != "true" ]; then
+            STATUS="failed"
+          fi
           mkdir -p results
-          echo "${NAME}|${DURATION}分钟|${AVG_CPU}%|${AVG_MEM}%|success" > "results/result_${{ matrix.host_id }}.txt"
+          echo "${NAME}|${DURATION_HUMAN}|${DURATION_SECONDS}秒|${AVG_CPU}%|${AVG_MEM}%|${STATUS}" > "results/result_${{ matrix.host_id }}.txt"
 
-          # 清理 Tunnel
-          kill $TUNNEL_PID
+          if [ "$STATUS" != "success" ]; then
+            exit 1
+          fi
 
 
       - name: Upload keepalive result
-        if: success()
+        if: always() && steps.host.outputs.skip != 'true'
         uses: actions/upload-artifact@v4
         with:
           name: kr-result-${{ matrix.host_id }}
@@ -272,7 +312,7 @@ jobs:
           retention-days: 1
 
       - name: Upload prediction artifact
-        if: success()
+        if: always() && steps.host.outputs.skip != 'true'
         uses: actions/upload-artifact@v4
         with:
           name: prediction-${{ matrix.host_id }}
@@ -316,17 +356,24 @@ jobs:
                   LINE=$(cat "$f")
                   HOST=$(echo "$LINE" | cut -d'|' -f1)
                   DURATION=$(echo "$LINE" | cut -d'|' -f2)
-                  CPU=$(echo "$LINE" | cut -d'|' -f3)
-                  MEM=$(echo "$LINE" | cut -d'|' -f4)
-                  STATUS=$(echo "$LINE" | cut -d'|' -f5)
+                  DURATION_SECONDS_RAW=$(echo "$LINE" | cut -d'|' -f3)
+                  CPU=$(echo "$LINE" | cut -d'|' -f4)
+                  MEM=$(echo "$LINE" | cut -d'|' -f5)
+                  STATUS=$(echo "$LINE" | cut -d'|' -f6)
                   
                   # 剥离单位和符号以便排序
                   # CPU/MEM 的格式可能是 "X%"，需要剥离 "%"
                   CPU_VAL=$(echo "$CPU" | tr -d '%')
                   MEM_VAL=$(echo "$MEM" | tr -d '%')
                   
-                  # 时长格式是 "X分钟"，需要剥离 "分钟"
-                  DUR_VAL=$(echo "$DURATION" | tr -d '分钟')
+                  # 时长优先使用秒数字段，兼容旧结果格式
+                  DUR_VAL=$(echo "$DURATION_SECONDS_RAW" | tr -d '秒')
+                  if ! [[ "$DUR_VAL" =~ ^[0-9]+$ ]]; then
+                    DUR_MIN=$(echo "$DURATION" | sed -n 's/^\([0-9]\+\)分钟$/\1/p')
+                    if [ -n "$DUR_MIN" ]; then
+                      DUR_VAL=$((DUR_MIN * 60))
+                    fi
+                  fi
                   
                   # 1. 优先级计算 
                   # 0 = 失败 (最严重)
@@ -341,7 +388,7 @@ jobs:
                     SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
                     
                     # 判断是否异常
-                    if [ -n "$DUR_VAL" ] && [ "$DUR_VAL" -gt 10 ] 2>/dev/null; then
+                    if [ -n "$DUR_VAL" ] && [ "$DUR_VAL" -gt 600 ] 2>/dev/null; then
                       PRIORITY=1
                     elif [ -n "$CPU_VAL" ] && [ "$CPU_VAL" -ge 80 ] 2>/dev/null; then
                       PRIORITY=1
@@ -416,11 +463,23 @@ jobs:
     needs: keepalive-matrix
     if: always()
     runs-on: ubuntu-latest
+    concurrency:
+      group: predictions-csv
+      cancel-in-progress: false
     permissions:
       contents: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Refresh predictions baseline
+        run: |
+          set -euo pipefail
+          git fetch origin main --depth=1
+          if git cat-file -e origin/main:predictions/predictions.csv 2>/dev/null; then
+            mkdir -p predictions
+            git show origin/main:predictions/predictions.csv > predictions/predictions.csv
+          fi
 
       - name: Download all prediction artifacts
         uses: actions/download-artifact@v4
@@ -431,6 +490,7 @@ jobs:
 
       - name: Merge predictions to CSV
         run: |
+          set -euo pipefail
           CSV_FILE="predictions/predictions.csv"
           mkdir -p predictions
           
@@ -456,7 +516,7 @@ jobs:
           
           if [ -f "$CSV_FILE" ] && [ $(wc -l < "$CSV_FILE") -gt 1 ]; then
             head -1 "$CSV_FILE" > /tmp/csv_header.tmp
-            tail -n +2 "$CSV_FILE" | sort -t',' -k1 -r > /tmp/csv_body.tmp
+            tail -n +2 "$CSV_FILE" | awk '!seen[$0]++' | sort -t',' -k1,1r > /tmp/csv_body.tmp
             cat /tmp/csv_header.tmp /tmp/csv_body.tmp > "$CSV_FILE"
             rm -f /tmp/csv_header.tmp /tmp/csv_body.tmp
           fi
@@ -470,11 +530,15 @@ jobs:
 
       - name: Commit predictions
         run: |
+          set -euo pipefail
           if [ -f predictions/predictions.csv ]; then
             git config user.name "github-actions[bot]"
             git config user.email "github-actions[bot]@users.noreply.github.com"
             git add predictions/predictions.csv
-            git diff --staged --quiet || git commit -m "Update predictions $(date -u +%Y-%m-%d)"
-            git pull --rebase
-            git push
+            if git diff --staged --quiet; then
+              echo "No prediction changes to commit"
+              exit 0
+            fi
+            git commit -m "Update predictions $(date -u +%Y-%m-%d)"
+            git push origin HEAD:main
           fi

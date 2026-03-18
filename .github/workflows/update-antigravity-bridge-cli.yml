@@ -148,13 +148,17 @@ jobs:
           
           # Add current Runner IP Specifically
           echo "Checking/Adding IP to whitelist..."
-          CF_RESPONSE=$(curl -fsSL -X POST "https://api.cloudflare.com/client/v4/zones/$ZONE_ID/firewall/access_rules/rules" \
+          CF_RESPONSE=$(curl -sS -X POST "https://api.cloudflare.com/client/v4/zones/$ZONE_ID/firewall/access_rules/rules" \
             -H "X-Auth-Email: $API_EMAIL" \
             -H "X-Auth-Key: $API_KEY" \
             -H "Content-Type: application/json" \
             --data '{"mode":"whitelist","configuration":{"target":"ip","value":"'$RUNNER_IP'"},"notes":"GitHub Actions Runner IP (Auto)"}')
 
-          if ! echo "$CF_RESPONSE" | jq -e '.success == true or (.errors | length == 0)' > /dev/null 2>&1; then
+          if echo "$CF_RESPONSE" | jq -e '.success == true' > /dev/null 2>&1; then
+            echo "✅ Runner IP whitelisted"
+          elif echo "$CF_RESPONSE" | jq -e '.errors[0].code == 10009 or .errors[0].code == 81053' > /dev/null 2>&1; then
+            echo "✅ Runner IP already whitelisted"
+          else
             echo "❌ Failed to whitelist runner IP"
             echo "$CF_RESPONSE"
             mkdir -p results
