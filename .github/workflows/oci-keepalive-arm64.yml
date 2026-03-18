@@ -265,6 +265,41 @@ jobs:
           SECURITY_KEYWORDS: ${{ secrets.SECURITY_KEYWORDS }}
         run: |
           START_TIME=$(date +%s)
+          AVG_CPU="N/A"
+          AVG_MEM="N/A"
+
+          fetch_metrics() {
+            sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -p 2222 "${SSH_USERNAME}@127.0.0.1" '
+              CPU=$(top -bn1 | grep "Cpu(s)" | sed "s/.*, *\([0-9.]*\)%* id.*/\1/" | awk "{print 100 - \$1}")
+              MEM=$(free | awk "/^Mem:/ {print \$3/\$2 * 100.0}")
+              echo "${CPU}|${MEM}"
+            ' 2>/dev/null || echo "N/A|N/A"
+          }
+
+          normalize_metrics() {
+            local raw_metrics="$1"
+            local raw_cpu raw_mem
+            raw_cpu=$(echo "$raw_metrics" | cut -d"|" -f1)
+            raw_mem=$(echo "$raw_metrics" | cut -d"|" -f2)
+
+            if printf "%.0f" "$raw_cpu" >/dev/null 2>&1; then
+              AVG_CPU=$(printf "%.0f" "$raw_cpu")
+            else
+              AVG_CPU="N/A"
+            fi
+
+            if printf "%.0f" "$raw_mem" >/dev/null 2>&1; then
+              raw_mem=$(printf "%.0f" "$raw_mem")
+              if [ "$raw_mem" -gt 0 ] 2>/dev/null; then
+                AVG_MEM="$raw_mem"
+              else
+                AVG_MEM="N/A"
+              fi
+            else
+              AVG_MEM="N/A"
+            fi
+          }
+
           echo "=========================================="
           echo "Starting keepalive for: $HOST_NAME"
           echo "=========================================="
@@ -277,6 +312,7 @@ jobs:
           for attempt in $(seq 1 $MAX_RETRIES); do
             echo ""
             echo ">>> 尝试 $attempt / $MAX_RETRIES"
+            ATTEMPT_START_TIME=$(date +%s)
             
             # 首次失败后等待5秒
             if [ $attempt -gt 1 ]; then
@@ -306,7 +342,7 @@ jobs:
               echo "❌ Tunnel port 2222 not ready"
 
               END_TIME=$(date +%s)
-              DURATION=$(( (END_TIME - START_TIME) / 60 ))
+              DURATION=$(( (END_TIME - ATTEMPT_START_TIME) / 60 ))
               if [ $DURATION -eq 0 ]; then DURATION=1; fi
               
               # 保存结果
@@ -339,7 +375,7 @@ jobs:
               echo "❌ Failed to sync repository (attempt $attempt)"
 
               END_TIME=$(date +%s)
-              DURATION=$(( (END_TIME - START_TIME) / 60 ))
+              DURATION=$(( (END_TIME - ATTEMPT_START_TIME) / 60 ))
               if [ $DURATION -eq 0 ]; then DURATION=1; fi
               
               # 保存结果
@@ -359,19 +395,10 @@ jobs:
             fi
             echo "✅ Repository synced"
 
-            # 获取 CPU / MEM 初始状态
+            # 获取基线 CPU / MEM（仅用于日志，不直接写入最终报告）
             echo ">>> Fetching baseline system metrics..."
-            METRICS=$(sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -p 2222 "${SSH_USERNAME}@127.0.0.1" '
-                CPU=$(top -bn1 | grep "Cpu(s)" | sed "s/.*, *\([0-9.]*\)%* id.*/\1/" | awk "{print 100 - \$1}")
-                MEM=$(free | grep Mem | awk "{print \$3/\$2 * 100.0}")
-                echo "${CPU}|${MEM}"
-            ' 2>/dev/null || echo "0|0")
-            
-            AVG_CPU=$(echo "$METRICS" | cut -d"|" -f1)
-            AVG_MEM=$(echo "$METRICS" | cut -d"|" -f2)
-            # 四舍五入到整数
-            AVG_CPU=$(printf "%.0f" "$AVG_CPU" 2>/dev/null || echo "0")
-            AVG_MEM=$(printf "%.0f" "$AVG_MEM" 2>/dev/null || echo "0")
+            BASELINE_METRICS=$(fetch_metrics)
+            normalize_metrics "$BASELINE_METRICS"
 
             
             # 🛡️ 安全检查与清理 (Security Check & Remediation)
@@ -425,9 +452,12 @@ jobs:
                 "${SSH_USERNAME}@127.0.0.1:/tmp/prediction_result.json" \
                 "predictions/${SAFE_NAME}.json" && echo "✅ Retrieved ${SAFE_NAME}.json" || echo "❌ SCP Failed (Exit Code: $?)"
               
+              echo ">>> Fetching final system metrics..."
+              FINAL_METRICS=$(fetch_metrics)
+              normalize_metrics "$FINAL_METRICS"
 
               END_TIME=$(date +%s)
-              DURATION=$(( (END_TIME - START_TIME) / 60 ))
+              DURATION=$(( (END_TIME - ATTEMPT_START_TIME) / 60 ))
               if [ $DURATION -eq 0 ]; then DURATION=1; fi
               
               # 保存结果
@@ -448,7 +478,7 @@ jobs:
               echo "❌ Keepalive script failed (attempt $attempt)"
 
               END_TIME=$(date +%s)
-              DURATION=$(( (END_TIME - START_TIME) / 60 ))
+              DURATION=$(( (END_TIME - ATTEMPT_START_TIME) / 60 ))
               if [ $DURATION -eq 0 ]; then DURATION=1; fi
               
               # 保存结果
