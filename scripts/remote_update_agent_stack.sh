@@ -528,6 +528,7 @@ restart_agentbridge_service() {
 }
 
 ensure_agentbridge_effective() {
+  local mode="${1:-restart}"
   local state=""
   local legacy_running="no"
   local agent_running="no"
@@ -541,12 +542,19 @@ ensure_agentbridge_effective() {
     add_note "killed legacy antigravity-bridge process"
   fi
 
-  if [ "$legacy_running" = "yes" ] || [ "$agent_running" = "yes" ]; then
-    restart_agentbridge_service || return 1
-    add_note "restarted agent-bridge process"
+  if [ "$mode" = "restart" ]; then
+    if [ "$legacy_running" = "yes" ] || [ "$agent_running" = "yes" ]; then
+      restart_agentbridge_service || return 1
+      add_note "restarted agent-bridge process"
+    else
+      restart_agentbridge_service || return 1
+      add_note "started agent-bridge process"
+    fi
   else
-    restart_agentbridge_service || return 1
-    add_note "started agent-bridge process"
+    if [ "$agent_running" != "yes" ]; then
+      restart_agentbridge_service || return 1
+      add_note "started agent-bridge process"
+    fi
   fi
 
   state="$(bridge_process_state)"
@@ -706,7 +714,7 @@ update_bridge() {
   fi
 
   if has_running_bridge_process && bridge_files_present && ! has_legacy_bridge_artifacts && bridge_version_matches_latest "$RESULT_BRIDGE_RELEASE_TAG"; then
-    if ! ensure_agentbridge_effective; then
+    if ! ensure_agentbridge_effective "start_only_if_missing"; then
       RESULT_BRIDGE_STATUS="bridge_failed"
       RESULT_WORKFLOW_STATUS="bridge_failed"
       add_note "failed to normalize bridge processes"
