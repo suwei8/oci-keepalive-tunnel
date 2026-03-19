@@ -1,0 +1,446 @@
+name: OCI Keepalive via Tunnel (ARM64) V2
+
+on:
+  schedule:
+    - cron: "0 */6 * * *"
+  workflow_dispatch:
+    inputs:
+      target_indexes:
+        description: "指定主机索引，逗号分隔，例如 6,7,8；留空表示全部"
+        required: false
+        default: ""
+      target_index:
+        description: "兼容旧参数，仅单个索引；留空表示全部"
+        required: false
+        default: ""
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Prepare Matrix
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.prepare.outputs.matrix }}
+      host_count: ${{ steps.prepare.outputs.host_count }}
+    steps:
+      - name: Build arm64 host matrix
+        id: prepare
+        env:
+          HOSTS_CONFIG_URL: ${{ secrets.HOSTS_CONFIG_URL }}
+          TARGET_INDEXES: ${{ github.event.inputs.target_indexes }}
+          TARGET_INDEX: ${{ github.event.inputs.target_index }}
+        run: |
+          set -euo pipefail
+
+          HOSTS_JSON="$(curl -fsSL "$HOSTS_CONFIG_URL")"
+          export HOSTS_JSON
+
+          MATRIX_JSON="$(python3 - <<'PY'
+          import json
+          import os
+
+          hosts = json.loads(os.environ["HOSTS_JSON"])
+          target_indexes_raw = os.environ.get("TARGET_INDEXES", "").strip()
+          target_index = os.environ.get("TARGET_INDEX", "").strip()
+          selected_indexes = set()
+
+          if target_indexes_raw:
+              for item in target_indexes_raw.split(","):
+                  item = item.strip()
+                  if item:
+                      selected_indexes.add(item)
+          elif target_index:
+              selected_indexes.add(target_index)
+
+          excluded = {
+              "DU-迪拜",
+              "JP-东京1-arm2-Mini",
+              "SG1-新加坡3-arm2",
+              "SG2-新加坡西2",
+              "US-凤凰城0权-arm",
+          }
+
+          matrix = []
+          for index, host in enumerate(hosts):
+              if selected_indexes and str(index) not in selected_indexes:
+                  continue
+              if host.get("cpu_type") != "arm64":
+                  continue
+              if host.get("name") in excluded:
+                  continue
+              ssh_host = (host.get("ssh_host") or "").strip()
+              if not ssh_host:
+                  continue
+              matrix.append(
+                  {
+                      "index": index,
+                      "name": host["name"],
+                      "ssh_host": ssh_host,
+                  }
+              )
+
+          print(json.dumps({"include": matrix}, ensure_ascii=False))
+          PY
+          )"
+
+          export MATRIX_JSON
+          HOST_COUNT="$(python3 -c 'import json,os; print(len(json.loads(os.environ["MATRIX_JSON"])["include"]))')"
+
+          echo "matrix=${MATRIX_JSON}" >> "$GITHUB_OUTPUT"
+          echo "host_count=${HOST_COUNT}" >> "$GITHUB_OUTPUT"
+          echo "Prepared ${HOST_COUNT} arm64 host(s)"
+
+  keepalive:
+    name: ${{ matrix.name }}
+    needs: prepare
+    if: needs.prepare.outputs.host_count != '0'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix: ${{ fromJson(needs.prepare.outputs.matrix) }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq jq sshpass netcat-openbsd
+          sudo mkdir -p /usr/local/bin
+          wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -O /usr/local/bin/cloudflared
+          sudo chmod +x /usr/local/bin/cloudflared
+          cloudflared --version
+
+      - name: Setup SSH client
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          cat >> ~/.ssh/config <<'EOF'
+          Host *
+            StrictHostKeyChecking no
+            UserKnownHostsFile /dev/null
+            LogLevel ERROR
+          EOF
+
+      - name: Run keepalive on remote host
+        env:
+          HOST_INDEX: ${{ matrix.index }}
+          HOST_NAME: ${{ matrix.name }}
+          SSH_HOST: ${{ matrix.ssh_host }}
+          SSH_USERNAME: ${{ secrets.SSH_USERNAME }}
+          SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          SECURITY_KEYWORDS: ${{ secrets.SECURITY_KEYWORDS }}
+          REPO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY_NAME: ${{ github.repository }}
+        run: |
+          set -Eeuo pipefail
+
+          mkdir -p results predictions
+          RESULT_FILE="results/host_${HOST_INDEX}.json"
+          REMOTE_OUTPUT_FILE="results/host_${HOST_INDEX}.remote.log"
+          PREDICTION_FILE="predictions/host_${HOST_INDEX}.json"
+
+          python3 scripts/keepalive_result_helper.py write-result \
+            "$RESULT_FILE" "$HOST_NAME" "$HOST_INDEX" "running" ""
+
+          TUNNEL_PID=""
+          cleanup() {
+            if [ -n "${TUNNEL_PID:-}" ]; then
+              kill "$TUNNEL_PID" 2>/dev/null || true
+            fi
+          }
+          trap cleanup EXIT
+
+          SSH_OPTS="-o ConnectTimeout=30 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ServerAliveInterval=60 -o PreferredAuthentications=password -o PubkeyAuthentication=no"
+
+          fetch_metrics() {
+            sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -p 2222 "${SSH_USERNAME}@127.0.0.1" '
+              CPU=$(top -bn1 | grep "Cpu(s)" | sed "s/.*, *\([0-9.]*\)%* id.*/\1/" | awk "{print 100 - \$1}")
+              TOTAL_KB=$(awk "/^MemTotal:/ {print \$2}" /proc/meminfo)
+              AVAIL_KB=$(awk "/^MemAvailable:/ {print \$2}" /proc/meminfo)
+
+              if [ -z "$AVAIL_KB" ]; then
+                FREE_KB=$(awk "/^MemFree:/ {print \$2}" /proc/meminfo)
+                BUFF_KB=$(awk "/^Buffers:/ {print \$2}" /proc/meminfo)
+                CACH_KB=$(awk "/^Cached:/ {print \$2}" /proc/meminfo)
+                [ -n "$FREE_KB" ] || FREE_KB=0
+                [ -n "$BUFF_KB" ] || BUFF_KB=0
+                [ -n "$CACH_KB" ] || CACH_KB=0
+                AVAIL_KB=$((FREE_KB + BUFF_KB + CACH_KB))
+              fi
+
+              if [ -n "$TOTAL_KB" ] && [ "$TOTAL_KB" -gt 0 ] 2>/dev/null && [ -n "$AVAIL_KB" ] && [ "$AVAIL_KB" -ge 0 ] 2>/dev/null; then
+                if [ "$AVAIL_KB" -gt "$TOTAL_KB" ] 2>/dev/null; then
+                  AVAIL_KB=$TOTAL_KB
+                fi
+                MEM=$((100 * (TOTAL_KB - AVAIL_KB) / TOTAL_KB))
+              else
+                MEM="N/A"
+              fi
+
+              CPU_FMT=$(printf "%.0f" "$CPU" 2>/dev/null || echo "N/A")
+              echo "${CPU_FMT}|${MEM}"
+            ' 2>/dev/null || echo "N/A|N/A"
+          }
+
+          cloudflared access ssh --hostname "$SSH_HOST" --url "ssh://127.0.0.1:2222" >/dev/null 2>&1 &
+          TUNNEL_PID=$!
+
+          for _ in $(seq 1 20); do
+            if nc -z 127.0.0.1 2222; then
+              break
+            fi
+            sleep 1
+          done
+
+          if ! nc -z 127.0.0.1 2222; then
+            python3 scripts/keepalive_result_helper.py write-result \
+              "$RESULT_FILE" "$HOST_NAME" "$HOST_INDEX" "tunnel_failed" "cloudflared ssh tunnel not ready"
+            exit 1
+          fi
+
+          BEFORE_METRICS="$(fetch_metrics)"
+          CPU_BEFORE="$(echo "$BEFORE_METRICS" | cut -d'|' -f1)"
+          MEM_BEFORE="$(echo "$BEFORE_METRICS" | cut -d'|' -f2)"
+
+          START_TS="$(date +%s)"
+
+          set +e
+          sshpass -p "$SSH_PASSWORD" \
+            ssh $SSH_OPTS -p 2222 "${SSH_USERNAME}@127.0.0.1" \
+            "export HOST_NAME='${HOST_NAME}'; \
+             export KEEPALIVE_REPO_URL='https://x-access-token:${REPO_TOKEN}@github.com/${GITHUB_REPOSITORY_NAME}.git'; \
+             export KEEPALIVE_TIMEOUT_SECONDS='1800'; \
+             export TELEGRAM_BOT_TOKEN='${TELEGRAM_BOT_TOKEN}'; \
+             export TELEGRAM_CHAT_ID='${TELEGRAM_CHAT_ID}'; \
+             export SECURITY_KEYWORDS='${SECURITY_KEYWORDS}'; \
+             bash -s" \
+            < scripts/remote_keepalive_runner.sh >"$REMOTE_OUTPUT_FILE" 2>&1
+          REMOTE_RC=$?
+          set -e
+
+          cat "$REMOTE_OUTPUT_FILE"
+
+          python3 scripts/keepalive_result_helper.py merge-remote-log \
+            "$REMOTE_OUTPUT_FILE" "$RESULT_FILE" "$HOST_NAME" "$HOST_INDEX" "$REMOTE_RC"
+
+          if sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -p 2222 "${SSH_USERNAME}@127.0.0.1" "test -f /tmp/prediction_result.json"; then
+            sshpass -p "$SSH_PASSWORD" scp $SSH_OPTS -P 2222 \
+              "${SSH_USERNAME}@127.0.0.1:/tmp/prediction_result.json" \
+              "$PREDICTION_FILE" >/dev/null
+          fi
+
+          AFTER_METRICS="$(fetch_metrics)"
+          CPU_AFTER="$(echo "$AFTER_METRICS" | cut -d'|' -f1)"
+          MEM_AFTER="$(echo "$AFTER_METRICS" | cut -d'|' -f2)"
+
+          END_TS="$(date +%s)"
+          DURATION_SECONDS="$((END_TS - START_TS))"
+          if [ "$DURATION_SECONDS" -lt 0 ]; then
+            DURATION_SECONDS=0
+          fi
+
+          JITTER_SECONDS=0
+          WORKFLOW_STATUS="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("workflow_status", "unknown"))' "$RESULT_FILE")"
+
+          if [ "$WORKFLOW_STATUS" = "success" ]; then
+            # 随机等待用于拉开主机间节奏，维持更自然的使用轨迹。
+            JITTER_SECONDS=$((120 + RANDOM % 121))
+            echo "Sleeping ${JITTER_SECONDS}s before next host..."
+            sleep "$JITTER_SECONDS"
+          fi
+
+          python3 scripts/keepalive_result_helper.py update-runner-fields \
+            "$RESULT_FILE" "$DURATION_SECONDS" "$CPU_BEFORE" "$MEM_BEFORE" "$CPU_AFTER" "$MEM_AFTER" "$JITTER_SECONDS"
+
+          python3 scripts/keepalive_result_helper.py enforce-fatal "$RESULT_FILE"
+
+      - name: Upload result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: result-${{ matrix.index }}
+          path: |
+            results/host_${{ matrix.index }}.json
+            results/host_${{ matrix.index }}.remote.log
+          if-no-files-found: ignore
+          retention-days: 3
+
+      - name: Upload prediction
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: prediction-${{ matrix.index }}
+          path: predictions/host_${{ matrix.index }}.json
+          if-no-files-found: ignore
+          retention-days: 3
+
+  collect_predictions:
+    name: Collect Predictions
+    needs:
+      - prepare
+      - keepalive
+    if: always()
+    runs-on: ubuntu-latest
+    outputs:
+      data_status: ${{ steps.persist.outputs.data_status }}
+      prediction_count: ${{ steps.merge.outputs.prediction_count }}
+    steps:
+      - name: Download prediction artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: prediction-*
+          merge-multiple: false
+        continue-on-error: true
+
+      - name: Merge prediction files
+        id: merge
+        run: |
+          set -euo pipefail
+          mkdir -p merged
+          CSV_FILE="merged/predictions_arm64.csv"
+          echo "timestamp,hostname,issue,d1,d2,d3,model_type" > "$CSV_FILE"
+
+          COUNT=0
+          if [ -d artifacts ]; then
+            while IFS= read -r json_file; do
+              [ -f "$json_file" ] || continue
+              timestamp=$(jq -r '.timestamp' "$json_file")
+              hostname=$(jq -r '.hostname' "$json_file")
+              issue=$(jq -r '.issue' "$json_file")
+              d1=$(jq -r '.d1' "$json_file")
+              d2=$(jq -r '.d2' "$json_file")
+              d3=$(jq -r '.d3' "$json_file")
+              model_type=$(jq -r '.model_type' "$json_file")
+              echo "${timestamp},${hostname},${issue},${d1},${d2},${d3},${model_type}" >> "$CSV_FILE"
+              COUNT=$((COUNT + 1))
+            done < <(find artifacts -name "*.json" -type f | sort)
+          fi
+
+          echo "prediction_count=${COUNT}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload merged predictions
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: predictions-arm64-merged
+          path: merged/predictions_arm64.csv
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Persist merged predictions to external repo
+        id: persist
+        env:
+          KEEPALIVE_DATA_REPO: ${{ secrets.KEEPALIVE_DATA_REPO }}
+          KEEPALIVE_DATA_TOKEN: ${{ secrets.KEEPALIVE_DATA_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          DATA_STATUS="artifact_only"
+
+          if [ ! -f merged/predictions_arm64.csv ] || [ "$(wc -l < merged/predictions_arm64.csv)" -le 1 ]; then
+            DATA_STATUS="no_predictions"
+            echo "data_status=${DATA_STATUS}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ -z "${KEEPALIVE_DATA_REPO:-}" ] || [ -z "${KEEPALIVE_DATA_TOKEN:-}" ]; then
+            echo "data_status=${DATA_STATUS}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          TMP_DIR="$(mktemp -d)"
+          trap 'rm -rf "$TMP_DIR"' EXIT
+
+          if ! git clone "https://x-access-token:${KEEPALIVE_DATA_TOKEN}@github.com/${KEEPALIVE_DATA_REPO}.git" "$TMP_DIR/repo" >/dev/null 2>&1; then
+            DATA_STATUS="external_repo_clone_failed"
+            echo "data_status=${DATA_STATUS}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          mkdir -p "$TMP_DIR/repo/oci-keepalive/arm64"
+          cp merged/predictions_arm64.csv "$TMP_DIR/repo/oci-keepalive/arm64/predictions.csv"
+
+          cd "$TMP_DIR/repo"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add oci-keepalive/arm64/predictions.csv
+
+          if git diff --staged --quiet; then
+            DATA_STATUS="external_repo_no_change"
+            echo "data_status=${DATA_STATUS}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          git commit -m "Update arm64 keepalive predictions $(date -u +%Y-%m-%dT%H:%M:%SZ)" >/dev/null
+          if git push origin HEAD >/dev/null 2>&1; then
+            DATA_STATUS="external_repo_pushed"
+          else
+            DATA_STATUS="external_repo_push_failed"
+          fi
+
+          echo "data_status=${DATA_STATUS}" >> "$GITHUB_OUTPUT"
+
+  notify:
+    name: Summary Notification
+    needs:
+      - prepare
+      - keepalive
+      - collect_predictions
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download all results
+        uses: actions/download-artifact@v4
+        with:
+          path: all-results
+          pattern: result-*
+          merge-multiple: false
+        continue-on-error: true
+
+      - name: Build summary message
+        env:
+          HOST_COUNT: ${{ needs.prepare.outputs.host_count }}
+          DATA_STATUS: ${{ needs.collect_predictions.outputs.data_status }}
+          PREDICTION_COUNT: ${{ needs.collect_predictions.outputs.prediction_count }}
+        run: |
+          set -euo pipefail
+          python3 scripts/keepalive_result_helper.py build-summary \
+            all-results "$HOST_COUNT" telegram_message.txt
+          {
+            echo
+            echo "<b>预测文件数</b>: ${PREDICTION_COUNT:-0}"
+            echo "<b>数据落盘</b>: ${DATA_STATUS:-unknown}"
+          } >> telegram_message.txt
+
+      - name: Send summary to Telegram
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          set -euo pipefail
+          MESSAGE="$(cat telegram_message.txt)"
+          IFS=',' read -ra CHAT_IDS <<< "$TELEGRAM_CHAT_ID"
+          for chat_id in "${CHAT_IDS[@]}"; do
+            chat_id="${chat_id// /}"
+            [ -n "$chat_id" ] || continue
+            curl -fsSL -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+              -d chat_id="${chat_id}" \
+              -d parse_mode="HTML" \
+              --data-urlencode "text=${MESSAGE}" >/dev/null
+          done
