@@ -121,8 +121,10 @@ jobs:
           CF_API_KEY_555606: ${{ secrets.CF_API_KEY_555606 }}
           CF_ZONE_ID_555606: ${{ secrets.CF_ZONE_ID_555606 }}
         run: |
+          set -euo pipefail
+
           echo "=========================================="
-          echo "Whitelisting GitHub Actions IPs"
+          echo "Whitelisting GitHub Actions IP"
           echo "=========================================="
           
           # Extract domain from SSH_HOST
@@ -142,116 +144,37 @@ jobs:
             echo "❌ Unknown domain: $DOMAIN"
             exit 1
           fi
+
+          if [ -z "${API_EMAIL:-}" ] || [ -z "${API_KEY:-}" ] || [ -z "${ZONE_ID:-}" ]; then
+            echo "❌ Missing Cloudflare credentials for domain: $DOMAIN"
+            exit 1
+          fi
           
           echo "Using Cloudflare Zone: $ZONE_ID"
           
           # Get current GitHub Actions Runner IP
           RUNNER_IP=$(curl -s https://api.ipify.org)
           echo "GitHub Actions Runner IP: $RUNNER_IP"
-          
-          # Check if current Runner IP is already whitelisted
-          echo "Checking if current Runner IP is whitelisted..."
-          EXISTING_RULES=$(curl -s -X GET "https://api.cloudflare.com/client/v4/zones/$ZONE_ID/firewall/access_rules/rules" \
+
+          echo "Checking/Adding IP to whitelist..."
+          CF_RESPONSE=$(curl -sS -X POST "https://api.cloudflare.com/client/v4/zones/$ZONE_ID/firewall/access_rules/rules" \
             -H "X-Auth-Email: $API_EMAIL" \
             -H "X-Auth-Key: $API_KEY" \
-            -H "Content-Type: application/json")
-          
-          RUNNER_WHITELISTED=false
-          
-          # Check if Runner IP is in any existing IP range rules
-          for rule in $(echo "$EXISTING_RULES" | jq -r '.result[] | select(.mode == "whitelist") | .configuration.value'); do
-            # Check if it's an IP range and if our IP falls within it
-            if echo "$rule" | grep -q "/"; then
-              # For CIDR ranges, we'd need to check if IP is in range (complex)
-              # For simplicity, just check if the IP matches exactly
-              if [[ "$rule" == "$RUNNER_IP" ]]; then
-                RUNNER_WHITELISTED=true
-                break
-              fi
-            else
-              # Exact IP match
-              if [[ "$rule" == "$RUNNER_IP" ]]; then
-                RUNNER_WHITELISTED=true
-                break
-              fi
-            fi
-          done
-          
-          if [ "$RUNNER_WHITELISTED" = "true" ]; then
-            echo "✅ Current Runner IP is already whitelisted"
+            -H "Content-Type: application/json" \
+            --data '{"mode":"whitelist","configuration":{"target":"ip","value":"'$RUNNER_IP'"},"notes":"GitHub Actions Runner IP (Auto)"}')
+
+          if echo "$CF_RESPONSE" | jq -e '.success == true' > /dev/null 2>&1; then
+            echo "✅ Runner IP whitelisted"
+          elif echo "$CF_RESPONSE" | jq -e '.errors[0].code == 10009 or .errors[0].code == 81053' > /dev/null 2>&1; then
+            echo "✅ Runner IP already whitelisted"
           else
-            echo "⚠️  Current Runner IP NOT in whitelist, adding now..."
-            
-            # Add current Runner IP specifically
-            RESPONSE=$(curl -s -X POST "https://api.cloudflare.com/client/v4/zones/$ZONE_ID/firewall/access_rules/rules" \
-              -H "X-Auth-Email: $API_EMAIL" \
-              -H "X-Auth-Key: $API_KEY" \
-              -H "Content-Type: application/json" \
-              --data '{"mode":"whitelist","configuration":{"target":"ip","value":"'$RUNNER_IP'"},"notes":"GitHub Actions Runner IP (Auto)"}')
-            
-            SUCCESS=$(echo "$RESPONSE" | jq -r '.success')
-            if [ "$SUCCESS" = "true" ]; then
-              echo "✅ Successfully whitelisted current Runner IP: $RUNNER_IP"
-            else
-              ERROR_MSG=$(echo "$RESPONSE" | jq -r '.errors[0].message')
-              echo "❌ Failed to whitelist Runner IP: $ERROR_MSG"
-              
-              # Duplicate rule errors are expected when GitHub reuses runner IPs.
-              ERROR_CODE=$(echo "$RESPONSE" | jq -r '.errors[0].code')
-              if [ "$ERROR_CODE" = "81053" ] || [ "$ERROR_CODE" = "10009" ]; then
-                echo "✅ IP already whitelisted (duplicate rule)"
-              else
-                echo "⚠️  Continuing anyway, but connection may fail..."
-              fi
-            fi
-            
-            # Wait for rule to propagate
-            echo "⏳ Waiting 3 seconds for firewall rule to propagate..."
-            sleep 3
+            echo "❌ Failed to whitelist runner IP"
+            echo "$CF_RESPONSE" | jq -c '{success, errors, messages}' 2>/dev/null || echo "$CF_RESPONSE"
+            exit 1
           fi
-          
-          # Optionally also whitelist GitHub Actions IP ranges for future runs
-          echo ""
-          echo "Adding GitHub Actions IP ranges for future runs..."
-          GITHUB_IPS=$(curl -s https://api.github.com/meta | jq -r '.actions[]' | head -10)
-          
-          RANGE_COUNT=0
-          for IP_RANGE in $GITHUB_IPS; do
-            # Check if this range is already whitelisted
-            ALREADY_EXISTS=$(echo "$EXISTING_RULES" | jq -r '.result[] | select(.configuration.value == "'$IP_RANGE'") | .id')
-            
-            if [ -n "$ALREADY_EXISTS" ]; then
-              continue
-            fi
-            
-            RESPONSE=$(curl -s -X POST "https://api.cloudflare.com/client/v4/zones/$ZONE_ID/firewall/access_rules/rules" \
-              -H "X-Auth-Email: $API_EMAIL" \
-              -H "X-Auth-Key: $API_KEY" \
-              -H "Content-Type: application/json" \
-              --data '{"mode":"whitelist","configuration":{"target":"ip_range","value":"'$IP_RANGE'"},"notes":"GitHub Actions IP Range (Auto)"}')
-            
-            SUCCESS=$(echo "$RESPONSE" | jq -r '.success')
-            if [ "$SUCCESS" = "true" ]; then
-              echo "  ✅ Whitelisted range: $IP_RANGE"
-              RANGE_COUNT=$((RANGE_COUNT + 1))
-            fi
-            
-            # Limit to 5 ranges per run to avoid rate limits
-            if [ $RANGE_COUNT -ge 5 ]; then
-              break
-            fi
-            
-            sleep 0.5
-          done
-          
-          if [ $RANGE_COUNT -gt 0 ]; then
-            echo "✅ Added $RANGE_COUNT new IP ranges"
-          else
-            echo "✅ All IP ranges already whitelisted"
-          fi
-          
-          echo ""
-          echo "✅ IP whitelisting complete - ready to connect"
+
+          echo "⏳ Waiting 3 seconds for propagation..."
+          sleep 3
 
       - name: Run keepalive
         if: steps.host.outputs.skip != 'true'
@@ -325,7 +248,7 @@ jobs:
           echo "Starting keepalive for: $HOST_NAME"
           echo "=========================================="
           
-          SSH_OPTS="-o ConnectTimeout=30 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ServerAliveInterval=60 -o ServerAliveCountMax=3"
+          SSH_OPTS="-o ConnectTimeout=30 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o PreferredAuthentications=password -o PubkeyAuthentication=no"
           MAX_RETRIES=3
           
           
@@ -342,25 +265,37 @@ jobs:
             fi
             
             # 清理之前的隧道
-            pkill -f "cloudflared access ssh" 2>/dev/null || true
-            sleep 1
+            pkill -f "cloudflared.*2222" 2>/dev/null || true
+            sleep 2
             
             # 启动 Cloudflare Tunnel (使用 TCP 模式以确保端口绑定)
-            cloudflared access tcp --hostname "$SSH_HOST" --url "tcp://127.0.0.1:2222" > /dev/null 2>&1 &
+            cloudflared access tcp --hostname "$SSH_HOST" --url "tcp://127.0.0.1:2222" > cloudflared.log 2>&1 &
             TUNNEL_PID=$!
             
             # 等待 Cloudflare Tunnel 建立连接
             echo "Waiting for tunnel to initialize..."
-            sleep 15
+            sleep 5
+
+            if ! kill -0 $TUNNEL_PID 2>/dev/null; then
+              echo "❌ Tunnel process exited early"
+              tail -50 cloudflared.log 2>/dev/null || true
+              if [ $attempt -eq $MAX_RETRIES ]; then
+                mkdir -p results
+                echo "${HOST_NAME}|N/A|N/A|N/A|failed" > "results/result_${{ matrix.index }}.txt"
+                exit 1
+              fi
+              continue
+            fi
 
             # 检查端口是否被监听
-            for i in {1..10}; do
+            for i in {1..30}; do
                 if nc -z 127.0.0.1 2222; then break; fi
                 sleep 1
             done
 
             if ! nc -z 127.0.0.1 2222; then
               echo "❌ Tunnel port 2222 not ready"
+              tail -50 cloudflared.log 2>/dev/null || true
 
               END_TIME=$(date +%s)
               DURATION=$(( (END_TIME - ATTEMPT_START_TIME) / 60 ))
