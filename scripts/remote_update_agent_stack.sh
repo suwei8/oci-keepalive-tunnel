@@ -415,6 +415,31 @@ sys.exit(1)
 PY
 }
 
+bridge_process_state() {
+  python3 - <<'PY'
+import re
+import subprocess
+
+legacy_patterns = [
+    re.compile(r'(^|[\s/.])antigravity-bridge([\s]|$)'),
+]
+agent_patterns = [
+    re.compile(r'(^|[\s/.])agent-bridge([\s]|$)'),
+]
+
+legacy = False
+agent = False
+for line in subprocess.check_output(["ps", "-eo", "args="], text=True).splitlines():
+    if "/home/sw/antigravity-Bridge" in line or any(p.search(line) for p in legacy_patterns):
+        legacy = True
+    if any(p.search(line) for p in agent_patterns):
+        agent = True
+
+print(f"legacy={'yes' if legacy else 'no'}")
+print(f"agent={'yes' if agent else 'no'}")
+PY
+}
+
 kill_named_processes() {
   local kind="$1"
   python3 - "$kind" <<'PY'
@@ -427,6 +452,12 @@ import time
 
 kind = sys.argv[1]
 patterns = {
+    "legacy-bridge": [
+        re.compile(r'(^|[\s/.])antigravity-bridge([\s]|$)'),
+    ],
+    "agent-bridge": [
+        re.compile(r'(^|[\s/.])agent-bridge([\s]|$)'),
+    ],
     "bridge": [
         re.compile(r'(^|[\s/.])antigravity-bridge([\s]|$)'),
         re.compile(r'(^|[\s/.])agent-bridge([\s]|$)'),
@@ -435,7 +466,9 @@ patterns = {
         re.compile(r'(^|[\s/.])antigravity-cli([\s]|$)'),
     ],
 }
-subs = ["/home/sw/antigravity-Bridge"] if kind == "bridge" else []
+subs = []
+if kind in ("bridge", "legacy-bridge"):
+    subs.append("/home/sw/antigravity-Bridge")
 
 skip = set()
 pid = os.getpid()
@@ -475,6 +508,51 @@ for sig in (signal.SIGTERM, signal.SIGKILL):
             pass
     time.sleep(1)
 PY
+}
+
+restart_agentbridge_service() {
+  if [ -x /home/sw/manage.sh ]; then
+    /home/sw/manage.sh stop || true
+  fi
+  kill_named_processes "agent-bridge"
+  if [ -x /home/sw/manage.sh ]; then
+    /home/sw/manage.sh start
+    return $?
+  fi
+  if [ -x /home/sw/agent-bridge ]; then
+    nohup /home/sw/agent-bridge >/tmp/agent-bridge.log 2>&1 &
+    sleep 2
+    return 0
+  fi
+  return 1
+}
+
+ensure_agentbridge_effective() {
+  local state=""
+  local legacy_running="no"
+  local agent_running="no"
+
+  state="$(bridge_process_state)"
+  legacy_running="$(printf '%s\n' "$state" | awk -F= '/^legacy=/{print $2}')"
+  agent_running="$(printf '%s\n' "$state" | awk -F= '/^agent=/{print $2}')"
+
+  if [ "$legacy_running" = "yes" ]; then
+    kill_named_processes "legacy-bridge"
+    add_note "killed legacy antigravity-bridge process"
+  fi
+
+  if [ "$legacy_running" = "yes" ] || [ "$agent_running" = "yes" ]; then
+    restart_agentbridge_service || return 1
+    add_note "restarted agent-bridge process"
+  else
+    restart_agentbridge_service || return 1
+    add_note "started agent-bridge process"
+  fi
+
+  state="$(bridge_process_state)"
+  legacy_running="$(printf '%s\n' "$state" | awk -F= '/^legacy=/{print $2}')"
+  agent_running="$(printf '%s\n' "$state" | awk -F= '/^agent=/{print $2}')"
+  [ "$legacy_running" = "no" ] && [ "$agent_running" = "yes" ]
 }
 
 refresh_agentbridge_files_only() {
@@ -628,6 +706,12 @@ update_bridge() {
   fi
 
   if has_running_bridge_process && bridge_files_present && ! has_legacy_bridge_artifacts && bridge_version_matches_latest "$RESULT_BRIDGE_RELEASE_TAG"; then
+    if ! ensure_agentbridge_effective; then
+      RESULT_BRIDGE_STATUS="bridge_failed"
+      RESULT_WORKFLOW_STATUS="bridge_failed"
+      add_note "failed to normalize bridge processes"
+      return
+    fi
     record_bridge_version "$RESULT_BRIDGE_RELEASE_TAG"
     RESULT_BRIDGE_STATUS="skipped_already_latest"
     return
@@ -651,6 +735,12 @@ update_bridge() {
   rm -f /home/sw/antigravity-bridge /home/sw/.antigravity-release-tag
 
   if /home/sw/manage.sh deploy && /home/sw/manage.sh start; then
+    if ! ensure_agentbridge_effective; then
+      RESULT_BRIDGE_STATUS="bridge_failed"
+      RESULT_WORKFLOW_STATUS="bridge_failed"
+      add_note "failed to normalize bridge processes"
+      return
+    fi
     RESULT_BRIDGE_STATUS="deployed_started"
     if [ -f /home/sw/.agentbridge-release-tag ]; then
       RESULT_BRIDGE_RELEASE_TAG="$(cat /home/sw/.agentbridge-release-tag)"
