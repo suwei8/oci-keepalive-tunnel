@@ -28,6 +28,8 @@ RESULT_CODEX_STATUS="skipped_no_bridge"
 RESULT_CODEX_VERSION="N/A"
 RESULT_CODEX_TARGET_VERSION="${CODEX_LATEST_VERSION:-unknown}"
 
+BRIDGE_RELEASE_JSON_CACHE=""
+
 add_note() {
   local text="$1"
   if [ -z "$RESULT_NOTES" ]; then
@@ -169,6 +171,11 @@ upsert_sw_version() {
   mv "$tmp" "$file"
 }
 
+get_sw_version() {
+  local key="$1"
+  grep "^${key}=" /home/sw/sw_version 2>/dev/null | tail -1 | cut -d= -f2- || true
+}
+
 get_env_status() {
   local env_file="/home/sw/.env"
   local token_line=""
@@ -199,6 +206,63 @@ has_bridge_related_install() {
   if [ -d /home/sw/antigravity-Bridge ] || [ -x /home/sw/antigravity-bridge ] || [ -x /home/sw/agent-bridge ] || [ -x /home/sw/manage.sh ]; then
     return 0
   fi
+  return 1
+}
+
+bridge_files_present() {
+  [ -x /home/sw/manage.sh ] && [ -x /home/sw/agent-bridge ]
+}
+
+has_legacy_bridge_artifacts() {
+  [ -d /home/sw/antigravity-Bridge ] || [ -x /home/sw/antigravity-bridge ]
+}
+
+cleanup_forbidden_bridge_files() {
+  rm -f \
+    /home/sw/manage.sh.1 \
+    /home/sw/manage.sh.bak.20260317-165803 \
+    /home/sw/antigravity-bridge.bak.20260317-165806
+}
+
+resolve_bridge_release() {
+  if [ -n "$BRIDGE_RELEASE_JSON_CACHE" ]; then
+    return 0
+  fi
+
+  BRIDGE_RELEASE_JSON_CACHE="$(github_latest_release_json "$AGENTBRIDGE_REPO" "${AGENTBRIDGE_GITHUB_TOKEN:-}")" || return 1
+  RESULT_BRIDGE_RELEASE_TAG="$(printf '%s\n' "$BRIDGE_RELEASE_JSON_CACHE" | json_get_tag)"
+  [ -n "$RESULT_BRIDGE_RELEASE_TAG" ] || RESULT_BRIDGE_RELEASE_TAG="unknown"
+}
+
+record_bridge_version() {
+  local tag="$1"
+  [ -n "$tag" ] || return 0
+  [ "$tag" = "unknown" ] && return 0
+  [ "$tag" = "N/A" ] && return 0
+
+  upsert_sw_version "agent-bridge" "$tag"
+  printf '%s\n' "$tag" > /home/sw/.agentbridge-release-tag
+}
+
+bridge_version_matches_latest() {
+  local latest_tag="$1"
+  local recorded_tag=""
+  local marker_tag=""
+
+  [ -n "$latest_tag" ] || return 1
+  [ "$latest_tag" = "unknown" ] && return 1
+  [ "$latest_tag" = "N/A" ] && return 1
+
+  recorded_tag="$(get_sw_version "agent-bridge")"
+  if [ -n "$recorded_tag" ] && version_eq "$recorded_tag" "$latest_tag"; then
+    return 0
+  fi
+
+  marker_tag="$(cat /home/sw/.agentbridge-release-tag 2>/dev/null || true)"
+  if [ -n "$marker_tag" ] && version_eq "$marker_tag" "$latest_tag"; then
+    return 0
+  fi
+
   return 1
 }
 
@@ -289,8 +353,8 @@ refresh_agentbridge_files_only() {
   local tmp_manage="/home/sw/manage.sh.tmp"
   local tmp_binary="/home/sw/agent-bridge.tmp"
 
-  release_json="$(github_latest_release_json "$AGENTBRIDGE_REPO" "${AGENTBRIDGE_GITHUB_TOKEN:-}")" || return 1
-  RESULT_BRIDGE_RELEASE_TAG="$(printf '%s\n' "$release_json" | json_get_tag)"
+  resolve_bridge_release || return 1
+  release_json="$BRIDGE_RELEASE_JSON_CACHE"
 
   download_repo_file "$AGENTBRIDGE_REPO" "${AGENTBRIDGE_GITHUB_TOKEN:-}" "manage.sh" "$tmp_manage" || return 1
   if ! download_release_asset "$AGENTBRIDGE_REPO" "${AGENTBRIDGE_GITHUB_TOKEN:-}" "$release_json" "$AGENTBRIDGE_ASSET_PRIMARY" "$tmp_binary"; then
@@ -302,6 +366,7 @@ refresh_agentbridge_files_only() {
   mv -f "$tmp_binary" /home/sw/agent-bridge
   rm -rf /home/sw/antigravity-Bridge
   rm -f /home/sw/antigravity-bridge /home/sw/.antigravity-release-tag
+  record_bridge_version "$RESULT_BRIDGE_RELEASE_TAG"
   return 0
 }
 
@@ -377,6 +442,8 @@ update_antigravity_cli() {
 }
 
 update_bridge() {
+  cleanup_forbidden_bridge_files
+
   if ! has_bridge_related_install; then
     RESULT_BRIDGE_STATUS="skipped_no_install"
     return
@@ -399,6 +466,19 @@ update_bridge() {
       return
     fi
 
+    if ! resolve_bridge_release; then
+      RESULT_BRIDGE_STATUS="bridge_failed"
+      RESULT_WORKFLOW_STATUS="bridge_failed"
+      add_note "failed to query AgentBridge latest release"
+      return
+    fi
+
+    if bridge_files_present && ! has_legacy_bridge_artifacts && bridge_version_matches_latest "$RESULT_BRIDGE_RELEASE_TAG"; then
+      record_bridge_version "$RESULT_BRIDGE_RELEASE_TAG"
+      RESULT_BRIDGE_STATUS="skipped_already_latest_no_env"
+      return
+    fi
+
     if refresh_agentbridge_files_only; then
       RESULT_BRIDGE_STATUS="files_refreshed_no_env"
       return
@@ -411,10 +491,18 @@ update_bridge() {
   fi
 
   export GITHUB_TOKEN="${AGENTBRIDGE_GITHUB_TOKEN:-}"
-  RESULT_BRIDGE_RELEASE_TAG="$(
-    github_latest_release_json "$AGENTBRIDGE_REPO" "${AGENTBRIDGE_GITHUB_TOKEN:-}" 2>/dev/null | json_get_tag 2>/dev/null || true
-  )"
-  [ -n "$RESULT_BRIDGE_RELEASE_TAG" ] || RESULT_BRIDGE_RELEASE_TAG="unknown"
+  if ! resolve_bridge_release; then
+    RESULT_BRIDGE_STATUS="bridge_failed"
+    RESULT_WORKFLOW_STATUS="bridge_failed"
+    add_note "failed to query AgentBridge latest release"
+    return
+  fi
+
+  if has_running_bridge_process && bridge_files_present && ! has_legacy_bridge_artifacts && bridge_version_matches_latest "$RESULT_BRIDGE_RELEASE_TAG"; then
+    record_bridge_version "$RESULT_BRIDGE_RELEASE_TAG"
+    RESULT_BRIDGE_STATUS="skipped_already_latest"
+    return
+  fi
 
   if [ -x /home/sw/manage.sh ]; then
     /home/sw/manage.sh stop || true
@@ -438,6 +526,7 @@ update_bridge() {
     if [ -f /home/sw/.agentbridge-release-tag ]; then
       RESULT_BRIDGE_RELEASE_TAG="$(cat /home/sw/.agentbridge-release-tag)"
     fi
+    record_bridge_version "$RESULT_BRIDGE_RELEASE_TAG"
   else
     RESULT_BRIDGE_STATUS="bridge_failed"
     RESULT_WORKFLOW_STATUS="bridge_failed"
