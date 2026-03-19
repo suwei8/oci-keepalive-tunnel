@@ -60,10 +60,12 @@ emit_results() {
 }
 
 load_shell_profiles() {
+  set +u
   [ -f /etc/profile ] && . /etc/profile || true
   [ -f ~/.profile ] && . ~/.profile || true
   [ -f ~/.bashrc ] && . ~/.bashrc || true
   [ -f ~/.nvm/nvm.sh ] && . ~/.nvm/nvm.sh || true
+  set -u
 }
 
 github_auth_headers() {

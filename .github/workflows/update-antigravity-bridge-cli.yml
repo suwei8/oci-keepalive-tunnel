@@ -272,6 +272,9 @@ jobs:
     if: always()
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
       - name: Download all results
         uses: actions/download-artifact@v4
         with:
