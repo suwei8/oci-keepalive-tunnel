@@ -70,6 +70,20 @@ load_shell_profiles() {
   set -u
 }
 
+wait_for_dpkg_lock() {
+  local timeout_seconds="${1:-180}"
+  local elapsed=0
+
+  while sudo fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock >/dev/null 2>&1; do
+    if [ "$elapsed" -ge "$timeout_seconds" ]; then
+      return 1
+    fi
+    sleep 5
+    elapsed=$((elapsed + 5))
+  done
+  return 0
+}
+
 github_auth_headers() {
   local token="$1"
   if [ -n "$token" ]; then
@@ -625,11 +639,14 @@ update_antigravity() {
     fi
   fi
 
-  if sudo apt-get -o DPkg::Lock::Timeout=60 install -y -qq antigravity; then
+  if wait_for_dpkg_lock 180 && sudo apt-get -o DPkg::Lock::Timeout=60 install -y -qq antigravity; then
     RESULT_ANTIGRAVITY_STATUS="success"
   else
     RESULT_ANTIGRAVITY_STATUS="antigravity_failed"
     RESULT_WORKFLOW_STATUS="antigravity_failed"
+    if ! wait_for_dpkg_lock 1; then
+      add_note "dpkg lock busy during antigravity install"
+    fi
     add_note "antigravity apt update/install failed"
   fi
 
