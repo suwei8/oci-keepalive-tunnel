@@ -161,7 +161,7 @@ jobs:
             API_KEY="$CF_API_KEY"
             ZONE_ID="$CF_ZONE_ID"
           else
-            python3 - <<'PY' "$RESULT_FILE" "$HOST_NAME" "$HOST_INDEX" "whitelist_failed" "unknown domain"
+            python3 - "$RESULT_FILE" "$HOST_NAME" "$HOST_INDEX" "whitelist_failed" "unknown domain" <<'PY'
             import json
             import sys
             path, host, index, status, notes = sys.argv[1:]
@@ -191,7 +191,7 @@ jobs:
           if echo "$CF_RESPONSE" | jq -e '.success == true or .errors[0].code == 10009 or .errors[0].code == 81053' >/dev/null 2>&1; then
             echo "Whitelisted runner IP ${RUNNER_IP} for ${HOST_NAME}"
           else
-            python3 - <<'PY' "$RESULT_FILE" "$HOST_NAME" "$HOST_INDEX" "whitelist_failed" "$CF_RESPONSE"
+            python3 - "$RESULT_FILE" "$HOST_NAME" "$HOST_INDEX" "whitelist_failed" "$CF_RESPONSE" <<'PY'
             import json
             import sys
             path, host, index, status, notes = sys.argv[1:]
@@ -233,7 +233,7 @@ jobs:
           RESULT_FILE="results/host_${HOST_INDEX}.json"
           REMOTE_OUTPUT_FILE="results/host_${HOST_INDEX}.remote.log"
 
-          python3 - <<'PY' "$RESULT_FILE" "$HOST_NAME" "$HOST_INDEX"
+          python3 - "$RESULT_FILE" "$HOST_NAME" "$HOST_INDEX" <<'PY'
           import json
           import sys
           path, host, index = sys.argv[1:]
@@ -272,7 +272,7 @@ jobs:
           done
 
           if ! nc -z 127.0.0.1 2222; then
-            python3 - <<'PY' "$RESULT_FILE" "$HOST_NAME" "$HOST_INDEX"
+            python3 - "$RESULT_FILE" "$HOST_NAME" "$HOST_INDEX" <<'PY'
             import json
             import sys
             path, host, index = sys.argv[1:]
@@ -308,7 +308,7 @@ jobs:
 
           cat "$REMOTE_OUTPUT_FILE"
 
-          python3 - <<'PY' "$REMOTE_OUTPUT_FILE" "$RESULT_FILE" "$HOST_NAME" "$HOST_INDEX" "$REMOTE_RC"
+          python3 - "$REMOTE_OUTPUT_FILE" "$RESULT_FILE" "$HOST_NAME" "$HOST_INDEX" "$REMOTE_RC" <<'PY'
           import json
           import sys
           from pathlib import Path
@@ -333,7 +333,7 @@ jobs:
           Path(result_file).write_text(json.dumps(data, ensure_ascii=False, indent=2))
           PY
 
-          python3 - <<'PY' "$RESULT_FILE"
+          python3 - "$RESULT_FILE" <<'PY'
           import json
           import sys
 
