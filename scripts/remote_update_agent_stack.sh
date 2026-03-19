@@ -624,6 +624,11 @@ update_antigravity_cli() {
   local release_json=""
   local tmp_binary="/tmp/antigravity-cli.$$"
 
+  if [ "$RESULT_ENV_STATUS" = "missing" ]; then
+    RESULT_ANTIGRAVITY_CLI_STATUS="skipped_missing_env"
+    return
+  fi
+
   if [ ! -f /home/sw/.antigravity/argv.json ]; then
     RESULT_ANTIGRAVITY_CLI_STATUS="skipped_no_argv"
     return
@@ -675,6 +680,12 @@ update_bridge() {
   fi
 
   get_env_status
+
+  if [ "$RESULT_ENV_STATUS" = "missing" ]; then
+    RESULT_BRIDGE_STATUS="skipped_missing_env"
+    add_note "missing /home/sw/.env, skipped bridge update"
+    return
+  fi
 
   if [ "$RESULT_ENV_STATUS" = "invalid_token" ]; then
     RESULT_BRIDGE_STATUS="skipped_invalid_env"
@@ -815,6 +826,11 @@ EOF
 
 update_codex() {
   local current_version=""
+
+  if [ "$RESULT_ENV_STATUS" = "missing" ]; then
+    RESULT_CODEX_STATUS="skipped_missing_env"
+    return
+  fi
 
   if [ ! -x /home/sw/agent-bridge ]; then
     RESULT_CODEX_STATUS="skipped_no_bridge"
