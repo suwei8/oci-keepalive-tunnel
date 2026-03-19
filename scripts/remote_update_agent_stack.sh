@@ -326,9 +326,18 @@ get_env_status() {
     RESULT_ENV_STATUS="missing_token"
   elif [[ "$token_value" == ./* ]] || [[ "$token_value" == *manage.sh* ]]; then
     RESULT_ENV_STATUS="invalid_token"
+  elif [[ ! "$token_value" =~ ^[0-9]{6,}:[A-Za-z0-9_-]{20,}$ ]]; then
+    RESULT_ENV_STATUS="invalid_token"
   else
     RESULT_ENV_STATUS="ok"
   fi
+}
+
+bridge_failed_due_to_invalid_token() {
+  if grep -q 'telegram.error.InvalidToken' /home/sw/app.log 2>/dev/null; then
+    return 0
+  fi
+  return 1
 }
 
 has_bridge_related_install() {
@@ -755,9 +764,16 @@ update_bridge() {
     fi
     record_bridge_version "$RESULT_BRIDGE_RELEASE_TAG"
   else
-    RESULT_BRIDGE_STATUS="bridge_failed"
-    RESULT_WORKFLOW_STATUS="bridge_failed"
-    add_note "AgentBridge deploy/start failed"
+    if bridge_failed_due_to_invalid_token; then
+      RESULT_ENV_STATUS="invalid_token"
+      RESULT_BRIDGE_STATUS="skipped_invalid_env"
+      RESULT_MANUAL_ACTION_REQUIRED="yes"
+      add_note "invalid TELEGRAM_BOT_TOKEN in /home/sw/.env"
+    else
+      RESULT_BRIDGE_STATUS="bridge_failed"
+      RESULT_WORKFLOW_STATUS="bridge_failed"
+      add_note "AgentBridge deploy/start failed"
+    fi
   fi
 }
 
