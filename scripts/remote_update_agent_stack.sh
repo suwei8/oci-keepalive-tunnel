@@ -176,6 +176,135 @@ get_sw_version() {
   grep "^${key}=" /home/sw/sw_version 2>/dev/null | tail -1 | cut -d= -f2- || true
 }
 
+get_mcp_bridge_token() {
+  local config_file="/home/sw/.gemini/antigravity/mcp_config.json"
+
+  [ -f "$config_file" ] || return 0
+
+  python3 - "$config_file" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+try:
+    data = json.loads(path.read_text())
+except Exception:
+    raise SystemExit(2)
+
+server = data.get("mcpServers", {}).get("antigravity-bridge", {})
+env = server.get("env", {}) if isinstance(server, dict) else {}
+token = env.get("TELEGRAM_BOT_TOKEN", "")
+if token:
+    print(token)
+PY
+}
+
+repair_mcp_bridge_config() {
+  local config_file="/home/sw/.gemini/antigravity/mcp_config.json"
+  local output=""
+  local rc=0
+
+  [ -f "$config_file" ] || return 0
+
+  set +e
+  output="$(python3 - "$config_file" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+try:
+    data = json.loads(path.read_text())
+except Exception:
+    raise SystemExit(2)
+
+servers = data.get("mcpServers", {})
+server = servers.get("antigravity-bridge")
+if isinstance(server, dict) and server.get("command") == "/home/sw/antigravity-bridge":
+    server["command"] = "/home/sw/agent-bridge"
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n")
+    print("fixed_command")
+PY
+)"
+  rc=$?
+  set -e
+
+  if [ "$rc" -eq 2 ]; then
+    RESULT_MANUAL_ACTION_REQUIRED="yes"
+    add_note "failed to parse /home/sw/.gemini/antigravity/mcp_config.json"
+    return 0
+  fi
+
+  if [ "$output" = "fixed_command" ]; then
+    add_note "repaired mcp_config bridge command path"
+  fi
+}
+
+repair_env_token_from_mcp_config() {
+  local env_file="/home/sw/.env"
+  local mcp_token=""
+  local output=""
+  local rc=0
+
+  [ -f "$env_file" ] || return 0
+
+  set +e
+  mcp_token="$(get_mcp_bridge_token)"
+  rc=$?
+  set -e
+
+  if [ "$rc" -eq 2 ]; then
+    RESULT_MANUAL_ACTION_REQUIRED="yes"
+    add_note "failed to read TELEGRAM_BOT_TOKEN from mcp_config.json"
+    return 0
+  fi
+
+  [ -n "$mcp_token" ] || return 0
+
+  output="$(python3 - "$env_file" "$mcp_token" <<'PY'
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+new_token = sys.argv[2]
+lines = path.read_text().splitlines()
+
+found = False
+changed = False
+updated = []
+for line in lines:
+    if line.startswith("TELEGRAM_BOT_TOKEN="):
+        found = True
+        current = line.split("=", 1)[1]
+        if current != new_token:
+            updated.append(f"TELEGRAM_BOT_TOKEN={new_token}")
+            changed = True
+        else:
+            updated.append(line)
+    else:
+        updated.append(line)
+
+if not found:
+    updated.insert(0, f"TELEGRAM_BOT_TOKEN={new_token}")
+    changed = True
+
+if changed:
+    path.write_text("\n".join(updated) + "\n")
+    print("updated")
+PY
+)"
+
+  if [ "$output" = "updated" ]; then
+    add_note "synced TELEGRAM_BOT_TOKEN from mcp_config.json"
+  fi
+}
+
+repair_bridge_runtime_config() {
+  repair_mcp_bridge_config
+  repair_env_token_from_mcp_config
+}
+
 get_env_status() {
   local env_file="/home/sw/.env"
   local token_line=""
@@ -608,6 +737,7 @@ update_codex() {
 
 main() {
   load_shell_profiles
+  repair_bridge_runtime_config
   get_env_status
   update_antigravity
   update_antigravity_cli
