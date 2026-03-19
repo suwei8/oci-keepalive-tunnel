@@ -180,6 +180,7 @@ get_mcp_bridge_token() {
   local config_file="/home/sw/.gemini/antigravity/mcp_config.json"
 
   [ -f "$config_file" ] || return 0
+  [ -s "$config_file" ] || return 0
 
   python3 - "$config_file" <<'PY'
 import json
@@ -206,6 +207,7 @@ repair_mcp_bridge_config() {
   local rc=0
 
   [ -f "$config_file" ] || return 0
+  [ -s "$config_file" ] || return 0
 
   set +e
   output="$(python3 - "$config_file" <<'PY'
