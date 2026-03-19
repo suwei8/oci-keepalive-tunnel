@@ -605,8 +605,27 @@ update_antigravity() {
   RESULT_ANTIGRAVITY_OLD_VERSION="$(dpkg -s antigravity 2>/dev/null | awk '/^Version:/{print $2}' || true)"
   [ -n "$RESULT_ANTIGRAVITY_OLD_VERSION" ] || RESULT_ANTIGRAVITY_OLD_VERSION="N/A"
 
-  if sudo apt-get -o DPkg::Lock::Timeout=60 update -qq && \
-     sudo apt-get -o DPkg::Lock::Timeout=60 install -y -qq antigravity; then
+  if ! sudo apt-get -o DPkg::Lock::Timeout=60 update -qq; then
+    if sudo grep -R -n -E '^[[:space:]]*deb .*apt\\.postgresql\\.org/pub/repos/apt.*focal-pgdg' \
+      /etc/apt/sources.list /etc/apt/sources.list.d 2>/dev/null >/tmp/agentbridge-bad-apt-sources.txt; then
+      while IFS=: read -r file line_no _; do
+        [ -n "$file" ] || continue
+        sudo sed -i "${line_no}s/^[[:space:]]*deb /# disabled by AgentBridge rollout: deb /" "$file"
+      done < /tmp/agentbridge-bad-apt-sources.txt
+      rm -f /tmp/agentbridge-bad-apt-sources.txt
+      add_note "disabled stale focal-pgdg apt source and retried antigravity update"
+    fi
+    if ! sudo apt-get -o DPkg::Lock::Timeout=60 update -qq; then
+      RESULT_ANTIGRAVITY_STATUS="antigravity_failed"
+      RESULT_WORKFLOW_STATUS="antigravity_failed"
+      add_note "antigravity apt update/install failed"
+      RESULT_ANTIGRAVITY_NEW_VERSION="$(dpkg -s antigravity 2>/dev/null | awk '/^Version:/{print $2}' || true)"
+      [ -n "$RESULT_ANTIGRAVITY_NEW_VERSION" ] || RESULT_ANTIGRAVITY_NEW_VERSION="N/A"
+      return
+    fi
+  fi
+
+  if sudo apt-get -o DPkg::Lock::Timeout=60 install -y -qq antigravity; then
     RESULT_ANTIGRAVITY_STATUS="success"
   else
     RESULT_ANTIGRAVITY_STATUS="antigravity_failed"
