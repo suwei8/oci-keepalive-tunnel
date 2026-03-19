@@ -301,6 +301,7 @@ PY
 }
 
 repair_bridge_runtime_config() {
+  rm -rf /home/sw/.gemini/agentbridge
   repair_mcp_bridge_config
   repair_env_token_from_mcp_config
 }
