@@ -565,29 +565,39 @@ def main(hostname: str = None):
     print("[启动] 检查是否存在重复的保活进程...")
     
     try:
-        # 查找本项目的保活进程 (匹配实际运行的命令)
+        # 只清理真正的 Python 保活实例，避免误杀外层 timeout/bash 包装进程。
         result = subprocess.run(
-            ["pgrep", "-f", "scripts/remote_keepalive.py"],
+            ["ps", "-eo", "pid=,comm=,args="],
             capture_output=True, text=True
         )
-        if result.returncode == 0:
-            pids = [int(p.strip()) for p in result.stdout.strip().split('\n') if p.strip()]
-            other_pids = [p for p in pids if p != current_pid]
-            
-            if other_pids:
-                print(f"[启动] ⚠️ 发现 {len(other_pids)} 个重复进程: {other_pids}")
-                for pid in other_pids:
-                    try:
-                        os.kill(pid, 9)  # SIGKILL
-                        print(f"[启动] ✅ 已终止进程 {pid}")
-                    except ProcessLookupError:
-                        print(f"[启动] 进程 {pid} 已不存在")
-                    except PermissionError:
-                        print(f"[启动] ⚠️ 无权限终止进程 {pid}")
-                # 等待进程清理
-                time.sleep(1)
-            else:
-                print("[启动] ✅ 无重复进程")
+        other_pids = []
+        for line in result.stdout.strip().splitlines():
+            parts = line.strip().split(None, 2)
+            if len(parts) < 3:
+                continue
+            pid_str, comm, args = parts
+            if not pid_str.isdigit():
+                continue
+            pid = int(pid_str)
+            if pid == current_pid:
+                continue
+            if not comm.startswith("python"):
+                continue
+            if "scripts/remote_keepalive.py" not in args:
+                continue
+            other_pids.append(pid)
+
+        if other_pids:
+            print(f"[启动] ⚠️ 发现 {len(other_pids)} 个重复进程: {other_pids}")
+            for pid in other_pids:
+                try:
+                    os.kill(pid, 9)  # SIGKILL
+                    print(f"[启动] ✅ 已终止进程 {pid}")
+                except ProcessLookupError:
+                    print(f"[启动] 进程 {pid} 已不存在")
+                except PermissionError:
+                    print(f"[启动] ⚠️ 无权限终止进程 {pid}")
+            time.sleep(1)
         else:
             print("[启动] ✅ 无重复进程")
     except Exception as e:
@@ -1301,4 +1311,3 @@ if __name__ == "__main__":
     # ==========================================
     else:
         main(hostname=args.hostname)
-
