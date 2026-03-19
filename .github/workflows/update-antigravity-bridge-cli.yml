@@ -6,11 +6,11 @@ on:
   workflow_dispatch:
     inputs:
       target_indexes:
-        description: "指定主机索引，逗号分隔，例如 6,7,8"
+        description: "指定主机索引，逗号分隔，例如 6,7,8；留空表示全部"
         required: false
         default: ""
       target_index:
-        description: "兼容旧参数，仅单个索引"
+        description: "兼容旧参数，仅单个索引；留空表示全部"
         required: false
         default: ""
 
@@ -34,7 +34,6 @@ jobs:
           HOSTS_CONFIG_URL: ${{ secrets.HOSTS_CONFIG_URL }}
           TARGET_INDEXES: ${{ github.event.inputs.target_indexes }}
           TARGET_INDEX: ${{ github.event.inputs.target_index }}
-          EVENT_NAME: ${{ github.event_name }}
           BLOG_GITHUB_TOKEN: ${{ secrets.BLOG_GITHUB_TOKEN }}
         run: |
           set -euo pipefail
@@ -47,7 +46,6 @@ jobs:
           import os
 
           hosts = json.loads(os.environ["HOSTS_JSON"])
-          event_name = os.environ.get("EVENT_NAME", "").strip()
           target_indexes_raw = os.environ.get("TARGET_INDEXES", "").strip()
           target_index = os.environ.get("TARGET_INDEX", "").strip()
           selected_indexes = set()
@@ -66,9 +64,6 @@ jobs:
               "SG1-新加坡3-arm2",
               "US-凤凰城0权-arm",
           }
-
-          if event_name == "workflow_dispatch" and not selected_indexes:
-              raise SystemExit("workflow_dispatch requires target_indexes or target_index")
 
           matrix = []
           for index, host in enumerate(hosts):
