@@ -5,8 +5,12 @@ on:
     - cron: "0 18 * * *"
   workflow_dispatch:
     inputs:
+      target_indexes:
+        description: "指定主机索引，逗号分隔，例如 6,7,8"
+        required: false
+        default: ""
       target_index:
-        description: "指定主机索引，留空表示全部"
+        description: "兼容旧参数，仅单个索引"
         required: false
         default: ""
 
@@ -28,7 +32,9 @@ jobs:
         id: prepare
         env:
           HOSTS_CONFIG_URL: ${{ secrets.HOSTS_CONFIG_URL }}
+          TARGET_INDEXES: ${{ github.event.inputs.target_indexes }}
           TARGET_INDEX: ${{ github.event.inputs.target_index }}
+          EVENT_NAME: ${{ github.event_name }}
           BLOG_GITHUB_TOKEN: ${{ secrets.BLOG_GITHUB_TOKEN }}
         run: |
           set -euo pipefail
@@ -41,16 +47,32 @@ jobs:
           import os
 
           hosts = json.loads(os.environ["HOSTS_JSON"])
+          event_name = os.environ.get("EVENT_NAME", "").strip()
+          target_indexes_raw = os.environ.get("TARGET_INDEXES", "").strip()
           target_index = os.environ.get("TARGET_INDEX", "").strip()
+          selected_indexes = set()
+
+          if target_indexes_raw:
+              for item in target_indexes_raw.split(","):
+                  item = item.strip()
+                  if not item:
+                      continue
+                  selected_indexes.add(item)
+          elif target_index:
+              selected_indexes.add(target_index)
+
           excluded = {
               "JP-东京1-arm2-Mini",
               "SG1-新加坡3-arm2",
               "US-凤凰城0权-arm",
           }
 
+          if event_name == "workflow_dispatch" and not selected_indexes:
+              raise SystemExit("workflow_dispatch requires target_indexes or target_index")
+
           matrix = []
           for index, host in enumerate(hosts):
-              if target_index and str(index) != target_index:
+              if selected_indexes and str(index) not in selected_indexes:
                   continue
               if host.get("cpu_type") != "arm64":
                   continue
