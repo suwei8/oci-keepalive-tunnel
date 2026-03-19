@@ -67,6 +67,19 @@ def cmd_build_summary(argv):
         for path in sorted(base.glob("result-*/host_*.json")):
             results.append(json.loads(path.read_text()))
 
+    def host_label(item):
+        index = item.get("index", "?")
+        host = item.get("host", "unknown")
+        return f"{host}#{index}"
+
+    def join_hosts(items):
+        labels = [host_label(item) for item in items]
+        if not labels:
+            return "无"
+        if len(labels) <= 8:
+            return "、".join(labels)
+        return "、".join(labels[:8]) + f" 等{len(labels)}台"
+
     counts = {
         "success": 0,
         "manual": 0,
@@ -80,6 +93,14 @@ def cmd_build_summary(argv):
         "codex_skipped": 0,
         "codex_failed": 0,
     }
+    success_hosts = []
+    manual_hosts = []
+    fatal_hosts = []
+    bridge_file_only_hosts = []
+    bridge_skipped_hosts = []
+    env_missing_hosts = []
+    env_invalid_hosts = []
+    codex_failed_hosts = []
     manual_lines = []
     fatal_lines = []
 
@@ -93,12 +114,15 @@ def cmd_build_summary(argv):
 
         if workflow_status == "success":
             counts["success"] += 1
+            success_hosts.append(item)
         else:
             counts["fatal"] += 1
+            fatal_hosts.append(item)
             fatal_lines.append(f"❌ <b>{host}</b> | {workflow_status}")
 
         if item.get("manual_action_required", "no") == "yes":
             counts["manual"] += 1
+            manual_hosts.append(item)
             extra = []
             if env_status not in ("ok", "unknown"):
                 extra.append(f"env={env_status}")
@@ -110,15 +134,19 @@ def cmd_build_summary(argv):
 
         if env_status in ("missing", "missing_token"):
             counts["env_missing"] += 1
+            env_missing_hosts.append(item)
         if env_status == "invalid_token":
             counts["env_invalid"] += 1
+            env_invalid_hosts.append(item)
 
         if bridge_status == "deployed_started":
             counts["bridge_deployed"] += 1
         elif bridge_status == "files_refreshed_no_env":
             counts["bridge_files_only"] += 1
+            bridge_file_only_hosts.append(item)
         elif bridge_status.startswith("skipped_"):
             counts["bridge_skipped"] += 1
+            bridge_skipped_hosts.append(item)
 
         if codex_status in ("success", "already_latest"):
             counts["codex_success"] += 1
@@ -126,6 +154,7 @@ def cmd_build_summary(argv):
             counts["codex_skipped"] += 1
         elif codex_status.endswith("failed") or codex_status.startswith("failed"):
             counts["codex_failed"] += 1
+            codex_failed_hosts.append(item)
 
     timestamp = datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d %H:%M:%S")
     header = (
@@ -148,10 +177,22 @@ def cmd_build_summary(argv):
         f"\n🚨 TELEGRAM_BOT_TOKEN异常: {counts['env_invalid']}"
     )
     details = []
+    if success_hosts:
+        details.append("成功主机:\n" + join_hosts(success_hosts))
     if fatal_lines:
-        details.append("异常主机:\n" + "\n".join(fatal_lines[:20]))
+        details.append("致命失败主机:\n" + "\n".join(fatal_lines[:20]))
     if manual_lines:
         details.append("人工处理主机:\n" + "\n".join(manual_lines[:20]))
+    if bridge_file_only_hosts:
+        details.append("仅替换文件主机:\n" + join_hosts(bridge_file_only_hosts))
+    if bridge_skipped_hosts:
+        details.append("Bridge跳过主机:\n" + join_hosts(bridge_skipped_hosts))
+    if env_missing_hosts:
+        details.append(".env缺失/缺token主机:\n" + join_hosts(env_missing_hosts))
+    if env_invalid_hosts:
+        details.append("TELEGRAM_BOT_TOKEN异常主机:\n" + join_hosts(env_invalid_hosts))
+    if codex_failed_hosts:
+        details.append("Codex失败主机:\n" + join_hosts(codex_failed_hosts))
     if not details:
         details.append("本次无异常主机")
 
