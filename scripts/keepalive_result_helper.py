@@ -143,7 +143,13 @@ def format_duration(seconds):
 
 
 def cmd_build_summary(argv):
-    all_results_dir, host_count, output_file = argv
+    if len(argv) < 3:
+        raise SystemExit(
+            "usage: keepalive_result_helper.py build-summary <all_results_dir> <host_count> <output_file> [title]"
+        )
+
+    all_results_dir, host_count, output_file, *rest = argv
+    title = rest[0] if rest else "ARM64 OCI 保活报告 V2"
     base = Path(all_results_dir)
     results = []
     if base.exists():
@@ -219,7 +225,7 @@ def cmd_build_summary(argv):
 
     timestamp = datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d %H:%M:%S")
     header = (
-        "<b>ARM64 OCI 保活报告 V2</b>\n"
+        f"<b>{title}</b>\n"
         f"🕐 {timestamp} (北京时间)\n"
         f"🖥️ 目标主机: {host_count}\n"
         "━━━━━━━━━━━━━━━━━━"
