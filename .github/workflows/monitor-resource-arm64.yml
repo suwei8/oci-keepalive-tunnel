@@ -181,7 +181,7 @@ jobs:
           fi
 
           set +e
-          sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" \
+          sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -p 2222 "${SSH_USERNAME}@127.0.0.1" \
             "export SAMPLE_INTERVAL_SECONDS='${SAMPLE_INTERVAL_SECONDS}'; \
              export MONITOR_DURATION_SECONDS='${MONITOR_DURATION_SECONDS}'; \
              bash -s" <<'EOF_REMOTE' >"$SAMPLE_FILE" 2>"$STDERR_FILE"
