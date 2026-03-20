@@ -32,6 +32,15 @@ SUSPICIOUS_CRON_PATTERNS = [
 # 挖矿矿池常用端口
 MINING_PORTS = [3333, 4444, 5555, 7777, 8888, 9999, 14444, 45700]
 
+KEEPALIVE_WRAPPER_MARKERS = (
+    "export host_name=",
+    "keepalive_repo_url=",
+    "keepalive_repo_dir=",
+    "keepalive_git_branch=",
+    "keepalive_timeout_seconds=",
+    "security_keywords=",
+)
+
 
 class SecurityChecker:
     def __init__(self, hostname: str):
@@ -50,6 +59,13 @@ class SecurityChecker:
         print(f"[安全] {level_emoji} [{level}] {title}")
         if detail:
             print(f"        {detail[:100]}...")
+
+    @staticmethod
+    def is_keepalive_wrapper_process(lower_cmd: str) -> bool:
+        """忽略由 workflow 包装出来的远端保活启动命令，避免自命中。"""
+        if "bash -c export host_name=" not in lower_cmd:
+            return False
+        return any(marker in lower_cmd for marker in KEEPALIVE_WRAPPER_MARKERS)
     
     def check_malicious_crontab(self):
         """检查恶意 crontab 条目"""
@@ -110,6 +126,10 @@ class SecurityChecker:
                             # 跳过 Playwright 相关浏览器进程 (避免误报 SG2-新加坡西7)
                             if 'chromium_headless_shell' in cmd or 'ms-playwright' in line:
                                 continue
+
+                            # 跳过当前保活 workflow 的远端包装命令，避免被 SECURITY_KEYWORDS 自己命中
+                            if self.is_keepalive_wrapper_process(lower_line):
+                                continue
                             
                             self.add_issue("CRITICAL", f"疑似挖矿进程 (PID: {pid})", cmd)
                             found_suspicious = True
@@ -124,7 +144,7 @@ class SecurityChecker:
         """检查 /tmp 中的可疑文件"""
         print("\n[安全] 检查 /tmp 可疑文件...")
         # 白名单目录 - AppImage 挂载点等正常目录
-        whitelist_dirs = ['.mount_', '_MEI', 'pyrefly', 'Antigravity-Manager']  # AppImage 运行时挂载点, PyInstaller 临时目录, Pyrefly 类型存根, 用户开源项目
+        whitelist_dirs = ['.mount_', '_MEI', 'pyrefly', 'Antigravity-Manager', '/tmp/ag/unpack/Antigravity']  # AppImage 运行时挂载点, PyInstaller 临时目录, Pyrefly 类型存根, 用户开源项目, Antigravity 解包目录
         
         try:
             suspicious_files = []

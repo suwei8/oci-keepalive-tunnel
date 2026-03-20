@@ -79,6 +79,9 @@ def cmd_enforce_fatal(argv):
         "tunnel_failed",
         "repo_sync_failed",
         "keepalive_failed",
+        "security_blocked",
+        "prediction_missing",
+        "prediction_invalid",
     }
     if result.get("workflow_status", "unknown") in fatal_statuses:
         raise SystemExit(1)

@@ -15,6 +15,7 @@ repo_status="unknown"
 keepalive_status="unknown"
 prediction_status="unknown"
 notes=()
+RUN_LOG_FILE=""
 
 add_note() {
   notes+=("$1")
@@ -33,6 +34,14 @@ print_results() {
   echo "RESULT_PREDICTION_STATUS=${prediction_status}"
   echo "RESULT_NOTES=${joined_notes}"
 }
+
+cleanup() {
+  if [ -n "${RUN_LOG_FILE}" ] && [ -f "${RUN_LOG_FILE}" ]; then
+    rm -f "${RUN_LOG_FILE}"
+  fi
+}
+
+trap cleanup EXIT
 
 if [ -z "${KEEPALIVE_REPO_URL}" ]; then
   workflow_status="repo_sync_failed"
@@ -92,17 +101,26 @@ fi
 
 cd "${KEEPALIVE_REPO_DIR}"
 
+RUN_LOG_FILE="$(mktemp)"
+
 set +e
 env \
   TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN}" \
   TELEGRAM_CHAT_ID="${TELEGRAM_CHAT_ID}" \
   SECURITY_KEYWORDS="${SECURITY_KEYWORDS}" \
   timeout "${KEEPALIVE_TIMEOUT_SECONDS}" \
-  python3 scripts/remote_keepalive.py --hostname "${HOST_NAME}"
+  python3 scripts/remote_keepalive.py --hostname "${HOST_NAME}" \
+  >"${RUN_LOG_FILE}" 2>&1
 KEEPALIVE_RC=$?
 set -e
 
-if [ "${KEEPALIVE_RC}" -eq 0 ]; then
+cat "${RUN_LOG_FILE}"
+
+if grep -Eq '⛔ .*安全问题.*中止保活任务|发现 [0-9]+ 个安全问题，中止保活任务' "${RUN_LOG_FILE}"; then
+  workflow_status="security_blocked"
+  keepalive_status="security_blocked"
+  add_note "security check blocked keepalive run"
+elif [ "${KEEPALIVE_RC}" -eq 0 ]; then
   keepalive_status="success"
 else
   workflow_status="keepalive_failed"
@@ -130,10 +148,16 @@ PY
   else
     prediction_status="invalid"
     add_note "prediction_result.json is invalid"
+    if [ "${workflow_status}" = "success" ]; then
+      workflow_status="prediction_invalid"
+    fi
   fi
 else
   prediction_status="missing"
   add_note "prediction_result.json missing"
+  if [ "${workflow_status}" = "success" ]; then
+    workflow_status="prediction_missing"
+  fi
 fi
 
 print_results
