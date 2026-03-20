@@ -151,6 +151,9 @@ jobs:
           PREDICTION_FILE="predictions/host_${HOST_INDEX}.json"
           SAMPLE_FILE="results/host_${HOST_INDEX}.samples"
           REMOTE_SSH_USERNAME="${SSH_USERNAME:-root}"
+          REMOTE_RUNNER_SCRIPT="/tmp/oci_keepalive_runner_${HOST_INDEX}.sh"
+          REMOTE_RUNNER_LOG="/tmp/oci_keepalive_runner_${HOST_INDEX}.log"
+          REMOTE_RUNNER_EXIT="/tmp/oci_keepalive_runner_${HOST_INDEX}.exit"
 
           python3 scripts/keepalive_result_helper.py write-result \
             "$RESULT_FILE" "$HOST_NAME" "$HOST_INDEX" "running" ""
@@ -256,6 +259,11 @@ jobs:
             exit 1
           fi
 
+          sshpass -p "$SSH_PASSWORD" \
+            ssh $SSH_OPTS -p 2222 "${REMOTE_SSH_USERNAME}@127.0.0.1" \
+            "cat > '${REMOTE_RUNNER_SCRIPT}' && chmod +x '${REMOTE_RUNNER_SCRIPT}'" \
+            < scripts/remote_keepalive_runner.sh
+
           BEFORE_METRICS="$(fetch_metrics)"
           CPU_BEFORE="$(echo "$BEFORE_METRICS" | cut -d'|' -f1)"
           MEM_BEFORE="$(echo "$BEFORE_METRICS" | cut -d'|' -f2)"
@@ -265,33 +273,90 @@ jobs:
 
           set +e
           : >"$SAMPLE_FILE"
-          sshpass -p "$SSH_PASSWORD" \
-            ssh $SSH_OPTS -p 2222 "${REMOTE_SSH_USERNAME}@127.0.0.1" \
-            "export HOST_NAME='${HOST_NAME}'; \
-             export KEEPALIVE_REPO_URL='https://x-access-token:${REPO_TOKEN}@github.com/${GITHUB_REPOSITORY_NAME}.git'; \
-             export KEEPALIVE_REPO_DIR=\"\$HOME/oci-keepalive\"; \
-             export KEEPALIVE_GIT_BRANCH='main'; \
-             export KEEPALIVE_TIMEOUT_SECONDS='1800'; \
-             export TELEGRAM_BOT_TOKEN='${TELEGRAM_BOT_TOKEN}'; \
-             export TELEGRAM_CHAT_ID='${TELEGRAM_CHAT_ID}'; \
-             export SECURITY_KEYWORDS='${SECURITY_KEYWORDS}'; \
-             bash -s" \
-            < scripts/remote_keepalive_runner.sh >"$REMOTE_OUTPUT_FILE" 2>&1 &
-          REMOTE_JOB_PID=$!
+          REMOTE_PID="$(
+            sshpass -p "$SSH_PASSWORD" \
+              ssh $SSH_OPTS -p 2222 "${REMOTE_SSH_USERNAME}@127.0.0.1" \
+              "rm -f '${REMOTE_RUNNER_LOG}' '${REMOTE_RUNNER_EXIT}'; \
+               nohup bash -lc '
+                 export HOST_NAME='\"'\"'${HOST_NAME}'\"'\"';
+                 export KEEPALIVE_REPO_URL='\"'\"'https://x-access-token:${REPO_TOKEN}@github.com/${GITHUB_REPOSITORY_NAME}.git'\"'\"';
+                 export KEEPALIVE_REPO_DIR=\"\$HOME/oci-keepalive\";
+                 export KEEPALIVE_GIT_BRANCH='\"'\"'main'\"'\"';
+                 export KEEPALIVE_TIMEOUT_SECONDS='\"'\"'1800'\"'\"';
+                 export TELEGRAM_BOT_TOKEN='\"'\"'${TELEGRAM_BOT_TOKEN}'\"'\"';
+                 export TELEGRAM_CHAT_ID='\"'\"'${TELEGRAM_CHAT_ID}'\"'\"';
+                 export SECURITY_KEYWORDS='\"'\"'${SECURITY_KEYWORDS}'\"'\"';
+                 bash '${REMOTE_RUNNER_SCRIPT}' > '${REMOTE_RUNNER_LOG}' 2>&1;
+                 status=\$?;
+                 printf '%s' \"\$status\" > '${REMOTE_RUNNER_EXIT}'
+               ' >/dev/null 2>&1 & echo \$!" \
+              | tr -d '\r' | tail -n1
+          )"
+
+          if ! [[ "$REMOTE_PID" =~ ^[0-9]+$ ]]; then
+            echo "Failed to start detached remote runner, pid=${REMOTE_PID:-unknown}" >"$REMOTE_OUTPUT_FILE"
+            python3 scripts/keepalive_result_helper.py write-result \
+              "$RESULT_FILE" "$HOST_NAME" "$HOST_INDEX" "remote_failed" "failed to start detached remote runner"
+            exit 1
+          fi
+
+          remote_pid_alive() {
+            sshpass -p "$SSH_PASSWORD" \
+              ssh $SSH_OPTS -p 2222 "${REMOTE_SSH_USERNAME}@127.0.0.1" \
+              "kill -0 '${REMOTE_PID}' 2>/dev/null"
+          }
+
+          remote_exit_ready() {
+            sshpass -p "$SSH_PASSWORD" \
+              ssh $SSH_OPTS -p 2222 "${REMOTE_SSH_USERNAME}@127.0.0.1" \
+              "test -f '${REMOTE_RUNNER_EXIT}'"
+          }
 
           sample_loop() {
-            while kill -0 "$REMOTE_JOB_PID" 2>/dev/null; do
-              sample_metrics >>"$SAMPLE_FILE" || true
-              sleep 9
+            local misses=0
+            while true; do
+              if remote_exit_ready; then
+                break
+              fi
+
+              if remote_pid_alive; then
+                misses=0
+                sample_metrics >>"$SAMPLE_FILE" || true
+                sleep 9
+                continue
+              fi
+
+              misses=$((misses + 1))
+              if [ "$misses" -ge 3 ]; then
+                break
+              fi
+              sleep 5
             done
           }
 
           sample_loop &
           SAMPLE_PID=$!
 
-          wait "$REMOTE_JOB_PID"
-          REMOTE_RC=$?
           wait "$SAMPLE_PID" || true
+          REMOTE_RC="$(
+            sshpass -p "$SSH_PASSWORD" \
+              ssh $SSH_OPTS -p 2222 "${REMOTE_SSH_USERNAME}@127.0.0.1" \
+              "cat '${REMOTE_RUNNER_EXIT}' 2>/dev/null" | tr -d '\r' | tail -n1
+          )"
+
+          if ! [[ "$REMOTE_RC" =~ ^[0-9]+$ ]]; then
+            REMOTE_RC=1
+          fi
+
+          if ! sshpass -p "$SSH_PASSWORD" \
+            scp $SSH_OPTS -P 2222 \
+            "${REMOTE_SSH_USERNAME}@127.0.0.1:${REMOTE_RUNNER_LOG}" \
+            "$REMOTE_OUTPUT_FILE" >/dev/null 2>&1; then
+            sshpass -p "$SSH_PASSWORD" \
+              ssh $SSH_OPTS -p 2222 "${REMOTE_SSH_USERNAME}@127.0.0.1" \
+              "cat '${REMOTE_RUNNER_LOG}' 2>/dev/null" >"$REMOTE_OUTPUT_FILE" || true
+          fi
+
           set -e
 
           cat "$REMOTE_OUTPUT_FILE"
