@@ -64,7 +64,13 @@ class SecurityChecker:
     @staticmethod
     def is_keepalive_wrapper_process(lower_cmd: str) -> bool:
         """忽略由 workflow 包装出来的远端保活启动命令，避免自命中。"""
-        if "bash -c export host_name=" not in lower_cmd:
+        shell_markers = (
+            "bash -c export host_name=",
+            "bash -lc export host_name=",
+            "nohup bash -c export host_name=",
+            "nohup bash -lc export host_name=",
+        )
+        if not any(marker in lower_cmd for marker in shell_markers):
             return False
         return any(marker in lower_cmd for marker in KEEPALIVE_WRAPPER_MARKERS)
     

@@ -607,12 +607,14 @@ def main(hostname: str = None):
     try:
         from security_check import run_security_checks
         issues, has_critical = run_security_checks(hostname)
-        if issues:  # 任何安全问题都中止保活
+        if has_critical:
             print("\n" + "!" * 60)
-            print(f"⛔ 发现 {len(issues)} 个安全问题，中止保活任务！")
+            print(f"⛔ 发现 {len(issues)} 个安全问题，其中包含严重风险，中止保活任务！")
             print("请先处理安全问题后再运行保活。")
             print("!" * 60)
             return
+        if issues:
+            print(f"\n⚠️ 发现 {len(issues)} 个非严重安全问题，继续执行保活任务...")
         print("\n✅ 安全检测通过，开始保活任务...")
     except Exception as e:
         print(f"\n[安全] ⚠️ 安全检测出错: {e}")
@@ -1131,9 +1133,11 @@ if __name__ == "__main__":
         try:
             from security_check import run_security_checks
             issues, has_critical = run_security_checks(args.hostname)
-            if issues:
-                print(f"⛔ 发现 {len(issues)} 个安全问题，中止保活任务！")
+            if has_critical:
+                print(f"⛔ 发现 {len(issues)} 个安全问题，其中包含严重风险，中止保活任务！")
                 sys.exit(0)
+            if issues:
+                print(f"⚠️ 发现 {len(issues)} 个非严重安全问题，继续执行保活任务...")
             print("✅ 安全检测通过")
         except Exception as e:
             print(f"[安全] ⚠️ 安全检测出错: {e}")
