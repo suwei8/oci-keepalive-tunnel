@@ -265,10 +265,11 @@ jobs:
         id: summary
         env:
           HOST_COUNT: ${{ needs.prepare.outputs.host_count }}
+          MATRIX_JSON: ${{ needs.prepare.outputs.matrix }}
         run: |
           set -euo pipefail
           python3 scripts/workflow_result_helper.py build-summary \
-            all-results "$HOST_COUNT" telegram_message.txt
+            all-results "$HOST_COUNT" telegram_message.txt "$MATRIX_JSON"
 
       - name: Send summary to Telegram
         env:

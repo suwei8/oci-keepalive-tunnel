@@ -61,12 +61,13 @@ def cmd_enforce_fatal(argv):
 
 
 def cmd_build_summary(argv):
-    all_results_dir, host_count, output_file = argv
+    all_results_dir, host_count, output_file, matrix_json = argv
     base = Path(all_results_dir)
     results = []
     if base.exists():
         for path in sorted(base.glob("result-*/host_*.json")):
             results.append(json.loads(path.read_text()))
+    matrix = json.loads(matrix_json).get("include", [])
 
     def host_label(item):
         index = item.get("index", "?")
@@ -80,6 +81,20 @@ def cmd_build_summary(argv):
         if len(labels) <= limit:
             return "\n".join(labels)
         return "\n".join(labels[:limit]) + f"\n等{len(labels)}台"
+
+    def updated_reason(item):
+        parts = []
+        if item.get("antigravity_status") == "success":
+            parts.append("Antigravity")
+        if item.get("antigravity_cli_status") == "success":
+            parts.append("CLI")
+        if item.get("bridge_status") in {"deployed_started", "files_refreshed_no_env"}:
+            parts.append("Bridge")
+        if item.get("codex_status") == "success":
+            parts.append("Codex")
+        if item.get("claude_status") == "success":
+            parts.append("Claude")
+        return "、".join(parts) if parts else "已更新"
 
     def is_updated(item):
         return any(
@@ -138,20 +153,27 @@ def cmd_build_summary(argv):
             return f"{reason} | {notes}"
         return reason
 
-    updated_hosts = []
+    result_indexes = {item.get("index") for item in results}
+    updated_lines = []
     skipped_lines = []
     failed_lines = []
+    missing_lines = []
 
     for item in results:
         workflow_status = item.get("workflow_status", "unknown")
 
         if workflow_status == "success":
             if is_updated(item):
-                updated_hosts.append(item)
+                updated_lines.append(f"{host_label(item)} | {updated_reason(item)}")
             else:
                 skipped_lines.append(f"{host_label(item)} | {skip_reason(item)}")
         else:
             failed_lines.append(f"{host_label(item)} | {failure_reason(item)}")
+
+    for item in matrix:
+        if item.get("index") in result_indexes:
+            continue
+        missing_lines.append(f"{item.get('name', 'unknown')}#{item.get('index', '?')} | 未收到结果")
 
     timestamp = datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d %H:%M:%S")
     header = (
@@ -160,15 +182,20 @@ def cmd_build_summary(argv):
         "━━━━━━━━━━━━━━━━━━"
     )
     summary_lines = [
-        f"总数：{host_count}     更新：{len(updated_hosts)}",
+        f"总数：{host_count}     更新：{len(updated_lines)}",
+        "",
+        f"更新：{len(updated_lines)}",
+        host_lines(updated_lines),
         "",
         f"跳过：{len(skipped_lines)}",
+        host_lines(skipped_lines),
+        "",
+        f"失败：{len(failed_lines)}",
+        host_lines(failed_lines),
+        "",
+        f"未汇总：{len(missing_lines)}",
+        host_lines(missing_lines),
     ]
-    if skipped_lines:
-        summary_lines.append(host_lines(skipped_lines))
-    summary_lines.extend(["", f"失败：{len(failed_lines)}"])
-    if failed_lines:
-        summary_lines.append(host_lines(failed_lines))
 
     Path(output_file).write_text(header + "\n" + "\n".join(summary_lines))
 
