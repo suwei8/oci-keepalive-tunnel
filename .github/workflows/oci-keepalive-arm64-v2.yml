@@ -150,6 +150,7 @@ jobs:
           RESULT_FILE="results/host_${HOST_INDEX}.json"
           REMOTE_OUTPUT_FILE="results/host_${HOST_INDEX}.remote.log"
           PREDICTION_FILE="predictions/host_${HOST_INDEX}.json"
+          SAMPLE_FILE="results/host_${HOST_INDEX}.samples"
 
           python3 scripts/keepalive_result_helper.py write-result \
             "$RESULT_FILE" "$HOST_NAME" "$HOST_INDEX" "running" ""
@@ -189,9 +190,54 @@ jobs:
                 MEM="N/A"
               fi
 
+              LOAD1=$(awk "{print \$1}" /proc/loadavg 2>/dev/null || echo "N/A")
               CPU_FMT=$(printf "%.0f" "$CPU" 2>/dev/null || echo "N/A")
-              echo "${CPU_FMT}|${MEM}"
-            ' 2>/dev/null || echo "N/A|N/A"
+              echo "${CPU_FMT}|${MEM}|${LOAD1}"
+            ' 2>/dev/null || echo "N/A|N/A|N/A"
+          }
+
+          sample_metrics() {
+            sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -p 2222 "${SSH_USERNAME}@127.0.0.1" '
+              read cpu user nice system idle iowait irq softirq steal guest < /proc/stat
+              PREV_TOTAL=$((user + nice + system + idle + iowait + irq + softirq + steal))
+              PREV_IDLE=$((idle + iowait))
+              sleep 1
+              read cpu user nice system idle iowait irq softirq steal guest < /proc/stat
+              TOTAL=$((user + nice + system + idle + iowait + irq + softirq + steal))
+              IDLE=$((idle + iowait))
+
+              DIFF_TOTAL=$((TOTAL - PREV_TOTAL))
+              DIFF_IDLE=$((IDLE - PREV_IDLE))
+              if [ "$DIFF_TOTAL" -le 0 ] 2>/dev/null; then
+                DIFF_TOTAL=1
+              fi
+              CPU=$((100 * (DIFF_TOTAL - DIFF_IDLE) / DIFF_TOTAL))
+
+              TOTAL_KB=$(awk "/^MemTotal:/ {print \$2}" /proc/meminfo)
+              AVAIL_KB=$(awk "/^MemAvailable:/ {print \$2}" /proc/meminfo)
+
+              if [ -z "$AVAIL_KB" ]; then
+                FREE_KB=$(awk "/^MemFree:/ {print \$2}" /proc/meminfo)
+                BUFF_KB=$(awk "/^Buffers:/ {print \$2}" /proc/meminfo)
+                CACH_KB=$(awk "/^Cached:/ {print \$2}" /proc/meminfo)
+                [ -n "$FREE_KB" ] || FREE_KB=0
+                [ -n "$BUFF_KB" ] || BUFF_KB=0
+                [ -n "$CACH_KB" ] || CACH_KB=0
+                AVAIL_KB=$((FREE_KB + BUFF_KB + CACH_KB))
+              fi
+
+              if [ -n "$TOTAL_KB" ] && [ "$TOTAL_KB" -gt 0 ] 2>/dev/null && [ -n "$AVAIL_KB" ] && [ "$AVAIL_KB" -ge 0 ] 2>/dev/null; then
+                if [ "$AVAIL_KB" -gt "$TOTAL_KB" ] 2>/dev/null; then
+                  AVAIL_KB=$TOTAL_KB
+                fi
+                MEM=$((100 * (TOTAL_KB - AVAIL_KB) / TOTAL_KB))
+              else
+                MEM=0
+              fi
+
+              LOAD1=$(awk "{print \$1}" /proc/loadavg 2>/dev/null || echo "0.00")
+              echo "${CPU}|${MEM}|${LOAD1}"
+            ' 2>/dev/null
           }
 
           cloudflared access ssh --hostname "$SSH_HOST" --url "ssh://127.0.0.1:2222" >/dev/null 2>&1 &
@@ -213,10 +259,12 @@ jobs:
           BEFORE_METRICS="$(fetch_metrics)"
           CPU_BEFORE="$(echo "$BEFORE_METRICS" | cut -d'|' -f1)"
           MEM_BEFORE="$(echo "$BEFORE_METRICS" | cut -d'|' -f2)"
+          LOAD_BEFORE="$(echo "$BEFORE_METRICS" | cut -d'|' -f3)"
 
           START_TS="$(date +%s)"
 
           set +e
+          : >"$SAMPLE_FILE"
           sshpass -p "$SSH_PASSWORD" \
             ssh $SSH_OPTS -p 2222 "${SSH_USERNAME}@127.0.0.1" \
             "export HOST_NAME='${HOST_NAME}'; \
@@ -228,14 +276,30 @@ jobs:
              export TELEGRAM_CHAT_ID='${TELEGRAM_CHAT_ID}'; \
              export SECURITY_KEYWORDS='${SECURITY_KEYWORDS}'; \
              bash -s" \
-            < scripts/remote_keepalive_runner.sh >"$REMOTE_OUTPUT_FILE" 2>&1
+            < scripts/remote_keepalive_runner.sh >"$REMOTE_OUTPUT_FILE" 2>&1 &
+          REMOTE_JOB_PID=$!
+
+          sample_loop() {
+            while kill -0 "$REMOTE_JOB_PID" 2>/dev/null; do
+              sample_metrics >>"$SAMPLE_FILE" || true
+              sleep 9
+            done
+          }
+
+          sample_loop &
+          SAMPLE_PID=$!
+
+          wait "$REMOTE_JOB_PID"
           REMOTE_RC=$?
+          wait "$SAMPLE_PID" || true
           set -e
 
           cat "$REMOTE_OUTPUT_FILE"
 
           python3 scripts/keepalive_result_helper.py merge-remote-log \
             "$REMOTE_OUTPUT_FILE" "$RESULT_FILE" "$HOST_NAME" "$HOST_INDEX" "$REMOTE_RC"
+          python3 scripts/keepalive_result_helper.py merge-sample-metrics \
+            "$RESULT_FILE" "$SAMPLE_FILE"
 
           if sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -p 2222 "${SSH_USERNAME}@127.0.0.1" "test -f /tmp/prediction_result.json"; then
             sshpass -p "$SSH_PASSWORD" scp $SSH_OPTS -P 2222 \
@@ -246,6 +310,7 @@ jobs:
           AFTER_METRICS="$(fetch_metrics)"
           CPU_AFTER="$(echo "$AFTER_METRICS" | cut -d'|' -f1)"
           MEM_AFTER="$(echo "$AFTER_METRICS" | cut -d'|' -f2)"
+          LOAD_AFTER="$(echo "$AFTER_METRICS" | cut -d'|' -f3)"
 
           END_TS="$(date +%s)"
           DURATION_SECONDS="$((END_TS - START_TS))"
@@ -264,7 +329,7 @@ jobs:
           fi
 
           python3 scripts/keepalive_result_helper.py update-runner-fields \
-            "$RESULT_FILE" "$DURATION_SECONDS" "$CPU_BEFORE" "$MEM_BEFORE" "$CPU_AFTER" "$MEM_AFTER" "$JITTER_SECONDS"
+            "$RESULT_FILE" "$DURATION_SECONDS" "$CPU_BEFORE" "$MEM_BEFORE" "$LOAD_BEFORE" "$CPU_AFTER" "$MEM_AFTER" "$LOAD_AFTER" "$JITTER_SECONDS"
 
           python3 scripts/keepalive_result_helper.py enforce-fatal "$RESULT_FILE"
 
@@ -276,6 +341,7 @@ jobs:
           path: |
             results/host_${{ matrix.index }}.json
             results/host_${{ matrix.index }}.remote.log
+            results/host_${{ matrix.index }}.samples
           if-no-files-found: ignore
           retention-days: 3
 

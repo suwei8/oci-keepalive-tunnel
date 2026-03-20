@@ -53,8 +53,10 @@ def cmd_update_runner_fields(argv):
         duration_seconds,
         cpu_before,
         mem_before,
+        load_before,
         cpu_after,
         mem_after,
+        load_after,
         jitter_seconds,
     ) = argv
     data = read_json(result_file)
@@ -63,9 +65,53 @@ def cmd_update_runner_fields(argv):
             "duration_seconds": int(duration_seconds),
             "cpu_before": cpu_before,
             "mem_before": mem_before,
+            "load_before": load_before,
             "cpu_after": cpu_after,
             "mem_after": mem_after,
+            "load_after": load_after,
             "jitter_seconds": int(jitter_seconds),
+        }
+    )
+    write_json(result_file, data)
+
+
+def cmd_merge_sample_metrics(argv):
+    result_file, sample_file = argv
+    data = read_json(result_file)
+    sample_path = Path(sample_file)
+
+    samples = []
+    if sample_path.exists():
+        for line in sample_path.read_text().splitlines():
+            parts = line.strip().split("|")
+            if len(parts) != 3:
+                continue
+            try:
+                cpu = int(parts[0])
+                mem = int(parts[1])
+                load1 = float(parts[2])
+            except ValueError:
+                continue
+            samples.append((cpu, mem, load1))
+
+    if not samples:
+        data["sample_count"] = 0
+        write_json(result_file, data)
+        return
+
+    cpu_values = [item[0] for item in samples]
+    mem_values = [item[1] for item in samples]
+    load_values = [item[2] for item in samples]
+
+    data.update(
+        {
+            "sample_count": len(samples),
+            "cpu_avg": round(sum(cpu_values) / len(cpu_values)),
+            "cpu_max": max(cpu_values),
+            "mem_avg": round(sum(mem_values) / len(mem_values)),
+            "mem_max": max(mem_values),
+            "load1_avg": round(sum(load_values) / len(load_values), 2),
+            "load1_max": round(max(load_values), 2),
         }
     )
     write_json(result_file, data)
@@ -107,13 +153,45 @@ def cmd_build_summary(argv):
     def host_label(item):
         return f"{item.get('host', 'unknown')}#{item.get('index', '?')}"
 
-    def join_hosts(items):
-        labels = [host_label(item) for item in items]
-        if not labels:
-            return "无"
-        if len(labels) <= 8:
-            return "、".join(labels)
-        return "、".join(labels[:8]) + f" 等{len(labels)}台"
+    def metric_int(item, preferred_key, fallback_key):
+        value = item.get(preferred_key)
+        if value in (None, "", "N/A"):
+            value = item.get(fallback_key, "N/A")
+        return str(value)
+
+    def metric_float(item, preferred_key, fallback_key):
+        value = item.get(preferred_key)
+        if value in (None, "", "N/A"):
+            value = item.get(fallback_key, "N/A")
+        return str(value)
+
+    def success_warning_reasons(item):
+        reasons = []
+        duration_seconds = int(item.get("duration_seconds", 0) or 0)
+        sample_count = int(item.get("sample_count", 0) or 0)
+
+        cpu_peak_raw = item.get("cpu_max", item.get("cpu_after"))
+        mem_peak_raw = item.get("mem_max", item.get("mem_after"))
+
+        try:
+            cpu_peak = int(cpu_peak_raw)
+        except (TypeError, ValueError):
+            cpu_peak = None
+
+        try:
+            mem_peak = int(mem_peak_raw)
+        except (TypeError, ValueError):
+            mem_peak = None
+
+        if duration_seconds > 600:
+            reasons.append("duration>10m")
+        if cpu_peak is not None and cpu_peak >= 80:
+            reasons.append(f"cpu_peak={cpu_peak}%")
+        if mem_peak is not None and mem_peak >= 30:
+            reasons.append(f"mem_peak={mem_peak}%")
+        if sample_count == 0:
+            reasons.append("metrics=snapshot_only")
+        return reasons
 
     success_hosts = []
     fatal_lines = []
@@ -125,11 +203,14 @@ def cmd_build_summary(argv):
         notes = item.get("notes", "").strip()
         if workflow_status == "success":
             success_hosts.append(item)
+            reasons = success_warning_reasons(item)
             if prediction_status != "present":
-                warning_lines.append(
-                    f"⚠️ <b>{item.get('host', 'unknown')}</b> | prediction={prediction_status}"
-                    + (f" | {notes}" if notes else "")
-                )
+                reasons.insert(0, f"prediction={prediction_status}")
+            if reasons:
+                detail = f"⚠️ <b>{item.get('host', 'unknown')}</b> | " + " | ".join(reasons)
+                if notes:
+                    detail += f" | {notes}"
+                warning_lines.append(detail)
         else:
             detail = f"❌ <b>{item.get('host', 'unknown')}</b> | {workflow_status}"
             if notes:
@@ -151,13 +232,23 @@ def cmd_build_summary(argv):
 
     details = []
     if success_hosts:
+        success_hosts = sorted(
+            success_hosts,
+            key=lambda item: (
+                0 if success_warning_reasons(item) else 1,
+                host_label(item),
+            ),
+        )
         success_lines = []
         for item in success_hosts[:20]:
             duration = format_duration(int(item.get("duration_seconds", 0)))
-            cpu_after = item.get("cpu_after", "N/A")
-            mem_after = item.get("mem_after", "N/A")
+            cpu_avg = metric_int(item, "cpu_avg", "cpu_after")
+            cpu_max = metric_int(item, "cpu_max", "cpu_after")
+            mem_avg = metric_int(item, "mem_avg", "mem_after")
+            mem_max = metric_int(item, "mem_max", "mem_after")
+            load1_max = metric_float(item, "load1_max", "load_after")
             success_lines.append(
-                f"{host_label(item)} | {duration} | CPU {cpu_after}% | MEM {mem_after}%"
+                f"{host_label(item)} | {duration} | CPU {cpu_avg}/{cpu_max}% | MEM {mem_avg}/{mem_max}% | L1 {load1_max}"
             )
         details.append("成功主机:\n" + "\n".join(success_lines))
     if fatal_lines:
@@ -183,6 +274,8 @@ def main():
         cmd_merge_remote_log(argv)
     elif command == "update-runner-fields":
         cmd_update_runner_fields(argv)
+    elif command == "merge-sample-metrics":
+        cmd_merge_sample_metrics(argv)
     elif command == "enforce-fatal":
         cmd_enforce_fatal(argv)
     elif command == "build-summary":
