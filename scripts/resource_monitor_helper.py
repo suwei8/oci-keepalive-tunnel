@@ -170,8 +170,8 @@ def cmd_build_summary(argv):
     ]
 
     if ranked:
-        lines.append("<b>5分钟平均低活跃排名 Top 10</b>")
-        for idx, item in enumerate(ranked[:10], start=1):
+        lines.append("<b>5分钟平均低活跃排名</b>")
+        for idx, item in enumerate(ranked, start=1):
             host = html.escape(str(item.get("host", "unknown")))
             lines.append(
                 (
