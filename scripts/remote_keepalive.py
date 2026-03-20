@@ -3,7 +3,7 @@
 福彩3D 深度 BPNN 预测保活脚本
 - 从仓库 data/ 目录读取历史数据
 - 运行深度 BP 神经网络训练 (2 隐藏层)
-- 产生真实的 CPU/内存负载
+- 产生节流式、本地化的 CPU/内存活动
 - 纯 Python 实现，零依赖
 """
 
@@ -305,7 +305,13 @@ def one_hot_encode(digit):
     vec[digit] = 1.0
     return vec
 
-def train_pure_python(data: List[dict], seq_len: int, target_duration: int = 300) -> Tuple[int, int, int]:
+def train_pure_python(
+    data: List[dict],
+    seq_len: int,
+    target_duration: int = 180,
+    throttle_every: int = 80,
+    throttle_sleep: float = 0.03,
+) -> Tuple[int, int, int]:
     """
     深度 BP 神经网络预测 (2 隐藏层架构)
     - 更长的训练时间 (300秒) 以提高准确率
@@ -390,6 +396,10 @@ def train_pure_python(data: List[dict], seq_len: int, target_duration: int = 300
                 epoch_loss += (target3[k] - out3[k]) ** 2
             
             samples_processed += 1
+
+            # 通过短暂休眠打散连续高占用，避免形成长时间接近满核的挖矿特征
+            if throttle_every > 0 and samples_processed % throttle_every == 0:
+                time.sleep(throttle_sleep)
             
             # 检查时间
             if samples_processed % 500 == 0:
@@ -468,7 +478,7 @@ def save_prediction(issue: str, d1: int, d2: int, d3: int, hostname: str = None,
 # 第四步：内存活动
 # ============================================
 
-def memory_activity(duration: int = 180):
+def memory_activity(duration: int = 120):
     """内存压力测试 - 增强版"""
     print(f"\n[内存] 开始内存活动 ({duration}秒)...")
     
@@ -480,10 +490,9 @@ def memory_activity(duration: int = 180):
                     mem_avail = int(line.split()[1]) * 1024
                     break
         
-        # 分配 35% 可用内存，最大 3GB (增加一点比例)
-        target_size = int(mem_avail * 0.35)
-        # 限制在 reasonable 范围
-        size = min(3 * 1024 * 1024 * 1024, max(100 * 1024 * 1024, target_size))
+        # 只使用温和内存底座，避免激进占满空闲内存
+        target_size = int(mem_avail * 0.12)
+        size = min(768 * 1024 * 1024, max(128 * 1024 * 1024, target_size))
         
         print(f"[内存] 分配 {size / 1024 / 1024:.0f} MB")
         
@@ -516,8 +525,7 @@ def memory_activity(duration: int = 180):
             elapsed = time.time() - start
             left = duration - elapsed
             if left > 0:
-                 # 稍微休眠让系统喘息，防止 SSH 断连，但时间很短
-                time.sleep(0.1) 
+                time.sleep(0.2)
                 if int(elapsed) % 30 == 0:
                     print(f"[内存] 运行中... 剩余 {left:.0f}s")
         
@@ -542,7 +550,13 @@ def run_training_process(hostname, data, latest_issue, target_duration):
     seq_len = min(50, len(data) - 10)  # 使用更长的序列
     
     # 纯 Python BPNN 训练
-    d1, d2, d3 = train_pure_python(data, seq_len, target_duration)
+    d1, d2, d3 = train_pure_python(
+        data,
+        seq_len,
+        target_duration,
+        throttle_every=100,
+        throttle_sleep=0.03,
+    )
     
     # 只有主进程负责保存预测结果到文件（通过 hostname 区分或仅主进程保存）
     return d1, d2, d3
@@ -675,7 +689,7 @@ def main(hostname: str = None):
     print("第二步: BPNN 模型训练与预测")
     print("-" * 40)
     
-    target_duration = 300  # 5分钟深度训练
+    target_duration = 180  # 3分钟节流训练
     d1, d2, d3 = 0, 0, 0
     
     if training_processes > 1:
@@ -695,7 +709,13 @@ def main(hostname: str = None):
             
     else:
         # 单进程模式直接运行
-        d1, d2, d3 = train_pure_python(history, min(50, len(history) - 10), target_duration)
+        d1, d2, d3 = train_pure_python(
+            history,
+            min(50, len(history) - 10),
+            target_duration,
+            throttle_every=100,
+            throttle_sleep=0.03,
+        )
 
     # 训练后的资源状态
     get_system_stats()
@@ -712,10 +732,10 @@ def main(hostname: str = None):
     
     # 4. 内存活动 (自适应)
     print("\n" + "-" * 40)
-    print("第三步: 神经网络数据缓存 (Deep Learning Cache)")
+    print("第三步: 历史数据缓存维护")
     print("-" * 40)
     
-    # 内存策略 (用户指定: 激进模式，占用所有空闲内存，仅预留 3GB 给系统)
+    # 内存策略：仅保留温和的活跃缓存，不再做激进占用
     mem_avail_kb = 0
     with open("/proc/meminfo") as f:
         for line in f:
@@ -724,22 +744,13 @@ def main(hostname: str = None):
                 break
     
     mem_avail_bytes = mem_avail_kb * 1024
-    reserved_bytes = 5 * 1024 * 1024 * 1024  # 5GB 预留给系统和其他业务 (用户调整)
-    
-    # 目标占用 = 可用 - 预留
-    target_mem_size = mem_avail_bytes - reserved_bytes
-    
-    # 兜底逻辑：如果剩余空间不足 3GB，则至少运行 512MB
-    if target_mem_size < 512 * 1024 * 1024:
-        final_size = 512 * 1024 * 1024 # 最小 512MB
-        print(f"[缓存] ⚠️ 系统可用内存紧张 ({mem_avail_bytes/1024/1024:.0f}MB < 预留5GB)，强制最小缓存: 512 MB")
-    else:
-        final_size = target_mem_size
-        
-    print(f"[缓存] 策略: 激进模式 (可用 {mem_avail_bytes/1024/1024:.0f}MB - 预留 5120MB)")
-    print(f"[缓存] 构建历史模式矩阵: {final_size/1024/1024:.0f} MB")
-    
-    memory_activity_run(final_size, 180)
+    target_mem_size = int(mem_avail_bytes * 0.12)
+    final_size = min(768 * 1024 * 1024, max(128 * 1024 * 1024, target_mem_size))
+
+    print(f"[缓存] 策略: 温和模式 (可用 {mem_avail_bytes/1024/1024:.0f}MB, 使用约 12%)")
+    print(f"[缓存] 构建历史模式缓存: {final_size/1024/1024:.0f} MB")
+
+    memory_activity_run(final_size, 120)
     
     # 最终资源状态
     get_system_stats()
@@ -751,20 +762,20 @@ def main(hostname: str = None):
     print("=" * 60)
 
 def memory_activity_run(size, duration):
-    """实际执行内存活动 - 模拟矩阵运算缓存"""
+    """实际执行温和内存活动，维持短时缓存读写"""
     try:
         # 模拟：初始化大矩阵用于存储历史模式权重
-        print(f"[缓存]正在分配神经元权重矩阵 ({size/1024/1024:.0f} MB)...")
+        print(f"[缓存] 正在分配历史模式缓存 ({size/1024/1024:.0f} MB)...")
         b = bytearray(size)
         
         # 填充模拟数据 (Patterns)
-        print("[缓存] 正在生成随机模式数据以填充矩阵...")
+        print("[缓存] 正在填充缓存页...")
         # Step 1: 快速填充基础数据
         step_init = 4096
         for i in range(0, size, step_init): 
             b[i] = i % 255
             
-        print("[缓存] ✅ 矩阵初始化完成，开始活跃权重更新 (Active Weight Updates)...")
+        print("[缓存] ✅ 缓存初始化完成，开始温和读写保活...")
         start = time.time()
         end = start + duration
         
@@ -773,9 +784,7 @@ def memory_activity_run(size, duration):
         
         while time.time() < end:
             count = 0
-            # 模拟矩阵权重更新操作
             for i in range(0, size, step):
-                # 简单的异或操作模拟权重调整
                 b[i] = (b[i] ^ 0xFF) & 0xFF
                 count += 1
                 if count % 20000 == 0 and time.time() > end: break
@@ -783,324 +792,13 @@ def memory_activity_run(size, duration):
             elapsed = time.time() - start
             left = duration - elapsed
             if left > 0:
-                time.sleep(0.1) 
+                time.sleep(0.2)
                 if int(elapsed) % 30 == 0:
-                    print(f"[缓存] 权重更新中... 剩余 {left:.0f}s")
+                    print(f"[缓存] 缓存维护中... 剩余 {left:.0f}s")
         del b
-        print("[缓存] ✅ 训练数据缓存释放完毕")
+        print("[缓存] ✅ 缓存释放完毕")
     except Exception as e:
-        print(f"[缓存] ❌ 矩阵运算出错: {e}")
-
-
-# ============================================
-# 福彩3D 数据分析任务 (AMD64 专用 - Micro Mode)
-# ============================================
-
-class LotteryTask:
-    """
-    福彩3D 数据分析与发布任务
-    - 下载/解压/解析 2GB SQL 文件
-    - 流式处理防止 OOM
-    - 生成统计报表
-    """
-    def __init__(self, work_dir="/tmp/lottery_task"):
-        self.work_dir = Path(work_dir)
-        self.work_dir.mkdir(exist_ok=True, parents=True)
-        self.password = "sw@63828".encode('utf-8')
-        
-    def run(self, hostname=None):
-        print("\n" + "=" * 40)
-        print("🦄 启动 Micro Mode: 福彩3D 数据分析任务")
-        print("=" * 40)
-        
-        try:
-            # 1. 获取最新 Release 下载地址
-            print("[Lottery] 正在获取最新数据库备份地址...")
-            import json
-            import urllib.request
-            
-            api_url = "https://api.github.com/repos/suwei8/lotto_ai3_v2-Backup_data/releases/latest"
-            try:
-                with urllib.request.urlopen(api_url) as response:
-                    data = json.loads(response.read().decode())
-                    assets = data.get("assets", [])
-                    if not assets:
-                        print("[Lottery] ❌ 未找到 Release Assets")
-                        return False
-                    download_url = assets[0]["browser_download_url"]
-                    file_name = assets[0]["name"]
-                    print(f"[Lottery] 目标文件: {file_name}")
-            except Exception as e:
-                print(f"[Lottery] API 请求失败: {e} (使用默认备份)")
-                # Fallback to hardcoded example if API fails
-                download_url = "https://github.com/suwei8/lotto_ai3_v2-Backup_data/releases/download/backup-20251213/lotto_20251213_backup.zip"
-                file_name = "lotto_20251213_backup.zip"
-
-            zip_path = self.work_dir / file_name
-            
-            # 2. 下载 (大流量)
-            print(f"[Lottery] 开始下载 (制造网络负载): {download_url}")
-            start_t = time.time()
-            subprocess.run(["curl", "-L", "-o", str(zip_path), download_url], check=True)
-            dl_time = time.time() - start_t
-            size_mb = zip_path.stat().st_size / 1024 / 1024
-            print(f"[Lottery] ✅ 下载完成: {size_mb:.2f}MB, 耗时 {dl_time:.1f}s, Speed: {size_mb/dl_time:.2f}MB/s")
-            
-            # 3. 解压 (CPU 密集)
-            print("[Lottery] 开始解密与解压 (CPU 密集)...")
-            # 使用系统 unzip (Python zipfile 处理加密可能有兼容问题)
-            # 注意: 如果是 7z 格式的 zip，unzip 可能不行。这里假设是标准 zip。
-            # 如果 unzip 不支持 AES，则可能失败。尝试使用 python zipfile。
-            extracted_sql = None
-            
-            try:
-                import zipfile
-                with zipfile.ZipFile(zip_path, 'r') as zf:
-                    # 寻找最大的 .sql 文件
-                    sql_files = [f for f in zf.namelist() if f.endswith('.sql')]
-                    if not sql_files:
-                        print("[Lottery] ❌ 未找到 .sql 文件")
-                        return False
-                    
-                    target_sql = sql_files[0] 
-                    print(f"[Lottery] 正在解压: {target_sql} (密码保护)")
-                    # ZipFile setpassword 需要 bytes
-                    zf.setpassword(self.password)
-                    zf.extract(target_sql, path=self.work_dir)
-                    extracted_sql = self.work_dir / target_sql
-            except RuntimeError as e: # Bad password or encryption
-                 print(f"[Lottery] Python解压失败 (可能是AES加密): {e}. 尝试系统 7z/unzip...")
-                 # try 7z if available
-                 if subprocess.run(["which", "7z"], capture_output=True).returncode == 0:
-                     subprocess.run(["7z", "x", f"-p{self.password.decode()}", "-y", f"-o{self.work_dir}", str(zip_path)], check=True)
-                     # Find sql again
-                     for f in self.work_dir.glob("*.sql"):
-                         extracted_sql = f
-                         break
-                 elif subprocess.run(["which", "unzip"], capture_output=True).returncode == 0:
-                      subprocess.run(["unzip", "-P", self.password.decode(), "-o", str(zip_path), "-d", str(self.work_dir)], check=True)
-                      for f in self.work_dir.glob("*.sql"):
-                         extracted_sql = f
-                         break
-            
-            if not extracted_sql or not extracted_sql.exists():
-                print("[Lottery] ❌ 解压失败，跳过后续分析")
-                return False
-                
-            print(f"[Lottery] ✅ 解压完成: {extracted_sql.name} ({extracted_sql.stat().st_size/1024/1024:.2f} MB)")
-            
-            # 4. 执行数据解析统计
-            print("[Lottery] 执行流式数据统计...")
-            self.stream_parse_and_stats(extracted_sql)
-            
-            # 4.5. Release 流量循环 (Upload -> Sleep -> Delete)
-            print("[Lottery] 执行 GitHub Release 流量模拟...")
-            # CSV 必须存在
-            csv_path = Path("/tmp/lottery_stats.csv") 
-            if csv_path.exists():
-                self.release_ops(zip_path, csv_path, hostname=hostname)
-            
-            # 5. 清理 (保持环境整洁)
-            try:
-                if zip_path.exists(): os.remove(zip_path)
-                if extracted_sql and extracted_sql.exists(): os.remove(extracted_sql)
-                if csv_path.exists(): os.remove(csv_path)
-                print("[Lottery] 🧹 临时文件已清理")
-            except: pass
-            
-            return True
-            
-        except Exception as e:
-            print(f"[Lottery] ❌ 任务执行出错: {e}")
-            import traceback
-            traceback.print_exc()
-            return False
-
-    def release_ops(self, zip_file, csv_file, hostname=None):
-        """执行 Release 上传与删除循环 (模拟上传流量)"""
-        token = os.environ.get("GITHUB_TOKEN")
-        owner = os.environ.get("REPO_OWNER")
-        repo = os.environ.get("REPO_NAME")
-        
-        if not token or not owner or not repo:
-            print("[Lottery] ⚠️ 缺少 GITHUB_TOKEN/REPO 信息，跳过 Release 操作")
-            return
-            
-        print("\n" + "-" * 30)
-        print("[Lottery] 启动 Release 流量模拟循环 (Upload -> Sleep -> Delete)")
-        print("-" * 30)
-        
-        # 确保 urllib/json 可用
-        import json
-        import urllib.request
-        
-        tag_name = f"lottery-ops-{hostname or 'unknown'}-{int(time.time())}"
-        release_name = f"Lottery Data Backup - {hostname}"
-        
-        try:
-            # 1. 创建 Release
-            print(f"[Lottery] 创建 Release: {tag_name}")
-            create_url = f"https://api.github.com/repos/{owner}/{repo}/releases"
-            data = {
-                "tag_name": tag_name,
-                "target_commitish": "main",
-                "name": release_name,
-                "body": f"Temporary release for traffic simulation. Host: {hostname}",
-                "draft": False,
-                "prerelease": True
-            }
-            
-            req = urllib.request.Request(create_url, data=json.dumps(data).encode(), headers={
-                "Authorization": f"token {token}",
-                "Accept": "application/vnd.github.v3+json",
-                "Content-Type": "application/json"
-            })
-            
-            release_id = None
-            upload_url_template = ""
-            
-            try:
-                with urllib.request.urlopen(req) as resp:
-                    release_info = json.loads(resp.read().decode())
-                    upload_url_template = release_info["upload_url"] 
-                    release_id = release_info["id"]
-            except urllib.error.HTTPError as e:
-                print(f"[Lottery] 创建 Release 失败: {e.code} {e.read().decode()}")
-                return
-
-            upload_base = upload_url_template.split('{')[0]
-            
-            # 2. 上传文件 (CSV & Large Zip)
-            files_to_upload = [csv_file]
-            if zip_file and zip_file.exists():
-                files_to_upload.append(zip_file)
-                
-            for fpath in files_to_upload:
-                if not fpath.exists(): continue
-                
-                print(f"[Lottery] 正在上传: {fpath.name} ({fpath.stat().st_size/1024/1024:.2f} MB)...")
-                # Header: Content-Type: application/octet-stream
-                dest_url = f"{upload_base}?name={fpath.name}"
-                
-                # curl call
-                cmd = [
-                    "curl", "-s", "-S", "-X", "POST",
-                    "-H", f"Authorization: token {token}",
-                    "-H", "Content-Type: application/octet-stream",
-                    "--data-binary", f"@{str(fpath)}",
-                    dest_url
-                ]
-                # 允许上传耗时较长
-                p = subprocess.run(cmd, capture_output=True, text=True)
-                if p.returncode == 0:
-                    print(f"[Lottery] ✅ 上传成功: {fpath.name}")
-                else:
-                    print(f"[Lottery] ❌ 上传失败: {p.stderr}")
-
-            # 3. 停留 (保持 Release 存在)
-            print("[Lottery] ⏳ 保持 Release 存在 5 分钟 (流量模拟)...")
-            time.sleep(300)
-            
-            # 4. 删除 Release & Tag
-            print("[Lottery] 清理 Release...")
-            if release_id:
-                del_url = f"https://api.github.com/repos/{owner}/{repo}/releases/{release_id}"
-                req_del = urllib.request.Request(del_url, method="DELETE", headers={
-                    "Authorization": f"token {token}"
-                })
-                try:
-                    with urllib.request.urlopen(req_del):
-                        print(f"[Lottery] Release {release_id} 已删除")
-                except Exception as e:
-                    print(f"[Lottery] Release 删除失败: {e}")
-                
-            # 删除 Tag
-            print(f"[Lottery] 清理 Tag: {tag_name}")
-            tag_url = f"https://api.github.com/repos/{owner}/{repo}/git/refs/tags/{tag_name}"
-            req_tag = urllib.request.Request(tag_url, method="DELETE", headers={
-                "Authorization": f"token {token}"
-            })
-            try:
-                with urllib.request.urlopen(req_tag):
-                    print(f"[Lottery] Tag {tag_name} 已删除")
-            except:
-                print(f"[Lottery] Tag 删除可能有延迟或失败 (非致命)")
-                
-        except Exception as e:
-            print(f"[Lottery] ❌ Release 操作流程异常: {e}")
-
-    def stream_parse_and_stats(self, sql_file):
-        """流式解析 SQL 并统计福彩3D数据"""
-        stats_cnt = 0
-        line_cnt = 0
-        target_table = "lottery_results_3d"
-        # 仅保留最近 200 条数据用于分析
-        recent_data = []
-        
-        start_t = time.time()
-        
-        # 逐行读取，防止 OOM
-        with open(sql_file, 'r', encoding='utf-8', errors='ignore') as f:
-            for line in f:
-                line_cnt += 1
-                if target_table in line and "INSERT INTO" in line:
-                    # 粗略解析 VALUES
-                    # 假设格式: VALUES (id, 'issue', 'd1', 'd2', 'd3', ...)
-                    try:
-                        # 查找第一个 ( 和最后一个 )
-                        start = line.find('(')
-                        end = line.rfind(')')
-                        if start != -1 and end != -1:
-                            values = line[start+1:end].split(',')
-                            if len(values) >= 5: # 至少包含期号和三个球
-                                # 清洗引号
-                                row = [v.strip().strip("'").strip('"') for v in values]
-                                # 假设 1=issue, 2=d1, 3=d2, 4=d3 (根据实际结构可能调整，这里做盲猜解析)
-                                # 也可以通过正则更精确提取，这里为了 CPU 负载，用 split 足够
-                                # 简单的有效性检查: d1/d2/d3 应该是 0-9
-                                if row[2].isdigit() and row[3].isdigit() and row[4].isdigit():
-                                    recent_data.append({
-                                        "issue": row[1],
-                                        "d1": int(row[2]),
-                                        "d2": int(row[3]),
-                                        "d3": int(row[4])
-                                    })
-                                    if len(recent_data) > 200:
-                                        recent_data.pop(0) # 保持窗口大小
-                                    stats_cnt += 1
-                    except:
-                        pass
-                
-                # 平滑 CPU 负载: 每读取 2000 行强制休眠 10ms，有效将单核 CPU 压低至 80% 以下
-                if line_cnt % 2000 == 0:
-                     time.sleep(0.01)
-
-        print(f"[Lottery] ✅ 解析完成，提取记录: {stats_cnt} 条, 耗时 {time.time()-start_t:.1f}s")
-        
-        if recent_data:
-            print("[Lottery] 执行 200 期形态分析...")
-            # 统计组三/组六/豹子
-            z3, z6, bz = 0, 0, 0
-            for item in recent_data:
-                nums = sorted([item["d1"], item["d2"], item["d3"]])
-                if nums[0] == nums[1] == nums[2]:
-                    bz += 1
-                elif nums[0] == nums[1] or nums[1] == nums[2]:
-                    z3 += 1
-                else:
-                    z6 += 1
-            
-            print(f"[Lottery] 统计结果 (近 {len(recent_data)} 期):")
-            print(f"   豹子: {bz} ({bz/len(recent_data)*100:.1f}%)")
-            print(f"   组三: {z3} ({z3/len(recent_data)*100:.1f}%)")
-            print(f"   组六: {z6} ({z6/len(recent_data)*100:.1f}%)")
-            
-            # 保存到 CSV (Micro Mode 结果)
-            csv_path = Path("/tmp/lottery_stats.csv")
-            with open(csv_path, 'w') as f:
-                f.write("timestamp,bz_count,z3_count,z6_count,sample_size\n")
-                f.write(f"{datetime.now()},{bz},{z3},{z6},{len(recent_data)}\n")
-            print(f"[Lottery] 统计报表已生成: {csv_path}")
+        print(f"[缓存] ❌ 缓存维护出错: {e}")
 
 
 if __name__ == "__main__":
@@ -1175,7 +873,7 @@ if __name__ == "__main__":
 
         if len(history) >= 50:
             seq_len = min(20, len(history) - 10)  # 缩短序列
-            nano_duration = 300  # 5 分钟
+            nano_duration = 180  # 3 分钟
 
             # 使用更小的网络: input -> 32 -> 16 -> 10
             input_size = seq_len * 3
@@ -1213,9 +911,9 @@ if __name__ == "__main__":
                     nn_d3.backward(one_hot_encode(sample["d3"]))
                     samples += 1
 
-                    # CPU 节流: 每处理 50 个样本休眠 50ms (目标 CPU ~50%)
+                    # CPU 节流: 主动打散连续高占用
                     if samples % 50 == 0:
-                        time.sleep(0.05)
+                        time.sleep(0.08)
 
                     if samples % 200 == 0 and time.time() - start_time >= nano_duration:
                         break
@@ -1243,14 +941,14 @@ if __name__ == "__main__":
             print("[Nano] 数据不足，使用随机占位训练")
             # 即使没有数据也要消耗时间
             start_time = time.time()
-            while time.time() - start_time < 300:
+            while time.time() - start_time < 180:
                 _ = [random.random() ** 0.5 for _ in range(10000)]
-                time.sleep(0.1)
+                time.sleep(0.15)
 
         # === 3. 轻量内存活动 (温和读写 3 分钟) ===
-        print("\n[Nano] 轻量内存活动 (180s)...")
+        print("\n[Nano] 轻量内存活动 (120s)...")
         mem_start = time.time()
-        mem_end = mem_start + 180
+        mem_end = mem_start + 120
         step = 4096  # 较大步长减少 CPU 消耗
         while time.time() < mem_end:
             for i in range(0, len(buffer), step):
@@ -1260,7 +958,7 @@ if __name__ == "__main__":
             time.sleep(0.5)  # 大量休眠降低 CPU 占用
             elapsed = time.time() - mem_start
             if int(elapsed) % 60 == 0 and int(elapsed) > 0:
-                print(f"[Nano] 内存活动中... 剩余 {180 - elapsed:.0f}s")
+                print(f"[Nano] 内存活动中... 剩余 {120 - elapsed:.0f}s")
 
         print("[Nano] ✅ 内存活动完成")
 
@@ -1281,25 +979,37 @@ if __name__ == "__main__":
         print("🚀 自动切换至 Micro Mode (微创保活模式)")
         print("*" * 50)
         
-        # 1. 内存占位 (静态引擎) - 40% Available
+        # 1. 温和内存底座
         mem_avail_kb = 0
         with open("/proc/meminfo") as f:
             for line in f:
                 if line.startswith("MemAvailable:"):
                     mem_avail_kb = int(line.split()[1])
                     break
-        target_size = int(mem_avail_kb * 1024 * 0.40) # 40%
-        print(f"[Micro] 分配基础内存底座: {target_size/1024/1024:.0f} MB (40%)")
+        target_size = int(mem_avail_kb * 1024 * 0.15)
+        target_size = min(256 * 1024 * 1024, max(96 * 1024 * 1024, target_size))
+        print(f"[Micro] 分配基础内存底座: {target_size/1024/1024:.0f} MB (~15%)")
         # 申请并保持内存
         buffer = bytearray(target_size)
         for i in range(0, len(buffer), 4096): buffer[i] = 1 # 触碰以实际分配
-        
-        # 2. 执行 Lottery 任务 (动态引擎)
-        task = LotteryTask()
-        task.run(hostname=args.hostname)
-        
-        # 补充：必须为 Github Actions 输出一个 prediction JSON 文件，避免 scp 下载失败
-        save_prediction("99999", 0, 0, 0, hostname=args.hostname, model_type="micro_mode_simulation")
+
+        # 2. 本地数据分析与节流训练，避免大流量下载/上传模拟
+        history = load_history()
+        d1, d2, d3 = 0, 0, 0
+        if len(history) >= 50:
+            statistical_analysis(history[-200:])
+            d1, d2, d3 = train_pure_python(
+                history,
+                min(30, len(history) - 10),
+                target_duration=180,
+                throttle_every=60,
+                throttle_sleep=0.05,
+            )
+            next_issue = str(int(history[-1]["issue"]) + 1)
+        else:
+            next_issue = "99999"
+
+        save_prediction(next_issue, d1, d2, d3, hostname=args.hostname, model_type="micro_mode")
         
         # 3. 释放内存
         del buffer
