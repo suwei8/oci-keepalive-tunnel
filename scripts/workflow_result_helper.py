@@ -54,6 +54,7 @@ def cmd_enforce_fatal(argv):
         "antigravity_failed",
         "antigravity_cli_failed",
         "codex_failed",
+        "claude_failed",
     }
     if result.get("workflow_status", "unknown") in fatal_statuses:
         raise SystemExit(1)
@@ -87,6 +88,7 @@ def cmd_build_summary(argv):
                 item.get("antigravity_cli_status") == "success",
                 item.get("bridge_status") in {"deployed_started", "files_refreshed_no_env"},
                 item.get("codex_status") == "success",
+                item.get("claude_status") == "success",
             )
         )
 
@@ -106,12 +108,16 @@ def cmd_build_summary(argv):
             return "Bridge已是最新"
         if codex_status == "already_latest":
             return "Codex已是最新"
+        if item.get("claude_status") == "already_latest":
+            return "Claude已是最新"
         if antigravity_cli_status == "already_latest":
             return "CLI已是最新"
         if bridge_status.startswith("skipped_"):
             return bridge_status
         if codex_status.startswith("skipped_"):
             return codex_status
+        if str(item.get("claude_status", "")).startswith("skipped_"):
+            return item.get("claude_status")
         return "无变更"
 
     def failure_reason(item):
@@ -125,6 +131,7 @@ def cmd_build_summary(argv):
             "antigravity_failed": "Antigravity失败",
             "antigravity_cli_failed": "CLI失败",
             "codex_failed": "Codex失败",
+            "claude_failed": "Claude失败",
         }
         reason = labels.get(workflow_status, workflow_status)
         if notes:

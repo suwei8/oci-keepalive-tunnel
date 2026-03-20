@@ -28,6 +28,10 @@ RESULT_CODEX_STATUS="skipped_no_bridge"
 RESULT_CODEX_VERSION="N/A"
 RESULT_CODEX_TARGET_VERSION="${CODEX_LATEST_VERSION:-unknown}"
 
+RESULT_CLAUDE_STATUS="skipped_missing_env"
+RESULT_CLAUDE_VERSION="N/A"
+RESULT_CLAUDE_TARGET_VERSION="${CLAUDE_LATEST_VERSION:-unknown}"
+
 BRIDGE_RELEASE_JSON_CACHE=""
 
 add_note() {
@@ -58,6 +62,9 @@ emit_results() {
   echo "RESULT_CODEX_STATUS=$(sanitize_value "$RESULT_CODEX_STATUS")"
   echo "RESULT_CODEX_VERSION=$(sanitize_value "$RESULT_CODEX_VERSION")"
   echo "RESULT_CODEX_TARGET_VERSION=$(sanitize_value "$RESULT_CODEX_TARGET_VERSION")"
+  echo "RESULT_CLAUDE_STATUS=$(sanitize_value "$RESULT_CLAUDE_STATUS")"
+  echo "RESULT_CLAUDE_VERSION=$(sanitize_value "$RESULT_CLAUDE_VERSION")"
+  echo "RESULT_CLAUDE_TARGET_VERSION=$(sanitize_value "$RESULT_CLAUDE_TARGET_VERSION")"
   echo "RESULT_NOTES=$(sanitize_value "$RESULT_NOTES")"
 }
 
@@ -169,6 +176,23 @@ download_repo_file() {
 
 version_eq() {
   [ "${1#v}" = "${2#v}" ]
+}
+
+version_gt() {
+  python3 - "$1" "$2" <<'PY'
+import re
+import sys
+
+
+def parse(value):
+    cleaned = re.sub(r"^[^0-9]*", "", value or "")
+    return tuple(int(part) for part in cleaned.split(".") if part.isdigit())
+
+
+left = parse(sys.argv[1])
+right = parse(sys.argv[2])
+sys.exit(0 if left > right else 1)
+PY
 }
 
 upsert_sw_version() {
@@ -864,6 +888,47 @@ trust_level = "trusted"
 EOF
 }
 
+parse_claude_version() {
+  claude -v 2>/dev/null | awk 'NF {print $1; exit}'
+}
+
+write_claude_shell_config() {
+  local bashrc="/home/sw/.bashrc"
+
+  python3 - "$bashrc" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+lines = [
+    'export PATH="$HOME/.local/bin:$PATH"',
+    'export ANTHROPIC_BASE_URL="https://batam2-ai.555606.xyz"',
+    'export ANTHROPIC_AUTH_TOKEN="o2XwOanwEuO3XF2axilzVvAi1c-jX6dP4ILzgcvGyWI"',
+]
+block = "\n".join(lines) + "\n"
+
+text = path.read_text() if path.exists() else ""
+for line in lines:
+    text = re.sub(rf"^{re.escape(line)}\n?", "", text, flags=re.M)
+
+updated = text
+if updated and not updated.endswith("\n"):
+    updated += "\n"
+updated += block
+
+path.write_text(updated)
+PY
+
+  export PATH="/home/sw/.local/bin:${PATH}"
+  export ANTHROPIC_BASE_URL="https://batam2-ai.555606.xyz"
+  export ANTHROPIC_AUTH_TOKEN="o2XwOanwEuO3XF2axilzVvAi1c-jX6dP4ILzgcvGyWI"
+  set +u
+  [ -f "$bashrc" ] && . "$bashrc" >/dev/null 2>&1 || true
+  set -u
+  hash -r || true
+}
+
 update_codex() {
   local current_version=""
 
@@ -906,6 +971,76 @@ update_codex() {
   [ -n "$RESULT_CODEX_VERSION" ] || RESULT_CODEX_VERSION="unknown"
 }
 
+update_claude() {
+  local current_version=""
+  local should_update="no"
+
+  RESULT_CLAUDE_TARGET_VERSION="${CLAUDE_LATEST_VERSION:-unknown}"
+
+  if [ ! -f /home/sw/.env ]; then
+    RESULT_CLAUDE_STATUS="skipped_missing_env"
+    return
+  fi
+
+  load_shell_profiles
+  current_version="$(parse_claude_version || true)"
+
+  if [ -z "$current_version" ]; then
+    if curl -fsSL https://claude.ai/install.sh | bash; then
+      hash -r || true
+      write_claude_shell_config
+      load_shell_profiles
+      RESULT_CLAUDE_STATUS="success"
+    else
+      RESULT_CLAUDE_STATUS="claude_failed"
+      RESULT_WORKFLOW_STATUS="claude_failed"
+      add_note "claude install.sh failed"
+      return
+    fi
+  else
+    write_claude_shell_config
+
+    if [ -z "$RESULT_CLAUDE_TARGET_VERSION" ] || [ "$RESULT_CLAUDE_TARGET_VERSION" = "unknown" ]; then
+      should_update="yes"
+      add_note "claude latest version unresolved, ran update"
+    elif version_eq "$current_version" "$RESULT_CLAUDE_TARGET_VERSION"; then
+      RESULT_CLAUDE_STATUS="already_latest"
+      RESULT_CLAUDE_VERSION="$current_version"
+      return
+    elif version_gt "$RESULT_CLAUDE_TARGET_VERSION" "$current_version"; then
+      should_update="yes"
+    else
+      RESULT_CLAUDE_STATUS="already_latest"
+      RESULT_CLAUDE_VERSION="$current_version"
+      add_note "local claude version ${current_version} already meets target ${RESULT_CLAUDE_TARGET_VERSION}"
+      return
+    fi
+
+    if [ "$should_update" = "yes" ]; then
+      if claude update; then
+        hash -r || true
+        RESULT_CLAUDE_STATUS="success"
+      else
+        RESULT_CLAUDE_STATUS="claude_failed"
+        RESULT_WORKFLOW_STATUS="claude_failed"
+        add_note "claude update failed"
+        return
+      fi
+    fi
+  fi
+
+  write_claude_shell_config
+  load_shell_profiles
+  RESULT_CLAUDE_VERSION="$(parse_claude_version || true)"
+  if [ -z "$RESULT_CLAUDE_VERSION" ]; then
+    RESULT_CLAUDE_STATUS="claude_failed"
+    RESULT_WORKFLOW_STATUS="claude_failed"
+    RESULT_CLAUDE_VERSION="unknown"
+    add_note "claude installed or updated but version check failed"
+    return
+  fi
+}
+
 main() {
   trap cleanup_forbidden_bridge_files EXIT
   load_shell_profiles
@@ -915,6 +1050,7 @@ main() {
   update_antigravity_cli
   update_bridge
   update_codex
+  update_claude
   emit_results
 }
 
