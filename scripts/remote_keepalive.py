@@ -29,15 +29,10 @@ def get_system_stats():
     print("📊 系统资源监控")
     print("=" * 50)
     
-    # CPU 使用率 (从 /proc/stat 计算)
+    # CPU 使用率 (1 秒窗口，避免单次读取 /proc/stat 的累计口径失真)
     try:
-        with open("/proc/stat") as f:
-            line = f.readline()
-            parts = line.split()
-            user, nice, system, idle = int(parts[1]), int(parts[2]), int(parts[3]), int(parts[4])
-            total = user + nice + system + idle
-            usage = 100 * (total - idle) / total if total > 0 else 0
-            print(f"CPU 使用率: {usage:.1f}%")
+        usage = check_current_cpu_usage()
+        print(f"CPU 使用率: {usage:.1f}%")
     except Exception as e:
         print(f"CPU 使用率: 无法读取 ({e})")
     

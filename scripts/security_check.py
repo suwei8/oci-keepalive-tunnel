@@ -8,6 +8,7 @@ OCI 实例安全检测模块
 import os
 import subprocess
 import re
+import time
 import urllib.request
 import urllib.parse
 import json
@@ -197,19 +198,28 @@ class SecurityChecker:
         """检查 CPU 使用异常"""
         print("\n[安全] 检查 CPU 使用率...")
         try:
-            # 读取 /proc/stat 计算 CPU 使用率
-            with open("/proc/stat") as f:
-                line = f.readline()
-                parts = line.split()
-                user, nice, system, idle, iowait = map(int, parts[1:6])
-                total = user + nice + system + idle + iowait
-                usage = 100 * (total - idle - iowait) / total if total > 0 else 0
-                
-                # 注意：保活任务本身会产生高 CPU，这里检查是否超过 95%
-                if usage > 95:
-                    self.add_issue("WARNING", "CPU 使用率异常", f"当前: {usage:.1f}%")
-                else:
-                    print(f"[安全] ✅ CPU 使用率: {usage:.1f}%")
+            def get_cpu_times():
+                with open("/proc/stat") as f:
+                    parts = f.readline().split()[1:]
+                    idle = float(parts[3]) + float(parts[4])
+                    total = sum(float(x) for x in parts[:8])
+                    return idle, total
+
+            idle1, total1 = get_cpu_times()
+            time.sleep(1.0)
+            idle2, total2 = get_cpu_times()
+
+            total_delta = total2 - total1
+            idle_delta = idle2 - idle1
+            usage = 0.0
+            if total_delta > 0:
+                usage = 100.0 * (1.0 - idle_delta / total_delta)
+
+            # 注意：保活任务本身会产生高 CPU，这里检查是否超过 95%
+            if usage > 95:
+                self.add_issue("WARNING", "CPU 使用率异常", f"当前: {usage:.1f}%")
+            else:
+                print(f"[安全] ✅ CPU 使用率: {usage:.1f}%")
         except Exception as e:
             print(f"[安全] 检查 CPU 出错: {e}")
     
