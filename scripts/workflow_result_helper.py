@@ -65,7 +65,7 @@ def cmd_build_summary(argv):
     base = Path(all_results_dir)
     results = []
     if base.exists():
-        for path in sorted(base.glob("result-*/host_*.json")):
+        for path in sorted(base.rglob("host_*.json")):
             results.append(json.loads(path.read_text()))
     matrix = json.loads(matrix_json).get("include", [])
 
