@@ -2,336 +2,414 @@ name: Monitor Resource Usage (ARM64)
 
 on:
   schedule:
-    # 每天 UTC 0点 (北京时间 8:00) 运行一次
-    - cron: '0 0 * * *'
+    - cron: "0 0 * * *"
   workflow_dispatch:
     inputs:
-      target_host:
-        description: '指定主机 (留空=全部)'
+      target_indexes:
+        description: "指定主机索引，逗号分隔，例如 1,3,5；留空表示全部"
         required: false
-        default: ''
+        default: ""
+      target_index:
+        description: "兼容旧参数，仅单个索引；留空表示全部"
+        required: false
+        default: ""
+      target_host:
+        description: "兼容旧参数，按主机名筛选；留空表示全部"
+        required: false
+        default: ""
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  monitor-loop:
-    name: "Resource Monitor"
+  prepare:
+    name: Prepare Matrix
     runs-on: ubuntu-latest
-    timeout-minutes: 120  # 假设有20台主机，每台5分钟，串行会导致超时。需要注意并发限制或接受长时间运行。
-                          # 如果主机过多，可能需要并行 `strategy: matrix`，但 matrix 难以上报 CSV 汇总。
-                          # 这里暂时维持串行循环，假设主机数在可控范围内 (10-15台 ~ 75分)。
+    outputs:
+      matrix: ${{ steps.prepare.outputs.matrix }}
+      host_count: ${{ steps.prepare.outputs.host_count }}
+    steps:
+      - name: Build arm64 host matrix
+        id: prepare
+        env:
+          HOSTS_CONFIG_URL: ${{ secrets.HOSTS_CONFIG_URL }}
+          TARGET_INDEXES: ${{ github.event.inputs.target_indexes }}
+          TARGET_INDEX: ${{ github.event.inputs.target_index }}
+          TARGET_HOST: ${{ github.event.inputs.target_host }}
+        run: |
+          set -euo pipefail
+
+          HOSTS_JSON="$(curl -fsSL "$HOSTS_CONFIG_URL")"
+          export HOSTS_JSON
+
+          MATRIX_JSON="$(python3 - <<'PY'
+          import json
+          import os
+
+          hosts = json.loads(os.environ["HOSTS_JSON"])
+          target_indexes_raw = os.environ.get("TARGET_INDEXES", "").strip()
+          target_index = os.environ.get("TARGET_INDEX", "").strip()
+          target_host = os.environ.get("TARGET_HOST", "").strip()
+          selected_indexes = set()
+
+          if target_indexes_raw:
+              for item in target_indexes_raw.split(","):
+                  item = item.strip()
+                  if item:
+                      selected_indexes.add(item)
+          elif target_index:
+              selected_indexes.add(target_index)
+
+          matrix = []
+          for index, host in enumerate(hosts):
+              if selected_indexes and str(index) not in selected_indexes:
+                  continue
+              if target_host and host.get("name") != target_host:
+                  continue
+              if host.get("cpu_type") != "arm64":
+                  continue
+              ssh_host = (host.get("ssh_host") or "").strip()
+              host_name = (host.get("name") or "").strip()
+              if not ssh_host or not host_name:
+                  continue
+              matrix.append(
+                  {
+                      "index": index,
+                      "name": host_name,
+                      "ssh_host": ssh_host,
+                  }
+              )
+
+          print(json.dumps({"include": matrix}, ensure_ascii=False))
+          PY
+          )"
+
+          export MATRIX_JSON
+          HOST_COUNT="$(python3 -c 'import json,os; print(len(json.loads(os.environ["MATRIX_JSON"])["include"]))')"
+
+          echo "matrix=${MATRIX_JSON}" >> "$GITHUB_OUTPUT"
+          echo "host_count=${HOST_COUNT}" >> "$GITHUB_OUTPUT"
+          echo "Prepared ${HOST_COUNT} arm64 host(s)"
+
+  monitor:
+    name: ${{ matrix.name }}
+    needs: prepare
+    if: needs.prepare.outputs.host_count != '0'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
     permissions:
-      contents: write
+      contents: read
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix: ${{ fromJson(needs.prepare.outputs.matrix) }}
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install cloudflared
+      - name: Install dependencies
         run: |
-          mkdir -p bin
-          wget -q -O bin/cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
-          chmod +x bin/cloudflared
-          sudo cp bin/cloudflared /usr/local/bin/cloudflared
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq jq sshpass netcat-openbsd
+          sudo mkdir -p /usr/local/bin
+          wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -O /usr/local/bin/cloudflared
+          sudo chmod +x /usr/local/bin/cloudflared
           cloudflared --version
 
-      - name: Setup SSH
+      - name: Setup SSH client
         run: |
+          set -euo pipefail
           mkdir -p ~/.ssh
-          cat >> ~/.ssh/config << 'EOF'
+          cat >> ~/.ssh/config <<'EOF'
           Host *
             StrictHostKeyChecking no
             UserKnownHostsFile /dev/null
             LogLevel ERROR
           EOF
-          sudo apt-get update -qq && sudo apt-get install -y -qq sshpass jq bc
 
-      - name: Run Monitor Loop
-        id: monitor
+      - name: Monitor remote host
         env:
-          HOSTS_CONFIG_URL: ${{ secrets.HOSTS_CONFIG_URL }}
+          HOST_INDEX: ${{ matrix.index }}
+          HOST_NAME: ${{ matrix.name }}
+          SSH_HOST: ${{ matrix.ssh_host }}
           SSH_USERNAME: ${{ secrets.SSH_USERNAME }}
           SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }}
-          TARGET_HOST_INPUT: ${{ github.event.inputs.target_host }}
+          SAMPLE_INTERVAL_SECONDS: "10"
+          MONITOR_DURATION_SECONDS: "300"
         run: |
-          # Add PreferredAuthentications=password and PubkeyAuthentication=no to avoid "Permission denied (publickey)" errors
-          # Add -vvv for debugging if needed (can be removed later if too verbose, but useful now)
-          SSH_OPTS="-o ConnectTimeout=30 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ServerAliveInterval=30 -o PreferredAuthentications=password -o PubkeyAuthentication=no"
-          
-          # CSV 文件
-          mkdir -p csv
-          CSV_FILE="csv/resource_usage.csv"
-          DEBUG_FILE="debug_summary.txt"
-          echo "name,cpu_usage_pct,mem_usage_pct,timestamp" > "$CSV_FILE"
-          echo "Debug Summary - $(date)" > "$DEBUG_FILE"
-          
-          # 获取主机列表
-          HOSTS_CONFIG=$(curl -s $HOSTS_CONFIG_URL) || true
-          HOST_COUNT=$(echo "$HOSTS_CONFIG" | jq '. | length')
-          echo "Total hosts: $HOST_COUNT"
-          
-          for INDEX in $(seq 0 $((HOST_COUNT - 1))); do
-            host_item=$(echo "$HOSTS_CONFIG" | jq -c ".[$INDEX]")
-            HOST_NAME=$(echo "$host_item" | jq -r '.name')
-            SSH_HOST=$(echo "$host_item" | jq -r '.ssh_host')
-            CPU_TYPE=$(echo "$host_item" | jq -r '.cpu_type')
-            
-            if [ "$HOST_NAME" = "null" ] || [ -z "$HOST_NAME" ]; then continue; fi
-            if [ "$CPU_TYPE" != "arm64" ]; then continue; fi
-            
-            if [ -n "$TARGET_HOST_INPUT" ] && [ "$HOST_NAME" != "$TARGET_HOST_INPUT" ]; then
-                continue
+          set -Eeuo pipefail
+
+          mkdir -p results
+          RESULT_FILE="results/host_${HOST_INDEX}.json"
+          SAMPLE_FILE="results/host_${HOST_INDEX}.samples"
+          STDERR_FILE="results/host_${HOST_INDEX}.stderr.log"
+          CLOUDFLARED_LOG="results/host_${HOST_INDEX}.cloudflared.log"
+
+          python3 scripts/resource_monitor_helper.py write-result \
+            "$RESULT_FILE" "$HOST_NAME" "$HOST_INDEX" "running" ""
+
+          TUNNEL_PID=""
+          cleanup() {
+            if [ -n "${TUNNEL_PID:-}" ]; then
+              kill "$TUNNEL_PID" 2>/dev/null || true
             fi
-            
-            echo ""
-            echo "==========================================="
-            echo "Processing: $HOST_NAME"
-            echo "==========================================="
-            
-            # 建立 Tunnel
-            pkill -f "cloudflared.*2222" 2>/dev/null || true
-            sleep 2
-            # Use 'access tcp' instead of 'access ssh' to match AMD64 workflow, which is more reliable for port forwarding
-            cloudflared access tcp --hostname "$SSH_HOST" --url "tcp://127.0.0.1:2222" > cloudflared.log 2>&1 &
-            TUNNEL_PID=$!
-            sleep 5
-            
-            # Wrapper to prevent "set -e" from stopping the loop on error
-            (
-              set +e
-              
-              if ! kill -0 $TUNNEL_PID 2>/dev/null; then
-                echo "❌ Tunnel 连接失败"
-                exit 1
-              fi
-              
-              # Check if port is listening (sometimes cloudflared runs but requires auth)
-              # Wait up to 30s for port
-              for i in {1..30}; do
-                if nc -z 127.0.0.1 2222; then break; fi
-                sleep 1
-              done
-              
-              if ! nc -z 127.0.0.1 2222; then
-                 echo "❌ Tunnel 端口未就绪 (可能是 Auth Challenge)"
-                 echo "Host $HOST_NAME: Tunnel Failed (Port not ready)" >> "$DEBUG_FILE"
-                 exit 1
-              fi
-              
-              # 执行监控脚本 (1分钟)
-              # 逻辑：每 10 秒采集一次，共 6 次。计算平均值。
-              # 使用 /proc/stat 计算 CPU, free 计算内存
-              echo ">>> 开始监控 (1分钟)..."
-              
-              STATS=$(sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" '
-                CPU_SUM=0
-                MEM_SUM=0
-                COUNT=0
-                MAX_LOOPS=6
-                
-                # 获取初始 CPU 状态
-                read cpu user nice system idle iowait irq softirq steal guest < /proc/stat
-                PREV_TOTAL=$((user+nice+system+idle+iowait+irq+softirq+steal))
-                PREV_IDLE=$((idle+iowait))
-                
-                for i in $(seq 1 $MAX_LOOPS); do
-                  sleep 10
-                  
-                  # ------ CPU 计算 ------
-                  read cpu user nice system idle iowait irq softirq steal guest < /proc/stat
-                  TOTAL=$((user+nice+system+idle+iowait+irq+softirq+steal))
-                  IDLE=$((idle+iowait))
-                  
-                  DIFF_TOTAL=$((TOTAL-PREV_TOTAL))
-                  DIFF_IDLE=$((IDLE-PREV_IDLE))
-                  
-                  if [ "$DIFF_TOTAL" -eq 0 ]; then DIFF_TOTAL=1; fi
-                  CPU_USAGE=$((100 * (DIFF_TOTAL - DIFF_IDLE) / DIFF_TOTAL))
-                  
-                  PREV_TOTAL=$TOTAL
-                  PREV_IDLE=$IDLE
-                  
-                  # ------ 内存 计算 (KB) ------
-                  # MemTotal: 24000000 kB
-                  # MemAvailable: ...
-                  # Use MemAvailable for accurate "free" logic, or just (Total-Available)/Total
-                  
-                  TOTAL_KB=$(awk "/^MemTotal:/ {print \$2}" /proc/meminfo)
-                  AVAIL_KB=$(awk "/^MemAvailable:/ {print \$2}" /proc/meminfo)
+          }
+          trap cleanup EXIT
 
-                  if [ -z "$TOTAL_KB" ] || [ "$TOTAL_KB" -le 0 ] 2>/dev/null; then
-                    echo "WARN::meminfo_missing_total"
-                    continue
-                  fi
+          SSH_OPTS="-o ConnectTimeout=30 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ServerAliveInterval=30 -o PreferredAuthentications=password -o PubkeyAuthentication=no"
 
-                  if [ -z "$AVAIL_KB" ]; then
-                     # Fallback for kernels without MemAvailable
-                     FREE_KB=$(awk "/^MemFree:/ {print \$2}" /proc/meminfo)
-                     BUFF_KB=$(awk "/^Buffers:/ {print \$2}" /proc/meminfo)
-                     CACH_KB=$(awk "/^Cached:/ {print \$2}" /proc/meminfo)
-                     [ -n "$FREE_KB" ] || FREE_KB=0
-                     [ -n "$BUFF_KB" ] || BUFF_KB=0
-                     [ -n "$CACH_KB" ] || CACH_KB=0
-                     AVAIL_KB=$((FREE_KB + BUFF_KB + CACH_KB))
-                  fi
+          cloudflared access tcp --hostname "$SSH_HOST" --url "tcp://127.0.0.1:2222" >"$CLOUDFLARED_LOG" 2>&1 &
+          TUNNEL_PID=$!
 
-                  if [ -z "$AVAIL_KB" ] || [ "$AVAIL_KB" -lt 0 ] 2>/dev/null; then
-                    echo "WARN::meminfo_missing_available"
-                    continue
-                  fi
-
-                  if [ "$AVAIL_KB" -gt "$TOTAL_KB" ] 2>/dev/null; then
-                    AVAIL_KB=$TOTAL_KB
-                  fi
-
-                  MEM_USED_KB=$((TOTAL_KB - AVAIL_KB))
-                  MEM_USAGE=$((100 * MEM_USED_KB / TOTAL_KB))
-                  
-                  CPU_SUM=$((CPU_SUM + CPU_USAGE))
-                  MEM_SUM=$((MEM_SUM + MEM_USAGE))
-                  COUNT=$((COUNT + 1))
-                done
-                
-                if [ "$COUNT" -eq 0 ]; then
-                  echo "ERROR::no_samples_collected"
-                  exit 1
-                fi
-
-                AVG_CPU=$((CPU_SUM / COUNT))
-                AVG_MEM=$((MEM_SUM / COUNT))
-
-                echo "RESULT|$AVG_CPU|$AVG_MEM"
-              ' 2>&1)
-              
-              RET_CODE=$?
-              if [ $RET_CODE -ne 0 ]; then
-                 echo "❌ SSH 连接或脚本执行失败 (Exit Code: $RET_CODE)"
-                 echo "Debug Output: $STATS"
-                 echo "Host $HOST_NAME: SSH Failed (Exit Code $RET_CODE)" >> "$DEBUG_FILE"
-                 exit 1
-              fi
-              
-              RESULT_LINE=$(echo "$STATS" | grep "^RESULT|")
-              if [ -n "$RESULT_LINE" ]; then
-                 AVG_CPU=$(echo "$RESULT_LINE" | cut -d'|' -f2)
-                 AVG_MEM=$(echo "$RESULT_LINE" | cut -d'|' -f3)
-                 echo "✅ 监控完成: CPU=${AVG_CPU}%, MEM=${AVG_MEM}%"
-                 
-                 TIMESTAMP=$(date -u +"%Y-%m-%d %H:%M:%S")
-                 echo "${HOST_NAME},${AVG_CPU},${AVG_MEM},${TIMESTAMP}" >> "$CSV_FILE"
-                 echo "Host $HOST_NAME: Success" >> "$DEBUG_FILE"
-              else
-                 echo "❌ 监控失败或无数据返回"
-                 echo "$STATS"
-                 echo "Host $HOST_NAME: No result line" >> "$DEBUG_FILE"
-              fi
-            ) || echo "⚠️  Skipping host due to error"
-            
-            pkill -f "cloudflared.*2222" 2>/dev/null || true
-            kill $TUNNEL_PID 2>/dev/null || true
+          for _ in $(seq 1 30); do
+            if nc -z 127.0.0.1 2222; then
+              break
+            fi
+            if ! kill -0 "$TUNNEL_PID" 2>/dev/null; then
+              break
+            fi
+            sleep 1
           done
-          
-          # 显示 CSV 内容
-          cat "$CSV_FILE"
 
-      - name: Commit results
-        run: |
-          CSV_FILE="csv/resource_usage.csv"
-          if [ -f "$CSV_FILE" ]; then
-            # 排序：按 CPU 使用率 (第2列) 升序 (使用率最低排前面 -> 风险最高)
-            # 同时也考虑内存 (第3列) 作为次级排序
-            
-            echo ">>> 排序 CSV 文件 (按 CPU 使用率升序)..."
-            head -1 "$CSV_FILE" > /tmp/csv_header.tmp
-            tail -n +2 "$CSV_FILE" | sort -t',' -k2 -n -k3 -n > /tmp/csv_body.tmp
-            cat /tmp/csv_header.tmp /tmp/csv_body.tmp > "$CSV_FILE"
-            rm -f /tmp/csv_header.tmp /tmp/csv_body.tmp
-            
-            git config user.name "github-actions[bot]"
-            git config user.email "github-actions[bot]@users.noreply.github.com"
-            git pull --rebase origin main || echo "Git pull failed"
-            git add "$CSV_FILE"
-            git diff --staged --quiet || git commit -m "Update resource usage stats $(date -u +%Y-%m-%d)"
-            git push || echo "Nothing to push"
+          if ! nc -z 127.0.0.1 2222; then
+            python3 scripts/resource_monitor_helper.py update-result \
+              "$RESULT_FILE" "tunnel_failed" "cloudflared tcp tunnel not ready"
+            exit 1
           fi
 
-      - name: Upload Debug Artifacts
+          set +e
+          sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" \
+            "export SAMPLE_INTERVAL_SECONDS='${SAMPLE_INTERVAL_SECONDS}'; \
+             export MONITOR_DURATION_SECONDS='${MONITOR_DURATION_SECONDS}'; \
+             bash -s" <<'EOF_REMOTE' >"$SAMPLE_FILE" 2>"$STDERR_FILE"
+            set -eu
+            SAMPLE_INTERVAL_SECONDS="${SAMPLE_INTERVAL_SECONDS:-10}"
+            MONITOR_DURATION_SECONDS="${MONITOR_DURATION_SECONDS:-300}"
+            MAX_LOOPS=$((MONITOR_DURATION_SECONDS / SAMPLE_INTERVAL_SECONDS))
+            if [ "$MAX_LOOPS" -le 0 ] 2>/dev/null; then
+              MAX_LOOPS=1
+            fi
+
+            read cpu user nice system idle iowait irq softirq steal guest < /proc/stat
+            PREV_TOTAL=$((user + nice + system + idle + iowait + irq + softirq + steal))
+            PREV_IDLE=$((idle + iowait))
+
+            for i in $(seq 1 "$MAX_LOOPS"); do
+              sleep "$SAMPLE_INTERVAL_SECONDS"
+
+              read cpu user nice system idle iowait irq softirq steal guest < /proc/stat
+              TOTAL=$((user + nice + system + idle + iowait + irq + softirq + steal))
+              IDLE=$((idle + iowait))
+
+              DIFF_TOTAL=$((TOTAL - PREV_TOTAL))
+              DIFF_IDLE=$((IDLE - PREV_IDLE))
+              if [ "$DIFF_TOTAL" -le 0 ] 2>/dev/null; then
+                DIFF_TOTAL=1
+              fi
+              CPU=$((100 * (DIFF_TOTAL - DIFF_IDLE) / DIFF_TOTAL))
+
+              PREV_TOTAL=$TOTAL
+              PREV_IDLE=$IDLE
+
+              TOTAL_KB=$(awk "/^MemTotal:/ {print \$2}" /proc/meminfo)
+              AVAIL_KB=$(awk "/^MemAvailable:/ {print \$2}" /proc/meminfo)
+
+              if [ -z "$AVAIL_KB" ]; then
+                FREE_KB=$(awk "/^MemFree:/ {print \$2}" /proc/meminfo)
+                BUFF_KB=$(awk "/^Buffers:/ {print \$2}" /proc/meminfo)
+                CACH_KB=$(awk "/^Cached:/ {print \$2}" /proc/meminfo)
+                [ -n "$FREE_KB" ] || FREE_KB=0
+                [ -n "$BUFF_KB" ] || BUFF_KB=0
+                [ -n "$CACH_KB" ] || CACH_KB=0
+                AVAIL_KB=$((FREE_KB + BUFF_KB + CACH_KB))
+              fi
+
+              if [ -z "$TOTAL_KB" ] || [ "$TOTAL_KB" -le 0 ] 2>/dev/null; then
+                continue
+              fi
+
+              if [ -z "$AVAIL_KB" ] || [ "$AVAIL_KB" -lt 0 ] 2>/dev/null; then
+                continue
+              fi
+
+              if [ "$AVAIL_KB" -gt "$TOTAL_KB" ] 2>/dev/null; then
+                AVAIL_KB=$TOTAL_KB
+              fi
+
+              MEM=$((100 * (TOTAL_KB - AVAIL_KB) / TOTAL_KB))
+              LOAD1=$(awk "{print \$1}" /proc/loadavg 2>/dev/null || echo "0.00")
+              echo "${CPU}|${MEM}|${LOAD1}"
+            done
+          EOF_REMOTE
+          SSH_RC=$?
+          set -e
+
+          if [ "$SSH_RC" -ne 0 ]; then
+            python3 scripts/resource_monitor_helper.py update-result \
+              "$RESULT_FILE" "remote_failed" "ssh sampling failed"
+            exit 1
+          fi
+
+          python3 scripts/resource_monitor_helper.py merge-sample-metrics \
+            "$RESULT_FILE" "$SAMPLE_FILE"
+
+          SAMPLE_COUNT="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("sample_count", 0))' "$RESULT_FILE")"
+          if [ "${SAMPLE_COUNT:-0}" -le 0 ]; then
+            python3 scripts/resource_monitor_helper.py update-result \
+              "$RESULT_FILE" "no_samples" "no valid samples collected"
+            exit 1
+          fi
+
+          python3 scripts/resource_monitor_helper.py update-result \
+            "$RESULT_FILE" "success" ""
+
+      - name: Upload result
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: debug-logs
+          name: result-${{ matrix.index }}
           path: |
-            csv/
-            debug_summary.txt
-            cloudflared.log
+            results/host_${{ matrix.index }}.json
+            results/host_${{ matrix.index }}.samples
+            results/host_${{ matrix.index }}.stderr.log
+            results/host_${{ matrix.index }}.cloudflared.log
+          if-no-files-found: ignore
+          retention-days: 3
 
-      - name: Send Telegram notification (Low Usage Warning)
+  collect:
+    name: Collect Results
+    needs:
+      - prepare
+      - monitor
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download all results
+        uses: actions/download-artifact@v4
+        with:
+          path: all-results
+          pattern: result-*
+          merge-multiple: false
+        continue-on-error: true
+
+      - name: Build merged CSV files
+        run: |
+          set -euo pipefail
+          RUN_TIMESTAMP="$(date -u +'%Y-%m-%d %H:%M:%S')"
+          python3 scripts/resource_monitor_helper.py build-csv \
+            all-results \
+            csv/resource_usage.csv \
+            "$RUN_TIMESTAMP"
+          cat csv/resource_usage.csv
+
+      - name: Commit merged CSV files
+        run: |
+          set -euo pipefail
+
+          if [ ! -f csv/resource_usage.csv ]; then
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          BRANCH_NAME="${GITHUB_REF_NAME:-main}"
+          git pull --rebase origin "$BRANCH_NAME" || echo "Git pull failed"
+          git add csv/resource_usage.csv
+
+          if git diff --staged --quiet; then
+            echo "No CSV changes to commit"
+            exit 0
+          fi
+
+          git commit -m "Update arm64 resource usage $(date -u +%Y-%m-%dT%H:%M:%SZ)" >/dev/null
+          git push origin HEAD:"$BRANCH_NAME"
+
+      - name: Upload merged artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: resource-monitor-merged
+          path: |
+            csv/resource_usage.csv
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Summary
+        run: |
+          {
+            echo "## ARM64 资源监控结果"
+            echo
+            echo "说明: 当前仅统计 CPU / 内存 / Load，不包含网络口径。"
+            echo
+            if [ -f csv/resource_usage.csv ] && [ "$(wc -l < csv/resource_usage.csv)" -gt 1 ]; then
+              echo "| 实例名称 | 索引 | CPU均值 | CPU峰值 | 内存均值 | Load均值 | 样本数 |"
+              echo "| :--- | :--- | :--- | :--- | :--- | :--- | :--- |"
+              tail -n +2 csv/resource_usage.csv | awk -F',' '{printf "| %s | %s | %s%% | %s%% | %s%% | %s | %s |\n", $1, $2, $3, $5, $6, $9, $11}'
+            else
+              echo "本次没有成功采样数据。"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  notify:
+    name: Summary Notification
+    needs:
+      - prepare
+      - monitor
+      - collect
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download all results
+        uses: actions/download-artifact@v4
+        with:
+          path: all-results
+          pattern: result-*
+          merge-multiple: false
+        continue-on-error: true
+
+      - name: Build summary message
+        env:
+          HOST_COUNT: ${{ needs.prepare.outputs.host_count }}
+        run: |
+          set -euo pipefail
+          python3 scripts/resource_monitor_helper.py build-summary \
+            all-results "$HOST_COUNT" telegram_message.txt
+          {
+            echo
+            echo "<b>监控口径</b>: 仅 CPU / 内存 / Load，不含网络"
+          } >> telegram_message.txt
+
+      - name: Send summary to Telegram
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          CSV_FILE="csv/resource_usage.csv"
-          
-          if [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$TELEGRAM_CHAT_ID" ]; then
-            echo "⚠️ Telegram 未配置"
+          set -euo pipefail
+
+          if [ -z "${TELEGRAM_BOT_TOKEN:-}" ] || [ -z "${TELEGRAM_CHAT_ID:-}" ]; then
+            echo "Telegram not configured"
             exit 0
           fi
-          
-          if [ ! -f "$CSV_FILE" ]; then
-             echo "⚠️ 无结果文件"
-             exit 0
-          fi
-          
-          # 检查文件是否为空或仅有表头
-          if [ ! -s "$CSV_FILE" ] || [ $(wc -l < "$CSV_FILE") -le 1 ]; then
-             FAILURE_MSG=$(printf "⚠️ *ARM64 监控失败*\n\n无数据收集。\n请查看 GitHub Artifacts 中的 debug_summary.txt")
-             
-             IFS=',' read -ra CHAT_IDS <<< "$TELEGRAM_CHAT_ID"
-             for chat_id in "${CHAT_IDS[@]}"; do
-               chat_id=$(echo "$chat_id" | xargs)
-               if [ -n "$chat_id" ]; then
-                 curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
-                   -d chat_id="${chat_id}" \
-                   -d parse_mode="Markdown" \
-                   --data-urlencode "text=${FAILURE_MSG}" > /dev/null
-               fi
-             done
-             exit 0
-          fi
-          
-          # 提取所有低负载 (即 CSV 的所有行，因为已经按升序排了)
-          ALL_TEXT=$(tail -n +2 "$CSV_FILE" | awk -F',' '{printf "%2d. %-12s CPU: %s%% | MEM: %s%%\n", NR, $1, $2, $3}')
-          
-          TIMESTAMP=$(date -u +'%Y-%m-%d %H:%M UTC')
-          
-          # 警告信息
-          FINAL_MSG=$(printf "⚠️ *所有 ARM64 闲置实例警告*\n\n📅 %s\n\n📉 *低负载排名 (CPU升序)*:\n\`\`\`\n%s\n\`\`\`\n\n💡 请注意由于负载过低可能有回收风险！" "$TIMESTAMP" "$ALL_TEXT")
-          
+
+          MESSAGE="$(cat telegram_message.txt)"
           IFS=',' read -ra CHAT_IDS <<< "$TELEGRAM_CHAT_ID"
           for chat_id in "${CHAT_IDS[@]}"; do
-            chat_id=$(echo "$chat_id" | xargs)
-            if [ -n "$chat_id" ]; then
-              curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
-                -d chat_id="${chat_id}" \
-                -d parse_mode="Markdown" \
-                --data-urlencode "text=${FINAL_MSG}" > /dev/null
-            fi
+            chat_id="${chat_id// /}"
+            [ -n "$chat_id" ] || continue
+            curl -fsSL -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+              -d chat_id="${chat_id}" \
+              -d parse_mode="HTML" \
+              --data-urlencode "text=${MESSAGE}" >/dev/null
           done
-          echo "✅ Telegram 已发送"
-
-      - name: Summary
-        run: |
-          echo "## 📉 资源监控结果 (ARM64)" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          
-          CSV_FILE="csv/resource_usage.csv"
-          if [ -f "$CSV_FILE" ]; then
-             echo "| 实例名称 | 平均 CPU (%) | 平均 内存 (%) |" >> $GITHUB_STEP_SUMMARY
-             echo "| :--- | :--- | :--- |" >> $GITHUB_STEP_SUMMARY
-             # 显示所有实例
-             tail -n +2 "$CSV_FILE" | awk -F',' '{printf "| %s | %s%% | %s%% |\n", $1, $2, $3}' >> $GITHUB_STEP_SUMMARY
-          else
-             echo "无数据" >> $GITHUB_STEP_SUMMARY
-          fi
