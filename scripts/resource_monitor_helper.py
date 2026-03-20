@@ -96,7 +96,6 @@ def load_results(all_results_dir):
 def rank_key(item):
     cpu_avg = item.get("cpu_avg")
     mem_avg = item.get("mem_avg")
-    load1_avg = item.get("load1_avg")
 
     try:
         cpu_avg = int(cpu_avg)
@@ -108,12 +107,7 @@ def rank_key(item):
     except (TypeError, ValueError):
         mem_avg = 999
 
-    try:
-        load1_avg = float(load1_avg)
-    except (TypeError, ValueError):
-        load1_avg = 999.0
-
-    return (cpu_avg, mem_avg, load1_avg, item.get("host", ""))
+    return (cpu_avg, mem_avg, item.get("host", ""))
 
 
 def cmd_build_csv(argv):
@@ -135,14 +129,7 @@ def cmd_build_csv(argv):
                 "name",
                 "index",
                 "cpu_avg_pct",
-                "cpu_min_pct",
-                "cpu_max_pct",
                 "mem_avg_pct",
-                "mem_min_pct",
-                "mem_max_pct",
-                "load1_avg",
-                "load1_max",
-                "sample_count",
                 "timestamp",
             ]
         )
@@ -152,14 +139,7 @@ def cmd_build_csv(argv):
                     item.get("host", ""),
                     item.get("index", ""),
                     item.get("cpu_avg", ""),
-                    item.get("cpu_min", ""),
-                    item.get("cpu_max", ""),
                     item.get("mem_avg", ""),
-                    item.get("mem_min", ""),
-                    item.get("mem_max", ""),
-                    item.get("load1_avg", ""),
-                    item.get("load1_max", ""),
-                    item.get("sample_count", 0),
                     run_timestamp,
                 ]
             )
@@ -185,20 +165,19 @@ def cmd_build_summary(argv):
         f"🖥️ 目标主机: {host_count}",
         f"✅ 成功: {len(success)}",
         f"❌ 失败: {len(failed)}",
-        f"📉 低活跃(CPU<20% 且内存<20%): {len(low_activity)}",
+        f"📉 低活跃(5分钟平均 CPU<20% 且内存<20%): {len(low_activity)}",
         "━━━━━━━━━━━━━━━━━━",
     ]
 
     if ranked:
-        lines.append("<b>低活跃排名 Top 10</b>")
+        lines.append("<b>5分钟平均低活跃排名 Top 10</b>")
         for idx, item in enumerate(ranked[:10], start=1):
             host = html.escape(str(item.get("host", "unknown")))
             lines.append(
                 (
                     f"{idx}. <b>{host}</b>#{item.get('index', '?')} | "
                     f"CPU {item.get('cpu_avg', 'N/A')}% | "
-                    f"MEM {item.get('mem_avg', 'N/A')}% | "
-                    f"Load {item.get('load1_avg', 'N/A')}"
+                    f"MEM {item.get('mem_avg', 'N/A')}%"
                 )
             )
     else:

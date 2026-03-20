@@ -348,12 +348,12 @@ jobs:
           {
             echo "## ARM64 资源监控结果"
             echo
-            echo "说明: 当前仅统计 CPU / 内存 / Load，不包含网络口径。"
+            echo "说明: 当前仅统计最近 5 分钟平均 CPU / 内存，不包含网络口径。"
             echo
             if [ -f csv/resource_usage.csv ] && [ "$(wc -l < csv/resource_usage.csv)" -gt 1 ]; then
-              echo "| 实例名称 | 索引 | CPU均值 | CPU峰值 | 内存均值 | Load均值 | 样本数 |"
-              echo "| :--- | :--- | :--- | :--- | :--- | :--- | :--- |"
-              tail -n +2 csv/resource_usage.csv | awk -F',' '{printf "| %s | %s | %s%% | %s%% | %s%% | %s | %s |\n", $1, $2, $3, $5, $6, $9, $11}'
+              echo "| 实例名称 | 索引 | 5分钟平均CPU | 5分钟平均内存 |"
+              echo "| :--- | :--- | :--- | :--- |"
+              tail -n +2 csv/resource_usage.csv | awk -F',' '{printf "| %s | %s | %s%% | %s%% |\n", $1, $2, $3, $4}'
             else
               echo "本次没有成功采样数据。"
             fi
@@ -388,7 +388,7 @@ jobs:
             all-results "$HOST_COUNT" telegram_message.txt
           {
             echo
-            echo "<b>监控口径</b>: 仅 CPU / 内存 / Load，不含网络"
+            echo "<b>监控口径</b>: 仅最近5分钟平均 CPU / 内存，不含网络"
           } >> telegram_message.txt
 
       - name: Send summary to Telegram
