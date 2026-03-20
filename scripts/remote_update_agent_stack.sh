@@ -371,10 +371,14 @@ has_legacy_bridge_artifacts() {
 }
 
 cleanup_forbidden_bridge_files() {
-  rm -f \
-    /home/sw/manage.sh.1 \
-    /home/sw/manage.sh.bak.20260317-165803 \
-    /home/sw/antigravity-bridge.bak.20260317-165806
+  find /home/sw -maxdepth 1 \
+    \( \
+      -name 'manage.sh.1' -o \
+      -name 'manage.sh.bak.*' -o \
+      -name 'antigravity-bridge.bak.*' -o \
+      -name 'antigravity-Bridge.bak.*' \
+    \) \
+    -exec rm -rf {} +
 }
 
 resolve_bridge_release() {
@@ -903,6 +907,7 @@ update_codex() {
 }
 
 main() {
+  trap cleanup_forbidden_bridge_files EXIT
   load_shell_profiles
   repair_bridge_runtime_config
   get_env_status
