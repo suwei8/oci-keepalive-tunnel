@@ -43,7 +43,7 @@ jobs:
 
       - name: Checkout repository
         if: steps.host.outputs.skip != 'true'
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install cloudflared
         if: steps.host.outputs.skip != 'true'
@@ -126,7 +126,7 @@ jobs:
 
       - name: Upload ping result artifact
         if: steps.host.outputs.skip != 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: ping-result-${{ matrix.index }}
           path: ping_results/*.txt
@@ -143,10 +143,10 @@ jobs:
       contents: write
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Download all ping result artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           path: artifacts
           pattern: ping-result-*
