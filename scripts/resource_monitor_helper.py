@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import csv
+import html
 import json
 import sys
 from datetime import datetime, timedelta, timezone
@@ -191,9 +192,10 @@ def cmd_build_summary(argv):
     if ranked:
         lines.append("<b>低活跃排名 Top 10</b>")
         for idx, item in enumerate(ranked[:10], start=1):
+            host = html.escape(str(item.get("host", "unknown")))
             lines.append(
                 (
-                    f"{idx}. <b>{item.get('host', 'unknown')}</b>#{item.get('index', '?')} | "
+                    f"{idx}. <b>{host}</b>#{item.get('index', '?')} | "
                     f"CPU {item.get('cpu_avg', 'N/A')}% | "
                     f"MEM {item.get('mem_avg', 'N/A')}% | "
                     f"Load {item.get('load1_avg', 'N/A')}"
@@ -206,13 +208,15 @@ def cmd_build_summary(argv):
         lines.append("")
         lines.append("<b>失败主机</b>")
         for item in failed[:10]:
-            notes = item.get("notes", "").strip()
-            detail = f"❌ <b>{item.get('host', 'unknown')}</b>#{item.get('index', '?')} | {item.get('workflow_status', 'unknown')}"
+            host = html.escape(str(item.get("host", "unknown")))
+            notes = html.escape(item.get("notes", "").strip())
+            detail = f"❌ <b>{host}</b>#{item.get('index', '?')} | {item.get('workflow_status', 'unknown')}"
             if notes:
                 detail += f" | {notes}"
             lines.append(detail)
 
-    Path(output_file).write_text("\n".join(lines) + "\n")
+    content = "\n".join(lines).replace("<20%", "&lt;20%")
+    Path(output_file).write_text(content + "\n")
 
 
 def main():
