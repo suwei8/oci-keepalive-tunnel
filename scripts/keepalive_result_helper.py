@@ -170,25 +170,25 @@ def cmd_build_summary(argv):
         duration_seconds = int(item.get("duration_seconds", 0) or 0)
         sample_count = int(item.get("sample_count", 0) or 0)
 
-        cpu_peak_raw = item.get("cpu_max", item.get("cpu_after"))
-        mem_peak_raw = item.get("mem_max", item.get("mem_after"))
+        cpu_avg_raw = item.get("cpu_avg", item.get("cpu_after"))
+        mem_avg_raw = item.get("mem_avg", item.get("mem_after"))
 
         try:
-            cpu_peak = int(cpu_peak_raw)
+            cpu_avg = int(cpu_avg_raw)
         except (TypeError, ValueError):
-            cpu_peak = None
+            cpu_avg = None
 
         try:
-            mem_peak = int(mem_peak_raw)
+            mem_avg = int(mem_avg_raw)
         except (TypeError, ValueError):
-            mem_peak = None
+            mem_avg = None
 
         if duration_seconds > 600:
             reasons.append("duration>10m")
-        if cpu_peak is not None and cpu_peak >= 80:
-            reasons.append(f"cpu_peak={cpu_peak}%")
-        if mem_peak is not None and mem_peak >= 30:
-            reasons.append(f"mem_peak={mem_peak}%")
+        if cpu_avg is not None and cpu_avg >= 80:
+            reasons.append(f"cpu_avg={cpu_avg}%")
+        if mem_avg is not None and mem_avg >= 60:
+            reasons.append(f"mem_avg={mem_avg}%")
         if sample_count == 0:
             reasons.append("metrics=snapshot_only")
         return reasons
