@@ -953,6 +953,8 @@ write_claude_shell_config() {
     return 1
   fi
 
+  anthropic_base_url="$(printf '%s' "$anthropic_base_url" | sed -E 's#/v1/?$##')"
+
   python3 - "$bashrc" "$anthropic_base_url" "$anthropic_auth_token" <<'PY'
 import re
 import sys
