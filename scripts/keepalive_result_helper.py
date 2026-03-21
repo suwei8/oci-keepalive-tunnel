@@ -171,6 +171,33 @@ def cmd_build_summary(argv):
             value = item.get(fallback_key, "N/A")
         return str(value)
 
+    def metric_sort_int(item, preferred_key, fallback_key, default=999):
+        value = item.get(preferred_key)
+        if value in (None, "", "N/A"):
+            value = item.get(fallback_key)
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+
+    def metric_sort_float(item, preferred_key, fallback_key, default=999.0):
+        value = item.get(preferred_key)
+        if value in (None, "", "N/A"):
+            value = item.get(fallback_key)
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
+    def success_sort_key(item):
+        return (
+            metric_sort_float(item, "load1_avg", "load_after"),
+            metric_sort_float(item, "load1_max", "load_after"),
+            metric_sort_int(item, "cpu_avg", "cpu_after"),
+            metric_sort_int(item, "mem_avg", "mem_after"),
+            host_label(item),
+        )
+
     def success_warning_reasons(item):
         reasons = []
         duration_seconds = int(item.get("duration_seconds", 0) or 0)
@@ -238,23 +265,16 @@ def cmd_build_summary(argv):
 
     details = []
     if success_hosts:
-        success_hosts = sorted(
-            success_hosts,
-            key=lambda item: (
-                0 if success_warning_reasons(item) else 1,
-                host_label(item),
-            ),
-        )
+        success_hosts = sorted(success_hosts, key=success_sort_key)
         success_lines = []
         for item in success_hosts[:20]:
-            duration = format_duration(int(item.get("duration_seconds", 0)))
             cpu_avg = metric_int(item, "cpu_avg", "cpu_after")
             cpu_max = metric_int(item, "cpu_max", "cpu_after")
             mem_avg = metric_int(item, "mem_avg", "mem_after")
             mem_max = metric_int(item, "mem_max", "mem_after")
             load1_max = metric_float(item, "load1_max", "load_after")
             success_lines.append(
-                f"{host_label(item)} | {duration} | CPU {cpu_avg}/{cpu_max}% | MEM {mem_avg}/{mem_max}% | L1 {load1_max}"
+                f"{host_label(item)} | CPU {cpu_avg}/{cpu_max}% | MEM {mem_avg}/{mem_max}% | L1 {load1_max}"
             )
         details.append("成功主机:\n" + "\n".join(success_lines))
     if fatal_lines:
