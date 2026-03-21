@@ -209,17 +209,61 @@ jobs:
             exit 1
           fi
 
+          NORMALIZED_CLIPROXYAPI_BASE_URL="$(printf '%s' "${CLIPROXYAPI_BASE_URL:-}" | sed -E 's#/v1/?$##')"
+
           set +e
           sshpass -p "$SSH_PASSWORD" \
             ssh $SSH_OPTS -p 2222 "${SSH_USERNAME}@127.0.0.1" \
-            "export BLOG_GITHUB_TOKEN='${BLOG_GITHUB_TOKEN}'; \
-             export AGENTBRIDGE_GITHUB_TOKEN='${AGENTBRIDGE_GITHUB_TOKEN}'; \
-             export CLIPROXYAPI_OPENAI_API_KEY='${CLIPROXYAPI_OPENAI_API_KEY}'; \
-             export CLIPROXYAPI_BASE_URL='${CLIPROXYAPI_BASE_URL}'; \
-             export ANTIGRAVITY_CLI_LATEST_TAG='${ANTIGRAVITY_CLI_LATEST_TAG}'; \
-             export CODEX_LATEST_VERSION='${CODEX_LATEST_VERSION}'; \
-             export CLAUDE_LATEST_VERSION='${CLAUDE_LATEST_VERSION}'; \
-             bash -s" \
+            "set -euo pipefail
+             export BLOG_GITHUB_TOKEN='${BLOG_GITHUB_TOKEN}'
+             export AGENTBRIDGE_GITHUB_TOKEN='${AGENTBRIDGE_GITHUB_TOKEN}'
+             export CLIPROXYAPI_OPENAI_API_KEY='${CLIPROXYAPI_OPENAI_API_KEY}'
+             export CLIPROXYAPI_BASE_URL='${NORMALIZED_CLIPROXYAPI_BASE_URL}'
+             export ANTIGRAVITY_CLI_LATEST_TAG='${ANTIGRAVITY_CLI_LATEST_TAG}'
+             export CODEX_LATEST_VERSION='${CODEX_LATEST_VERSION}'
+             export CLAUDE_LATEST_VERSION='${CLAUDE_LATEST_VERSION}'
+             set +e
+             bash -s
+             REMOTE_SCRIPT_RC=\$?
+             set -e
+             python3 -c \"import textwrap; exec(textwrap.dedent('''
+                 from pathlib import Path
+                 import re
+
+                 path = Path('/home/sw/.bashrc')
+                 if not path.exists():
+                     raise SystemExit(0)
+
+                 lines = path.read_text().splitlines()
+                 updated_lines = []
+                 changed = False
+
+                 for line in lines:
+                     if not line.startswith('export ANTHROPIC_BASE_URL='):
+                         updated_lines.append(line)
+                         continue
+
+                     key, value = line.split('=', 1)
+                     value = value.strip()
+                     quote = ''
+                     if len(value) >= 2 and value[0] in (chr(34), chr(39)) and value[-1] == value[0]:
+                         quote = value[0]
+                         raw = value[1:-1]
+                     else:
+                         raw = value
+
+                     normalized = re.sub(r'/v1/?$', '', raw)
+                     if normalized != raw:
+                         changed = True
+                     updated_lines.append(f'{key}={quote}{normalized}{quote}')
+
+                 if changed:
+                     text = '\\n'.join(updated_lines)
+                     if lines:
+                         text += '\\n'
+                     path.write_text(text)
+             '''))\"
+             exit \$REMOTE_SCRIPT_RC" \
             < scripts/remote_update_agent_stack.sh >"$REMOTE_OUTPUT_FILE" 2>&1
           REMOTE_RC=$?
           set -e
