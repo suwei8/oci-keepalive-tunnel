@@ -910,6 +910,10 @@ parse_codex_version() {
 }
 
 write_codex_config() {
+  local codex_base_url="${CLIPROXYAPI_BASE_URL:-}"
+
+  codex_base_url="$(printf '%s' "$codex_base_url" | sed -E 's#/v1/?$##')/v1"
+
   mkdir -p /home/sw/.codex
   umask 077
   cat > /home/sw/.codex/auth.json <<EOF
@@ -929,7 +933,7 @@ model_reasoning_effort = "high"
 
 [model_providers.cliproxyapi]
 name = "cliproxyapi"
-base_url = "${CLIPROXYAPI_BASE_URL}"
+base_url = "${codex_base_url}"
 wire_api = "responses"
 
 [projects."/home/sw"]
