@@ -32,6 +32,8 @@ jobs:
           HOSTS_CONFIG_URL: ${{ secrets.HOSTS_CONFIG_URL }}
           TARGET_INDEXES: ${{ github.event.inputs.target_indexes }}
           TARGET_INDEX: ${{ github.event.inputs.target_index }}
+          AMD_SSH_USERNAME: ${{ secrets.AMD_SSH_USERNAME }}
+          GCP_SSH_USERNAME: ${{ secrets.GCP_SSH_USERNAME }}
         run: |
           set -euo pipefail
 
@@ -55,29 +57,25 @@ jobs:
           elif target_index:
               selected_indexes.add(target_index)
 
-          excluded = {
-              "US-GCP俄勒冈",
-              "AWS",
-              "US-bestvm-232-amd",
-              "US-bestvm-235-amd",
-          }
-
           matrix = []
           for index, host in enumerate(hosts):
               if selected_indexes and str(index) not in selected_indexes:
                   continue
               if host.get("cpu_type") != "amd64":
                   continue
-              if host.get("name") in excluded:
-                  continue
               ssh_host = (host.get("ssh_host") or "").strip()
+              host_name = (host.get("name") or "").strip()
               if not ssh_host:
                   continue
+              ssh_username = os.environ.get("AMD_SSH_USERNAME", "").strip()
+              if "GCP" in host_name.upper():
+                  ssh_username = os.environ.get("GCP_SSH_USERNAME", "").strip() or ssh_username
               matrix.append(
                   {
                       "index": index,
-                      "name": host["name"],
+                      "name": host_name,
                       "ssh_host": ssh_host,
+                      "ssh_username": ssh_username,
                   }
               )
 
@@ -135,7 +133,7 @@ jobs:
           HOST_INDEX: ${{ matrix.index }}
           HOST_NAME: ${{ matrix.name }}
           SSH_HOST: ${{ matrix.ssh_host }}
-          SSH_USERNAME: ${{ secrets.AMD_SSH_USERNAME }}
+          SSH_USERNAME: ${{ matrix.ssh_username }}
           SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
@@ -553,12 +551,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/keepalive_result_helper.py build-summary \
-            all-results "$HOST_COUNT" telegram_message.txt "AMD64 OCI 保活报告 V2"
-          {
-            echo
-            echo "<b>预测文件数</b>: ${PREDICTION_COUNT:-0}"
-            echo "<b>数据落盘</b>: ${DATA_STATUS:-unknown}"
-          } >> telegram_message.txt
+            all-results "$HOST_COUNT" telegram_message.txt "AMD64 OCI 保活报告 V2" "${PREDICTION_COUNT:-0}" "${DATA_STATUS:-unknown}"
 
       - name: Send summary to Telegram
         env:
