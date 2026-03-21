@@ -579,6 +579,46 @@ restart_agentbridge_service() {
   return 1
 }
 
+ensure_agentbridge_startup_entry() {
+  local startup_command="/home/sw/manage.sh start"
+  local startup_entry="@reboot ${startup_command}"
+  local existing_crontab=""
+  local tmp_crontab=""
+  local filtered_crontab=""
+
+  if [ ! -x /home/sw/manage.sh ]; then
+    add_note "skipped startup config because /home/sw/manage.sh is missing"
+    return 1
+  fi
+
+  if ! command -v crontab >/dev/null 2>&1; then
+    RESULT_MANUAL_ACTION_REQUIRED="yes"
+    add_note "crontab not found; unable to ensure agent-bridge startup entry"
+    return 1
+  fi
+
+  existing_crontab="$(crontab -l 2>/dev/null || true)"
+  filtered_crontab="$(printf '%s\n' "$existing_crontab" | sed '/^[[:space:]]*#/d')"
+  if printf '%s\n' "$filtered_crontab" | grep -Fq "$startup_command"; then
+    return 0
+  fi
+
+  tmp_crontab="$(mktemp)"
+  if [ -n "$existing_crontab" ]; then
+    printf '%s\n' "$existing_crontab" > "$tmp_crontab"
+  fi
+  printf '%s\n' "$startup_entry" >> "$tmp_crontab"
+  if ! crontab "$tmp_crontab"; then
+    rm -f "$tmp_crontab"
+    RESULT_MANUAL_ACTION_REQUIRED="yes"
+    add_note "failed to install crontab startup entry for agent-bridge"
+    return 1
+  fi
+  rm -f "$tmp_crontab"
+  add_note "added @reboot /home/sw/manage.sh start"
+  return 0
+}
+
 ensure_agentbridge_effective() {
   local mode="${1:-restart}"
   local state=""
@@ -805,6 +845,12 @@ update_bridge() {
       add_note "failed to normalize bridge processes"
       return
     fi
+    if ! ensure_agentbridge_startup_entry; then
+      RESULT_BRIDGE_STATUS="bridge_failed"
+      RESULT_WORKFLOW_STATUS="bridge_failed"
+      add_note "failed to ensure agent-bridge startup entry"
+      return
+    fi
     record_bridge_version "$RESULT_BRIDGE_RELEASE_TAG"
     RESULT_BRIDGE_STATUS="skipped_already_latest"
     return
@@ -832,6 +878,12 @@ update_bridge() {
       RESULT_BRIDGE_STATUS="bridge_failed"
       RESULT_WORKFLOW_STATUS="bridge_failed"
       add_note "failed to normalize bridge processes"
+      return
+    fi
+    if ! ensure_agentbridge_startup_entry; then
+      RESULT_BRIDGE_STATUS="bridge_failed"
+      RESULT_WORKFLOW_STATUS="bridge_failed"
+      add_note "failed to ensure agent-bridge startup entry"
       return
     fi
     RESULT_BRIDGE_STATUS="deployed_started"
@@ -894,23 +946,33 @@ parse_claude_version() {
 
 write_claude_shell_config() {
   local bashrc="/home/sw/.bashrc"
+  local anthropic_base_url="${CLIPROXYAPI_BASE_URL:-}"
+  local anthropic_auth_token="${CLIPROXYAPI_OPENAI_API_KEY:-}"
 
-  python3 - "$bashrc" <<'PY'
+  if [ -z "$anthropic_base_url" ] || [ -z "$anthropic_auth_token" ]; then
+    return 1
+  fi
+
+  python3 - "$bashrc" "$anthropic_base_url" "$anthropic_auth_token" <<'PY'
 import re
 import sys
 from pathlib import Path
 
 path = Path(sys.argv[1])
+anthropic_base_url = sys.argv[2]
+anthropic_auth_token = sys.argv[3]
 lines = [
     'export PATH="$HOME/.local/bin:$PATH"',
-    'export ANTHROPIC_BASE_URL="https://batam2-ai.555606.xyz"',
-    'export ANTHROPIC_AUTH_TOKEN="o2XwOanwEuO3XF2axilzVvAi1c-jX6dP4ILzgcvGyWI"',
+    f'export ANTHROPIC_BASE_URL="{anthropic_base_url}"',
+    f'export ANTHROPIC_AUTH_TOKEN="{anthropic_auth_token}"',
 ]
 block = "\n".join(lines) + "\n"
 
 text = path.read_text() if path.exists() else ""
 for line in lines:
     text = re.sub(rf"^{re.escape(line)}\n?", "", text, flags=re.M)
+text = re.sub(r'^export ANTHROPIC_BASE_URL=.*\n?', "", text, flags=re.M)
+text = re.sub(r'^export ANTHROPIC_AUTH_TOKEN=.*\n?', "", text, flags=re.M)
 
 updated = text
 if updated and not updated.endswith("\n"):
@@ -921,11 +983,14 @@ path.write_text(updated)
 PY
 
   export PATH="/home/sw/.local/bin:${PATH}"
-  export ANTHROPIC_BASE_URL="https://batam2-ai.555606.xyz"
-  export ANTHROPIC_AUTH_TOKEN="o2XwOanwEuO3XF2axilzVvAi1c-jX6dP4ILzgcvGyWI"
+  export ANTHROPIC_BASE_URL="$anthropic_base_url"
+  export ANTHROPIC_AUTH_TOKEN="$anthropic_auth_token"
   set +u
-  [ -f "$bashrc" ] && . "$bashrc" >/dev/null 2>&1 || true
+  [ -f "$bashrc" ] && source "$bashrc" >/dev/null 2>&1 || true
   set -u
+  if [ -x /home/sw/manage.sh ]; then
+    /home/sw/manage.sh restart >/dev/null 2>&1 || true
+  fi
   hash -r || true
 }
 
@@ -988,7 +1053,12 @@ update_claude() {
   if [ -z "$current_version" ]; then
     if curl -fsSL https://claude.ai/install.sh | bash; then
       hash -r || true
-      write_claude_shell_config
+      if ! write_claude_shell_config; then
+        RESULT_CLAUDE_STATUS="claude_failed"
+        RESULT_WORKFLOW_STATUS="claude_failed"
+        add_note "missing CLIPROXYAPI secrets for claude config"
+        return
+      fi
       load_shell_profiles
       RESULT_CLAUDE_STATUS="success"
     else
@@ -998,7 +1068,12 @@ update_claude() {
       return
     fi
   else
-    write_claude_shell_config
+    if ! write_claude_shell_config; then
+      RESULT_CLAUDE_STATUS="claude_failed"
+      RESULT_WORKFLOW_STATUS="claude_failed"
+      add_note "missing CLIPROXYAPI secrets for claude config"
+      return
+    fi
 
     if [ -z "$RESULT_CLAUDE_TARGET_VERSION" ] || [ "$RESULT_CLAUDE_TARGET_VERSION" = "unknown" ]; then
       should_update="yes"
@@ -1029,7 +1104,12 @@ update_claude() {
     fi
   fi
 
-  write_claude_shell_config
+  if ! write_claude_shell_config; then
+    RESULT_CLAUDE_STATUS="claude_failed"
+    RESULT_WORKFLOW_STATUS="claude_failed"
+    add_note "missing CLIPROXYAPI secrets for claude config"
+    return
+  fi
   load_shell_profiles
   RESULT_CLAUDE_VERSION="$(parse_claude_version || true)"
   if [ -z "$RESULT_CLAUDE_VERSION" ]; then
