@@ -141,6 +141,8 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           SECURITY_KEYWORDS: ${{ secrets.SECURITY_KEYWORDS }}
+          SECURITY_SYSTEMD_SERVICE_ALLOWLIST: ${{ secrets.SECURITY_SYSTEMD_SERVICE_ALLOWLIST }}
+          SECURITY_SYSTEMD_EXEC_ALLOWLIST: ${{ secrets.SECURITY_SYSTEMD_EXEC_ALLOWLIST }}
           REPO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY_NAME: ${{ github.repository }}
         run: |
@@ -287,6 +289,8 @@ jobs:
                  export TELEGRAM_BOT_TOKEN='\"'\"'${TELEGRAM_BOT_TOKEN}'\"'\"';
                  export TELEGRAM_CHAT_ID='\"'\"'${TELEGRAM_CHAT_ID}'\"'\"';
                  export SECURITY_KEYWORDS='\"'\"'${SECURITY_KEYWORDS}'\"'\"';
+                 export SECURITY_SYSTEMD_SERVICE_ALLOWLIST='\"'\"'${SECURITY_SYSTEMD_SERVICE_ALLOWLIST}'\"'\"';
+                 export SECURITY_SYSTEMD_EXEC_ALLOWLIST='\"'\"'${SECURITY_SYSTEMD_EXEC_ALLOWLIST}'\"'\"';
                  bash '${REMOTE_RUNNER_SCRIPT}' > '${REMOTE_RUNNER_LOG}' 2>&1;
                  status=\$?;
                  printf '%s' \"\$status\" > '${REMOTE_RUNNER_EXIT}'

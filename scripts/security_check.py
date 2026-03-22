@@ -12,8 +12,9 @@ import time
 import urllib.request
 import urllib.parse
 import json
+import fnmatch
 from datetime import datetime
-from typing import List, Tuple, Dict
+from typing import List, Tuple, Dict, Sequence
 
 # Telegram 配置 (从环境变量读取)
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
@@ -23,6 +24,24 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 # 格式: 逗号分隔的关键词列表
 _default_keywords = "arm7,arm5,uhavenobotsxd,.monitor"  # 最小默认值
 MINER_KEYWORDS = os.environ.get("SECURITY_KEYWORDS", _default_keywords).split(",")
+
+SYSTEMD_SERVICE_ALLOWLIST = [
+    item.strip() for item in os.environ.get(
+        "SECURITY_SYSTEMD_SERVICE_ALLOWLIST",
+        "actions.runner.*",
+    ).split(",")
+    if item.strip()
+]
+SYSTEMD_SERVICE_ALLOWLIST_LOWER = [item.lower() for item in SYSTEMD_SERVICE_ALLOWLIST]
+
+SYSTEMD_EXEC_ALLOWLIST = [
+    item.strip().lower() for item in os.environ.get(
+        "SECURITY_SYSTEMD_EXEC_ALLOWLIST",
+        "/home/*/.nvm/*,/home/*/.local/bin/*,/home/*/.cargo/bin/*,"
+        "/home/*/.pyenv/*,/home/*/.rbenv/*,/home/*/.asdf/*,/home/*/bin/*",
+    ).split(",")
+    if item.strip()
+]
 
 # 可疑 crontab 模式
 SUSPICIOUS_CRON_PATTERNS = [
@@ -40,6 +59,29 @@ KEEPALIVE_WRAPPER_MARKERS = (
     "keepalive_git_branch=",
     "keepalive_timeout_seconds=",
     "security_keywords=",
+)
+
+SUSPICIOUS_SYSTEMD_PATH_PREFIXES = (
+    "/tmp/",
+    "/dev/shm/",
+    "/var/tmp/",
+    "/run/user/",
+)
+
+SUSPICIOUS_SYSTEMD_NAME_PATTERNS = (
+    "*xmrig*",
+    "*kinsing*",
+    "*kdevtmpfsi*",
+    "*watchdogs*",
+    "*sysupdate*",
+)
+
+SUSPICIOUS_SYSTEMD_EXEC_PATTERNS = (
+    "*xmrig*",
+    "*kinsing*",
+    "*kdevtmpfsi*",
+    "*/curl",
+    "*/wget",
 )
 
 
@@ -69,6 +111,62 @@ class SecurityChecker:
         if "bash -c" not in lower_cmd and "bash -lc" not in lower_cmd:
             return False
         return any(marker in lower_cmd for marker in KEEPALIVE_WRAPPER_MARKERS)
+
+    @staticmethod
+    def extract_systemd_exec_paths(exec_start: str) -> List[str]:
+        """从 `systemctl show --property=ExecStart` 输出中提取可执行路径。"""
+        paths = re.findall(r"path=([^ ;}]+)", exec_start)
+        if paths:
+            return paths
+
+        fallback_paths = []
+        for match in re.findall(r"(/[^ ;}]+)", exec_start):
+            if match.startswith("/"):
+                fallback_paths.append(match)
+        return fallback_paths
+
+    @staticmethod
+    def matches_any_pattern(value: str, patterns: Sequence[str]) -> bool:
+        return any(fnmatch.fnmatch(value, pattern) for pattern in patterns)
+
+    def is_allowlisted_systemd_service(self, service_name: str, exec_paths: List[str]) -> bool:
+        lower_name = service_name.lower()
+        if self.matches_any_pattern(lower_name, SYSTEMD_SERVICE_ALLOWLIST_LOWER):
+            return True
+
+        for path in exec_paths:
+            lower_path = path.lower()
+            if self.matches_any_pattern(lower_path, SYSTEMD_EXEC_ALLOWLIST):
+                return True
+        return False
+
+    def classify_systemd_service(self, service_name: str, exec_start: str) -> List[str]:
+        lower_name = service_name.lower()
+        lower_exec = exec_start.lower()
+        exec_paths = [path.lower() for path in self.extract_systemd_exec_paths(exec_start)]
+
+        if self.is_allowlisted_systemd_service(service_name, exec_paths):
+            return []
+
+        reasons = []
+
+        if self.matches_any_pattern(lower_name, SUSPICIOUS_SYSTEMD_NAME_PATTERNS):
+            reasons.append("服务名称包含高风险关键词")
+
+        if self.matches_any_pattern(lower_exec, SUSPICIOUS_SYSTEMD_EXEC_PATTERNS):
+            reasons.append("ExecStart 包含高风险关键词")
+
+        for path in exec_paths:
+            if any(path.startswith(prefix) for prefix in SUSPICIOUS_SYSTEMD_PATH_PREFIXES):
+                reasons.append("ExecStart 指向高风险临时目录")
+                break
+
+        for path in exec_paths:
+            if fnmatch.fnmatch(path, "/home/*/.*") and not self.matches_any_pattern(path, SYSTEMD_EXEC_ALLOWLIST):
+                reasons.append("ExecStart 指向主目录隐藏路径")
+                break
+
+        return reasons
     
     def check_malicious_crontab(self):
         """检查恶意 crontab 条目"""
@@ -398,8 +496,8 @@ class SecurityChecker:
         - 最近创建的非系统服务
         """
         print("\n[安全] 检查 systemd 服务...")
-        suspicious_paths = ["/tmp/", "/dev/shm/", "/var/tmp/", "/home/"]
         try:
+            found_suspicious = False
             # 列出所有用户服务单元
             result = subprocess.run(
                 ["systemctl", "list-units", "--type=service", "--state=running", "--no-pager", "--no-legend"],
@@ -417,14 +515,13 @@ class SecurityChecker:
                         capture_output=True, text=True, timeout=5
                     )
                     exec_start = show_result.stdout.strip()
-                    for path in suspicious_paths:
-                        if path in exec_start:
-                            # 跳过 GitHub Actions 自托管 runner 服务
-                            if service_name.startswith('actions.runner.'):
-                                continue
-                            self.add_issue("WARNING", "可疑 systemd 服务", f"{service_name}: {exec_start[:80]}")
-                            break
-            print("[安全] ✅ 未发现可疑 systemd 服务")
+                    reasons = self.classify_systemd_service(service_name, exec_start)
+                    if reasons:
+                        found_suspicious = True
+                        detail = f"{service_name}: {'; '.join(reasons)}; {exec_start[:120]}"
+                        self.add_issue("WARNING", "可疑 systemd 服务", detail)
+            if not found_suspicious:
+                print("[安全] ✅ 未发现可疑 systemd 服务")
         except Exception as e:
             print(f"[安全] 检查 systemd 出错: {e}")
     
