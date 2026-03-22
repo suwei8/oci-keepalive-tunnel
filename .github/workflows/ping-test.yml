@@ -1,131 +1,214 @@
-name: Ping Test All Instances
+name: Ping Test Instances
 
 on:
   workflow_dispatch:
     inputs:
       ping_ip:
-        description: '要 ping 的目标 IP 地址'
+        description: "要 ping 的目标 IP 地址"
         required: true
-        default: '1.1.1.1'
+        default: "1.1.1.1"
+      cpu_type:
+        description: "选择要测试的主机类型"
+        required: true
+        type: choice
+        default: all
+        options:
+          - all
+          - arm64
+          - amd64
+      target_indexes:
+        description: "可选：指定主机索引，逗号分隔；留空表示全部"
+        required: false
+        default: ""
 
 jobs:
+  prepare:
+    name: Prepare Host Matrix
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.prepare.outputs.matrix }}
+      host_count: ${{ steps.prepare.outputs.host_count }}
+    steps:
+      - name: Build host matrix
+        id: prepare
+        env:
+          HOSTS_CONFIG_URL: ${{ secrets.HOSTS_CONFIG_URL }}
+          CPU_TYPE_FILTER: ${{ github.event.inputs.cpu_type }}
+          TARGET_INDEXES: ${{ github.event.inputs.target_indexes }}
+        run: |
+          set -euo pipefail
+
+          HOSTS_JSON="$(curl -fsSL "$HOSTS_CONFIG_URL")"
+          export HOSTS_JSON
+
+          MATRIX_JSON="$(python3 - <<'PY'
+          import json
+          import os
+
+          hosts = json.loads(os.environ["HOSTS_JSON"])
+          cpu_type_filter = (os.environ.get("CPU_TYPE_FILTER") or "all").strip().lower()
+          target_indexes_raw = (os.environ.get("TARGET_INDEXES") or "").strip()
+
+          selected_indexes = set()
+          if target_indexes_raw:
+              for item in target_indexes_raw.split(","):
+                  item = item.strip()
+                  if item:
+                      selected_indexes.add(item)
+
+          matrix = []
+          for index, host in enumerate(hosts):
+              host_cpu_type = (host.get("cpu_type") or "").strip().lower()
+              if host_cpu_type not in {"arm64", "amd64"}:
+                  continue
+              if cpu_type_filter != "all" and host_cpu_type != cpu_type_filter:
+                  continue
+              if selected_indexes and str(index) not in selected_indexes:
+                  continue
+
+              host_name = (host.get("name") or "").strip()
+              ssh_host = (host.get("ssh_host") or "").strip()
+              if not host_name or not ssh_host:
+                  continue
+
+              matrix.append(
+                  {
+                      "index": index,
+                      "name": host_name,
+                      "ssh_host": ssh_host,
+                      "cpu_type": host_cpu_type,
+                  }
+              )
+
+          print(json.dumps({"include": matrix}, ensure_ascii=False))
+          PY
+          )"
+
+          export MATRIX_JSON
+          HOST_COUNT="$(python3 -c 'import json,os; print(len(json.loads(os.environ["MATRIX_JSON"])["include"]))')"
+
+          echo "matrix=${MATRIX_JSON}" >> "$GITHUB_OUTPUT"
+          echo "host_count=${HOST_COUNT}" >> "$GITHUB_OUTPUT"
+          echo "Prepared ${HOST_COUNT} host(s) for cpu_type=${CPU_TYPE_FILTER:-all}"
+
   ping-test:
-    name: "Host ${{ matrix.index }}"
+    name: ${{ matrix.name }} (${{ matrix.cpu_type }})
+    needs: prepare
+    if: needs.prepare.outputs.host_count != '0'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     strategy:
       fail-fast: false
       max-parallel: 10
-      matrix:
-        index: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47]
+      matrix: ${{ fromJson(needs.prepare.outputs.matrix) }}
 
     steps:
-      - name: Get host info from secrets
-        id: host
-        env:
-          HOSTS_CONFIG_URL: ${{ secrets.HOSTS_CONFIG_URL }}
-          HOST_INDEX: ${{ matrix.index }}
-        run: |
-          HOSTS_CONFIG=$(curl -s $HOSTS_CONFIG_URL) || true
-          HOST_NAME=$(echo "$HOSTS_CONFIG" | jq -r ".[$HOST_INDEX].name")
-          SSH_HOST=$(echo "$HOSTS_CONFIG" | jq -r ".[$HOST_INDEX].ssh_host")
-          
-          if [ "$HOST_NAME" = "null" ] || [ -z "$HOST_NAME" ]; then
-            echo "skip=true" >> $GITHUB_OUTPUT
-            echo "No host at index $HOST_INDEX"
-            exit 0
-          fi
-          
-          echo "skip=false" >> $GITHUB_OUTPUT
-          echo "name=$HOST_NAME" >> $GITHUB_OUTPUT
-          echo "ssh_host=$SSH_HOST" >> $GITHUB_OUTPUT
-          echo "Host: $HOST_NAME ($SSH_HOST)"
-
       - name: Checkout repository
-        if: steps.host.outputs.skip != 'true'
         uses: actions/checkout@v5
 
       - name: Install cloudflared
-        if: steps.host.outputs.skip != 'true'
         run: |
+          set -euo pipefail
           if [ -f bin/cloudflared ]; then
             sudo cp bin/cloudflared /usr/local/bin/cloudflared
           else
             echo "Local binary not found, downloading..."
-            curl -sL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o /tmp/cloudflared
+            curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o /tmp/cloudflared
             chmod +x /tmp/cloudflared
             sudo mv /tmp/cloudflared /usr/local/bin/cloudflared
           fi
           cloudflared --version
 
       - name: Setup SSH
-        if: steps.host.outputs.skip != 'true'
         run: |
+          set -euo pipefail
           mkdir -p ~/.ssh
-          cat >> ~/.ssh/config << 'EOF'
+          cat >> ~/.ssh/config <<'EOF'
           Host *
             StrictHostKeyChecking no
             UserKnownHostsFile /dev/null
             LogLevel ERROR
           EOF
-          sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq sshpass netcat-openbsd
 
       - name: Run ping test
-        if: steps.host.outputs.skip != 'true'
         id: ping
         env:
-          SSH_USERNAME: ${{ secrets.SSH_USERNAME }}
+          SSH_USERNAME: ${{ matrix.cpu_type == 'amd64' && secrets.AMD_SSH_USERNAME || secrets.SSH_USERNAME }}
           SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }}
-          HOST_NAME: ${{ steps.host.outputs.name }}
-          SSH_HOST: ${{ steps.host.outputs.ssh_host }}
+          HOST_NAME: ${{ matrix.name }}
+          HOST_INDEX: ${{ matrix.index }}
+          HOST_CPU_TYPE: ${{ matrix.cpu_type }}
+          SSH_HOST: ${{ matrix.ssh_host }}
           PING_IP: ${{ github.event.inputs.ping_ip }}
         run: |
+          set -euo pipefail
+
           echo "==========================================="
-          echo "Ping test for: $HOST_NAME -> $PING_IP"
+          echo "Ping test for: ${HOST_NAME} (#${HOST_INDEX}, ${HOST_CPU_TYPE}) -> ${PING_IP}"
           echo "==========================================="
-          
-          SSH_OPTS="-o ConnectTimeout=30 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR"
-          
-          # 启动 Cloudflare Tunnel
-          cloudflared access ssh --hostname "$SSH_HOST" --url "ssh://127.0.0.1:2222" &
+
+          TUNNEL_PID=""
+          cleanup() {
+            if [ -n "${TUNNEL_PID:-}" ]; then
+              kill "${TUNNEL_PID}" 2>/dev/null || true
+            fi
+          }
+          trap cleanup EXIT
+
+          SSH_OPTS="-o ConnectTimeout=30 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o PreferredAuthentications=password -o PubkeyAuthentication=no"
+
+          cloudflared access ssh --hostname "$SSH_HOST" --url "ssh://127.0.0.1:2222" >/dev/null 2>&1 &
           TUNNEL_PID=$!
-          sleep 5
-          
-          if ! kill -0 $TUNNEL_PID 2>/dev/null; then
+
+          for _ in $(seq 1 20); do
+            if ! kill -0 "$TUNNEL_PID" 2>/dev/null; then
+              break
+            fi
+            if nc -z 127.0.0.1 2222; then
+              break
+            fi
+            sleep 1
+          done
+
+          if ! kill -0 "$TUNNEL_PID" 2>/dev/null || ! nc -z 127.0.0.1 2222; then
             echo "❌ Tunnel failed"
             exit 1
           fi
           echo "✅ Tunnel established"
-          
-          # 执行 ping 测试 (10秒)
-          PING_RESULT=$(sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -p 2222 "${SSH_USERNAME}@127.0.0.1" \
-            "ping -c 10 -W 1 $PING_IP 2>/dev/null | tail -1 | awk -F'/' '{print \$5}'" || echo "timeout")
-          
-          kill $TUNNEL_PID 2>/dev/null || true
-          
+
+          PING_RESULT="$(
+            sshpass -p "$SSH_PASSWORD" \
+              ssh $SSH_OPTS -p 2222 "${SSH_USERNAME}@127.0.0.1" \
+              "ping -c 10 -W 1 '$PING_IP' 2>/dev/null | tail -1 | awk -F'/' '{print \$5}'" \
+              || echo "timeout"
+          )"
+
           if [ -z "$PING_RESULT" ] || [ "$PING_RESULT" = "timeout" ]; then
             PING_RESULT="N/A"
           else
             PING_RESULT="${PING_RESULT}ms"
           fi
-          
-          echo "ping_result=$PING_RESULT" >> $GITHUB_OUTPUT
+
+          echo "ping_result=$PING_RESULT" >> "$GITHUB_OUTPUT"
           echo "✅ Ping result: $PING_RESULT"
 
       - name: Save result to file
-        if: steps.host.outputs.skip != 'true'
         env:
-          HOST_NAME: ${{ steps.host.outputs.name }}
+          HOST_NAME: ${{ matrix.name }}
+          HOST_INDEX: ${{ matrix.index }}
+          HOST_CPU_TYPE: ${{ matrix.cpu_type }}
           PING_IP: ${{ github.event.inputs.ping_ip }}
           PING_RESULT: ${{ steps.ping.outputs.ping_result }}
         run: |
+          set -euo pipefail
           mkdir -p ping_results
-          SAFE_NAME=$(echo "$HOST_NAME" | tr ' ' '_')
-          TIMESTAMP=$(date -u +"%Y-%m-%d %H:%M:%S")
-          echo "${HOST_NAME},${PING_IP},${PING_RESULT},${TIMESTAMP}" > "ping_results/${SAFE_NAME}.txt"
+          SAFE_NAME="$(printf '%s' "$HOST_NAME" | tr ' ' '_' | tr -cd '[:alnum:]_.-')"
+          TIMESTAMP="$(date -u +"%Y-%m-%d %H:%M:%S")"
+          echo "${HOST_NAME},${PING_IP},${PING_RESULT},${TIMESTAMP}" > "ping_results/${HOST_INDEX}_${HOST_CPU_TYPE}_${SAFE_NAME}.txt"
 
       - name: Upload ping result artifact
-        if: steps.host.outputs.skip != 'true'
         uses: actions/upload-artifact@v6
         with:
           name: ping-result-${{ matrix.index }}
@@ -133,10 +216,11 @@ jobs:
           if-no-files-found: ignore
           retention-days: 1
 
-  # 收集所有 ping 结果
   collect:
     name: Collect Ping Results
-    needs: ping-test
+    needs:
+      - prepare
+      - ping-test
     if: always()
     runs-on: ubuntu-latest
     permissions:
@@ -146,6 +230,7 @@ jobs:
         uses: actions/checkout@v5
 
       - name: Download all ping result artifacts
+        if: needs.prepare.outputs.host_count != '0'
         uses: actions/download-artifact@v8
         with:
           path: artifacts
@@ -156,30 +241,30 @@ jobs:
         env:
           PING_IP: ${{ github.event.inputs.ping_ip }}
         run: |
+          set -euo pipefail
           CSV_FILE="csv/ping_results.csv"
           mkdir -p csv
-          
-          # 创建 CSV 头 (如果不存在)
+
           if [ ! -f "$CSV_FILE" ]; then
             echo "name,ping-ip,time,timestamp" > "$CSV_FILE"
           fi
-          
-          # 合并所有结果
+
           if [ -d artifacts ]; then
-            find artifacts -name "*.txt" -type f | while read result_file; do
+            find artifacts -name "*.txt" -type f | while read -r result_file; do
               if [ -f "$result_file" ]; then
                 cat "$result_file" >> "$CSV_FILE"
                 echo "Added: $(cat "$result_file")"
               fi
             done
           fi
-          
+
           echo ""
           echo "=== 最新结果 ==="
           tail -10 "$CSV_FILE"
 
       - name: Commit results
         run: |
+          set -euo pipefail
           if [ -f csv/ping_results.csv ]; then
             git config user.name "github-actions[bot]"
             git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -191,29 +276,33 @@ jobs:
       - name: Summary
         env:
           PING_IP: ${{ github.event.inputs.ping_ip }}
+          CPU_TYPE_FILTER: ${{ github.event.inputs.cpu_type }}
+          HOST_COUNT: ${{ needs.prepare.outputs.host_count }}
         run: |
-          echo "## 📊 Ping Test Results (Target: $PING_IP)" >> $GITHUB_STEP_SUMMARY
-          
+          set -euo pipefail
+          echo "## 📊 Ping Test Results (Target: $PING_IP)" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- CPU 类型: ${CPU_TYPE_FILTER}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- 目标主机数: ${HOST_COUNT}" >> "$GITHUB_STEP_SUMMARY"
+
           if [ -f csv/ping_results.csv ]; then
-            echo "### 🏆 Top 10 Lowest Latency" >> $GITHUB_STEP_SUMMARY
-            echo "| Host | IP | Latency | Timestamp |" >> $GITHUB_STEP_SUMMARY
-            echo "|------|----|---------|-----------|" >> $GITHUB_STEP_SUMMARY
-            
-            # Filter for current target IP, remove 'ms', sort by latency (numeric), add 'ms' back
-            # CSV format: name,ping-ip,time,timestamp
-            # We filter lines containing the target IP
-            # We exclude N/A or timeout for the top list
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "### 🏆 Top 10 Lowest Latency" >> "$GITHUB_STEP_SUMMARY"
+            echo "| Host | IP | Latency | Timestamp |" >> "$GITHUB_STEP_SUMMARY"
+            echo "|------|----|---------|-----------|" >> "$GITHUB_STEP_SUMMARY"
+
             grep ",$PING_IP," csv/ping_results.csv | grep -v "N/A" | grep -v "timeout" | \
             sed 's/ms//g' | \
             sort -t',' -k3 -n | head -10 | \
-            awk -F',' '{printf "| %s | %s | %sms | %s |\n", $1, $2, $3, $4}' >> $GITHUB_STEP_SUMMARY
-            
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "### 📝 Latest 30 Entries" >> $GITHUB_STEP_SUMMARY
-            echo '```csv' >> $GITHUB_STEP_SUMMARY
-            echo "name,ping-ip,time,timestamp" >> $GITHUB_STEP_SUMMARY
-            tail -30 csv/ping_results.csv | grep "$PING_IP" >> $GITHUB_STEP_SUMMARY
-            echo '```' >> $GITHUB_STEP_SUMMARY
+            awk -F',' '{printf "| %s | %s | %sms | %s |\n", $1, $2, $3, $4}' >> "$GITHUB_STEP_SUMMARY"
+
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "### 📝 Latest 30 Entries" >> "$GITHUB_STEP_SUMMARY"
+            echo '```csv' >> "$GITHUB_STEP_SUMMARY"
+            echo "name,ping-ip,time,timestamp" >> "$GITHUB_STEP_SUMMARY"
+            tail -30 csv/ping_results.csv | grep "$PING_IP" >> "$GITHUB_STEP_SUMMARY" || true
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "No results found." >> $GITHUB_STEP_SUMMARY
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "No results found." >> "$GITHUB_STEP_SUMMARY"
           fi
