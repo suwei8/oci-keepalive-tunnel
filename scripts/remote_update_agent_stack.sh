@@ -68,6 +68,93 @@ emit_results() {
   echo "RESULT_NOTES=$(sanitize_value "$RESULT_NOTES")"
 }
 
+log_info() {
+  printf '[INFO] %s\n' "$1" >&2
+}
+
+log_warn() {
+  printf '[WARN] %s\n' "$1" >&2
+}
+
+mb_to_kb() {
+  local mb="$1"
+  echo $((mb * 1024))
+}
+
+is_dir_in_use() {
+  local dir="$1"
+  local fd_path=""
+  local target=""
+
+  for fd_path in /proc/[0-9]*/fd/*; do
+    [ -e "$fd_path" ] || continue
+    target="$(readlink "$fd_path" 2>/dev/null || true)"
+    case "$target" in
+      "$dir"|"$dir"/*)
+        return 0
+        ;;
+    esac
+  done
+
+  return 1
+}
+
+cleanup_stale_mei_dirs() {
+  local mei_dir=""
+
+  while IFS= read -r mei_dir; do
+    [ -n "$mei_dir" ] || continue
+    if is_dir_in_use "$mei_dir"; then
+      log_warn "skip in-use PyInstaller temp dir: $mei_dir"
+      continue
+    fi
+    log_info "remove stale PyInstaller temp dir: $mei_dir"
+    rm -rf "$mei_dir" 2>/dev/null || log_warn "failed to remove $mei_dir"
+  done <<EOF
+$(find /tmp -maxdepth 1 -mindepth 1 -type d -name '_MEI*' -mmin +1440 2>/dev/null | sort)
+EOF
+}
+
+report_disk_usage() {
+  log_info "df -h / /tmp"
+  df -h / /tmp >&2 || true
+}
+
+ensure_bridge_disk_space() {
+  local root_free_kb=""
+  local tmp_free_kb=""
+  local min_root_kb=""
+  local min_tmp_kb=""
+  local min_root_mb="${AGENTBRIDGE_MIN_ROOT_FREE_MB:-512}"
+  local min_tmp_mb="${AGENTBRIDGE_MIN_TMP_FREE_MB:-512}"
+
+  report_disk_usage
+  cleanup_stale_mei_dirs
+  report_disk_usage
+
+  root_free_kb="$(df -Pk / 2>/dev/null | awk 'NR==2 { print $4 }')"
+  tmp_free_kb="$(df -Pk /tmp 2>/dev/null | awk 'NR==2 { print $4 }')"
+  min_root_kb="$(mb_to_kb "$min_root_mb")"
+  min_tmp_kb="$(mb_to_kb "$min_tmp_mb")"
+
+  if [ -z "$root_free_kb" ] || [ -z "$tmp_free_kb" ]; then
+    RESULT_BRIDGE_STATUS="bridge_failed"
+    RESULT_WORKFLOW_STATUS="bridge_failed"
+    add_note "failed to read disk usage"
+    return 1
+  fi
+
+  if [ "$root_free_kb" -lt "$min_root_kb" ] || [ "$tmp_free_kb" -lt "$min_tmp_kb" ]; then
+    RESULT_BRIDGE_STATUS="bridge_failed"
+    RESULT_WORKFLOW_STATUS="bridge_failed"
+    add_note "disk full"
+    log_warn "insufficient disk space: / requires ${min_root_mb}MB free, /tmp requires ${min_tmp_mb}MB free"
+    return 1
+  fi
+
+  return 0
+}
+
 load_shell_profiles() {
   set +u
   [ -f /etc/profile ] && . /etc/profile || true
@@ -660,6 +747,7 @@ refresh_agentbridge_files_only() {
   local tmp_manage="/home/sw/manage.sh.tmp"
   local tmp_binary="/home/sw/agent-bridge.tmp"
 
+  ensure_bridge_disk_space || return 1
   resolve_bridge_release || return 1
   release_json="$BRIDGE_RELEASE_JSON_CACHE"
 
@@ -668,9 +756,41 @@ refresh_agentbridge_files_only() {
     download_release_asset "$AGENTBRIDGE_REPO" "${AGENTBRIDGE_GITHUB_TOKEN:-}" "$release_json" "$AGENTBRIDGE_ASSET_FALLBACK" "$tmp_binary" || return 1
   fi
 
-  chmod +x "$tmp_manage" "$tmp_binary"
-  mv -f "$tmp_manage" /home/sw/manage.sh
-  mv -f "$tmp_binary" /home/sw/agent-bridge
+  if [ ! -s "$tmp_manage" ]; then
+    rm -f "$tmp_manage" "$tmp_binary"
+    add_note "empty AgentBridge manage.sh download"
+    return 1
+  fi
+
+  if ! bash -n "$tmp_manage"; then
+    rm -f "$tmp_manage" "$tmp_binary"
+    add_note "invalid AgentBridge manage.sh download"
+    return 1
+  fi
+
+  if [ ! -s "$tmp_binary" ]; then
+    rm -f "$tmp_manage" "$tmp_binary"
+    add_note "empty AgentBridge binary download"
+    return 1
+  fi
+
+  if ! chmod +x "$tmp_manage" "$tmp_binary"; then
+    rm -f "$tmp_manage" "$tmp_binary"
+    add_note "failed to chmod AgentBridge downloads"
+    return 1
+  fi
+
+  if ! mv -f "$tmp_manage" /home/sw/manage.sh; then
+    rm -f "$tmp_manage" "$tmp_binary"
+    add_note "failed to replace AgentBridge manage.sh"
+    return 1
+  fi
+
+  if ! mv -f "$tmp_binary" /home/sw/agent-bridge; then
+    rm -f "$tmp_binary"
+    add_note "failed to replace AgentBridge binary"
+    return 1
+  fi
   rm -rf /home/sw/antigravity-Bridge
   rm -f /home/sw/antigravity-bridge /home/sw/.antigravity-release-tag
   record_bridge_version "$RESULT_BRIDGE_RELEASE_TAG"
@@ -856,19 +976,49 @@ update_bridge() {
     return
   fi
 
+  if ! ensure_bridge_disk_space; then
+    return
+  fi
+
   if [ -x /home/sw/manage.sh ]; then
     /home/sw/manage.sh stop || true
   fi
   kill_named_processes "bridge"
 
-  rm -f /home/sw/manage.sh
-  if ! download_repo_file "$AGENTBRIDGE_REPO" "${AGENTBRIDGE_GITHUB_TOKEN:-}" "manage.sh" /home/sw/manage.sh; then
+  if ! download_repo_file "$AGENTBRIDGE_REPO" "${AGENTBRIDGE_GITHUB_TOKEN:-}" "manage.sh" /home/sw/manage.sh.tmp; then
     RESULT_BRIDGE_STATUS="bridge_failed"
     RESULT_WORKFLOW_STATUS="bridge_failed"
     add_note "failed to download AgentBridge manage.sh"
     return
   fi
-  chmod +x /home/sw/manage.sh
+  if [ ! -s /home/sw/manage.sh.tmp ]; then
+    RESULT_BRIDGE_STATUS="bridge_failed"
+    RESULT_WORKFLOW_STATUS="bridge_failed"
+    add_note "empty AgentBridge manage.sh download"
+    rm -f /home/sw/manage.sh.tmp
+    return
+  fi
+  if ! bash -n /home/sw/manage.sh.tmp; then
+    RESULT_BRIDGE_STATUS="bridge_failed"
+    RESULT_WORKFLOW_STATUS="bridge_failed"
+    add_note "invalid AgentBridge manage.sh download"
+    rm -f /home/sw/manage.sh.tmp
+    return
+  fi
+  if ! chmod +x /home/sw/manage.sh.tmp; then
+    RESULT_BRIDGE_STATUS="bridge_failed"
+    RESULT_WORKFLOW_STATUS="bridge_failed"
+    add_note "failed to chmod AgentBridge manage.sh"
+    rm -f /home/sw/manage.sh.tmp
+    return
+  fi
+  if ! mv -f /home/sw/manage.sh.tmp /home/sw/manage.sh; then
+    RESULT_BRIDGE_STATUS="bridge_failed"
+    RESULT_WORKFLOW_STATUS="bridge_failed"
+    add_note "failed to replace AgentBridge manage.sh"
+    rm -f /home/sw/manage.sh.tmp
+    return
+  fi
 
   rm -rf /home/sw/antigravity-Bridge
   rm -f /home/sw/antigravity-bridge /home/sw/.antigravity-release-tag
