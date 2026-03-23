@@ -61,7 +61,7 @@ jobs:
           fi
           
           # 2. 排除指定的主机
-          BLACKLIST=("AWS" "US-GCP俄勒冈" "US-bestvm-232-amd" "US-bestvm-235-amd")
+          BLACKLIST=("AWS" "US-GCP俄勒冈" "US-GCP俄勒冈2" "US-bestvm-232-amd" "US-bestvm-235-amd")
           for excluded in "${BLACKLIST[@]}"; do
             if [ "$HOST_NAME" = "$excluded" ]; then
                echo "skip=true" >> $GITHUB_OUTPUT

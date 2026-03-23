@@ -57,6 +57,7 @@ jobs:
 
           excluded = {
               "US-GCP俄勒冈",
+              "US-GCP俄勒冈2",
               "AWS",
               "US-bestvm-232-amd",
               "US-bestvm-235-amd",

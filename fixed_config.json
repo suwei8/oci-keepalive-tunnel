@@ -121,9 +121,16 @@
     {
         "name": "US-GCP俄勒冈",
         "cpu_type": "amd64",
-        "ssh_host": "gcp-ssh.555606.xyz",
-        "proxy_domains": "py-gcp.hhwpxh.com",
-        "vless_host": "cf-gcp.555606.xyz"
+        "ssh_host": "gssh.555606.xyz",
+        "proxy_domains": "",
+        "vless_host": "cf-g.555606.xyz"
+    },
+    {
+        "name": "US-GCP俄勒冈2",
+        "cpu_type": "amd64",
+        "ssh_host": "g2-ssh.555606.xyz",
+        "proxy_domains": "",
+        "vless_host": "cf-g.555606.xyz"
     },
     {
         "name": "ID-巴淡岛1",
