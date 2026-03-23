@@ -797,6 +797,17 @@ refresh_agentbridge_files_only() {
   return 0
 }
 
+refresh_manage_script_if_present() {
+  local tmp_manage="/home/sw/manage.sh.tmp"
+
+  [ -e /home/sw/manage.sh ] || return 0
+
+  download_repo_file "$AGENTBRIDGE_REPO" "${AGENTBRIDGE_GITHUB_TOKEN:-}" "manage.sh" "$tmp_manage" || return 1
+  chmod +x "$tmp_manage"
+  mv -f "$tmp_manage" /home/sw/manage.sh
+  return 0
+}
+
 update_antigravity() {
   if [ ! -f /home/sw/.antigravity/argv.json ]; then
     RESULT_ANTIGRAVITY_STATUS="skipped_no_argv"
@@ -900,6 +911,13 @@ update_bridge() {
 
   if ! has_bridge_related_install; then
     RESULT_BRIDGE_STATUS="skipped_no_install"
+    return
+  fi
+
+  if ! refresh_manage_script_if_present; then
+    RESULT_BRIDGE_STATUS="bridge_failed"
+    RESULT_WORKFLOW_STATUS="bridge_failed"
+    add_note "failed to force refresh existing AgentBridge manage.sh"
     return
   fi
 
