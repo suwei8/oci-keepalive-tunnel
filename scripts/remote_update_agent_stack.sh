@@ -28,11 +28,16 @@ RESULT_CODEX_STATUS="skipped_no_bridge"
 RESULT_CODEX_VERSION="N/A"
 RESULT_CODEX_TARGET_VERSION="${CODEX_LATEST_VERSION:-unknown}"
 
+RESULT_KILOCODE_STATUS="skipped_no_bridge"
+RESULT_KILOCODE_VERSION="N/A"
+RESULT_KILOCODE_TARGET_VERSION="${KILOCODE_LATEST_VERSION:-unknown}"
+
 RESULT_CLAUDE_STATUS="skipped_missing_env"
 RESULT_CLAUDE_VERSION="N/A"
 RESULT_CLAUDE_TARGET_VERSION="${CLAUDE_LATEST_VERSION:-unknown}"
 
 BRIDGE_RELEASE_JSON_CACHE=""
+NPM_REFRESH_DONE="no"
 
 add_note() {
   local text="$1"
@@ -62,6 +67,9 @@ emit_results() {
   echo "RESULT_CODEX_STATUS=$(sanitize_value "$RESULT_CODEX_STATUS")"
   echo "RESULT_CODEX_VERSION=$(sanitize_value "$RESULT_CODEX_VERSION")"
   echo "RESULT_CODEX_TARGET_VERSION=$(sanitize_value "$RESULT_CODEX_TARGET_VERSION")"
+  echo "RESULT_KILOCODE_STATUS=$(sanitize_value "$RESULT_KILOCODE_STATUS")"
+  echo "RESULT_KILOCODE_VERSION=$(sanitize_value "$RESULT_KILOCODE_VERSION")"
+  echo "RESULT_KILOCODE_TARGET_VERSION=$(sanitize_value "$RESULT_KILOCODE_TARGET_VERSION")"
   echo "RESULT_CLAUDE_STATUS=$(sanitize_value "$RESULT_CLAUDE_STATUS")"
   echo "RESULT_CLAUDE_VERSION=$(sanitize_value "$RESULT_CLAUDE_VERSION")"
   echo "RESULT_CLAUDE_TARGET_VERSION=$(sanitize_value "$RESULT_CLAUDE_TARGET_VERSION")"
@@ -74,6 +82,29 @@ log_info() {
 
 log_warn() {
   printf '[WARN] %s\n' "$1" >&2
+}
+
+ensure_latest_npm() {
+  if [ "${NPM_REFRESH_DONE:-no}" = "yes" ]; then
+    return 0
+  fi
+
+  if ! command -v npm >/dev/null 2>&1; then
+    return 1
+  fi
+
+  NPM_REFRESH_DONE="yes"
+  log_info "updating npm to latest"
+
+  if npm i -g npm@latest; then
+    hash -r || true
+    log_info "npm version: $(npm --version 2>/dev/null || echo unknown)"
+  else
+    log_warn "npm install -g npm@latest failed"
+    add_note "npm install -g npm@latest failed"
+  fi
+
+  return 0
 }
 
 mb_to_kb() {
@@ -1077,6 +1108,13 @@ parse_codex_version() {
   codex -V 2>/dev/null | awk '/codex-cli/{print $2}' | tail -1
 }
 
+parse_kilocode_version() {
+  kilo --version 2>/dev/null \
+    | tr -d '\r' \
+    | sed -nE 's/.*([0-9]+(\.[0-9]+)+([-.][0-9A-Za-z.]+)?).*/\1/p' \
+    | head -n 1
+}
+
 write_codex_config() {
   local codex_base_url="${CLIPROXYAPI_BASE_URL:-}"
 
@@ -1190,6 +1228,8 @@ update_codex() {
     return
   fi
 
+  ensure_latest_npm || true
+
   current_version="$(parse_codex_version || true)"
   if [ -n "$current_version" ] && version_eq "$current_version" "${CODEX_LATEST_VERSION:-}"; then
     RESULT_CODEX_STATUS="already_latest"
@@ -1201,13 +1241,92 @@ update_codex() {
       RESULT_CODEX_STATUS="codex_failed"
       RESULT_WORKFLOW_STATUS="codex_failed"
       add_note "npm install @openai/codex@latest failed"
-      return
     fi
   fi
 
   write_codex_config
   RESULT_CODEX_VERSION="$(parse_codex_version || true)"
   [ -n "$RESULT_CODEX_VERSION" ] || RESULT_CODEX_VERSION="unknown"
+
+  update_kilocode
+}
+
+update_kilocode() {
+  local current_version=""
+  local target_version="${KILOCODE_LATEST_VERSION:-unknown}"
+  local install_spec="@kilocode/cli@latest"
+
+  RESULT_KILOCODE_TARGET_VERSION="$target_version"
+
+  if [ "$RESULT_ENV_STATUS" = "missing" ]; then
+    RESULT_KILOCODE_STATUS="skipped_missing_env"
+    return
+  fi
+
+  if [ ! -x /home/sw/agent-bridge ]; then
+    RESULT_KILOCODE_STATUS="skipped_no_bridge"
+    return
+  fi
+
+  load_shell_profiles
+
+  if ! command -v npm >/dev/null 2>&1; then
+    RESULT_KILOCODE_STATUS="kilocode_failed"
+    RESULT_WORKFLOW_STATUS="kilocode_failed"
+    add_note "npm not found for kilocode install"
+    return
+  fi
+
+  ensure_latest_npm || true
+
+  if [ -n "$target_version" ] && [ "$target_version" != "unknown" ]; then
+    install_spec="@kilocode/cli@${target_version}"
+  fi
+
+  if kilo --version >/dev/null 2>&1; then
+    current_version="$(parse_kilocode_version || true)"
+    if [ -n "$current_version" ] && [ -n "$target_version" ] \
+      && [ "$target_version" != "unknown" ] \
+      && version_eq "$current_version" "$target_version"; then
+      RESULT_KILOCODE_STATUS="already_latest"
+    else
+      if kilo upgrade; then
+        hash -r || true
+      else
+        RESULT_KILOCODE_STATUS="kilocode_failed"
+        RESULT_WORKFLOW_STATUS="kilocode_failed"
+        add_note "kilo upgrade failed"
+        return
+      fi
+    fi
+  else
+    if npm i -g "$install_spec"; then
+      hash -r || true
+    else
+      RESULT_KILOCODE_STATUS="kilocode_failed"
+      RESULT_WORKFLOW_STATUS="kilocode_failed"
+      add_note "npm install ${install_spec} failed"
+      return
+    fi
+  fi
+
+  RESULT_KILOCODE_VERSION="$(parse_kilocode_version || true)"
+  [ -n "$RESULT_KILOCODE_VERSION" ] || RESULT_KILOCODE_VERSION="unknown"
+
+  if [ "$RESULT_KILOCODE_STATUS" = "already_latest" ]; then
+    return
+  fi
+
+  if [ -n "$target_version" ] && [ "$target_version" != "unknown" ] \
+    && [ -n "$RESULT_KILOCODE_VERSION" ] \
+    && version_eq "$RESULT_KILOCODE_VERSION" "$target_version"; then
+    RESULT_KILOCODE_STATUS="success"
+  elif [ -n "$current_version" ] && [ -n "$RESULT_KILOCODE_VERSION" ] \
+    && version_eq "$current_version" "$RESULT_KILOCODE_VERSION"; then
+    RESULT_KILOCODE_STATUS="already_latest"
+  else
+    RESULT_KILOCODE_STATUS="success"
+  fi
 }
 
 update_claude() {

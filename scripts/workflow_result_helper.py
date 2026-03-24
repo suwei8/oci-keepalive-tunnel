@@ -54,6 +54,7 @@ def cmd_enforce_fatal(argv):
         "antigravity_failed",
         "antigravity_cli_failed",
         "codex_failed",
+        "kilocode_failed",
         "claude_failed",
     }
     if result.get("workflow_status", "unknown") in fatal_statuses:
@@ -92,6 +93,8 @@ def cmd_build_summary(argv):
             parts.append("Bridge")
         if item.get("codex_status") == "success":
             parts.append("Codex")
+        if item.get("kilocode_status") == "success":
+            parts.append("KiloCode")
         if item.get("claude_status") == "success":
             parts.append("Claude")
         return "、".join(parts) if parts else "已更新"
@@ -103,6 +106,7 @@ def cmd_build_summary(argv):
                 item.get("antigravity_cli_status") == "success",
                 item.get("bridge_status") in {"deployed_started", "files_refreshed_no_env"},
                 item.get("codex_status") == "success",
+                item.get("kilocode_status") == "success",
                 item.get("claude_status") == "success",
             )
         )
@@ -111,6 +115,8 @@ def cmd_build_summary(argv):
         env_status = item.get("env_status", "unknown")
         bridge_status = item.get("bridge_status", "unknown")
         codex_status = item.get("codex_status", "unknown")
+        kilocode_status = item.get("kilocode_status", "unknown")
+        kilocode_target_version = item.get("kilocode_target_version", "unknown")
         antigravity_cli_status = item.get("antigravity_cli_status", "unknown")
 
         if env_status in {"missing", "missing_token"}:
@@ -123,6 +129,10 @@ def cmd_build_summary(argv):
             return "Bridge已是最新"
         if codex_status == "already_latest":
             return "Codex已是最新"
+        if kilocode_status == "already_latest":
+            if kilocode_target_version not in {"", "unknown"}:
+                return f"KiloCode已是最新({kilocode_target_version})"
+            return "KiloCode已是最新"
         if item.get("claude_status") == "already_latest":
             return "Claude已是最新"
         if antigravity_cli_status == "already_latest":
@@ -131,6 +141,8 @@ def cmd_build_summary(argv):
             return bridge_status
         if codex_status.startswith("skipped_"):
             return codex_status
+        if kilocode_status.startswith("skipped_"):
+            return kilocode_status
         if str(item.get("claude_status", "")).startswith("skipped_"):
             return item.get("claude_status")
         return "无变更"
@@ -146,6 +158,7 @@ def cmd_build_summary(argv):
             "antigravity_failed": "Antigravity失败",
             "antigravity_cli_failed": "CLI失败",
             "codex_failed": "Codex失败",
+            "kilocode_failed": "KiloCode失败",
             "claude_failed": "Claude失败",
         }
         reason = labels.get(workflow_status, workflow_status)

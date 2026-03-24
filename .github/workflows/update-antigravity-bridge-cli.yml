@@ -1,4 +1,4 @@
-name: Update Antigravity, AgentBridge, Codex & Claude (ARM64)
+name: Update Antigravity, AgentBridge, Codex, KiloCode & Claude (ARM64)
 
 on:
   schedule:
@@ -27,6 +27,7 @@ jobs:
       host_count: ${{ steps.prepare.outputs.host_count }}
       antigravity_cli_tag: ${{ steps.prepare.outputs.antigravity_cli_tag }}
       codex_latest_version: ${{ steps.prepare.outputs.codex_latest_version }}
+      kilocode_latest_version: ${{ steps.prepare.outputs.kilocode_latest_version }}
       claude_latest_version: ${{ steps.prepare.outputs.claude_latest_version }}
     steps:
       - name: Build host matrix and resolve latest versions
@@ -106,6 +107,13 @@ jobs:
             https://api.github.com/repos/openai/codex/releases/latest \
             | python3 -c 'import json,sys,re; tag=json.load(sys.stdin)["tag_name"]; print(re.sub(r"^[A-Za-z-]*v", "", tag))')"
 
+          KILOCODE_LATEST_VERSION="$(curl -fsSL \
+            -H "Authorization: Bearer ${BLOG_GITHUB_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            https://api.github.com/repos/Kilo-Org/kilocode/releases/latest \
+            | python3 -c 'import json,sys,re; tag=json.load(sys.stdin)["tag_name"]; print(re.sub(r"^[A-Za-z-]*v", "", tag))')"
+
           CLAUDE_LATEST_VERSION="$(curl -fsSL \
             https://raw.githubusercontent.com/anthropics/claude-code/main/CHANGELOG.md \
             | python3 -c 'import re,sys; text=sys.stdin.read(); match=re.search(r"^##\s+([0-9]+(?:\.[0-9]+)*)\s*$", text, re.M); print(match.group(1) if match else "unknown")')"
@@ -114,11 +122,13 @@ jobs:
           echo "host_count=${HOST_COUNT}" >> "$GITHUB_OUTPUT"
           echo "antigravity_cli_tag=${ANTIGRAVITY_CLI_TAG}" >> "$GITHUB_OUTPUT"
           echo "codex_latest_version=${CODEX_LATEST_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "kilocode_latest_version=${KILOCODE_LATEST_VERSION}" >> "$GITHUB_OUTPUT"
           echo "claude_latest_version=${CLAUDE_LATEST_VERSION}" >> "$GITHUB_OUTPUT"
 
           echo "Prepared ${HOST_COUNT} arm64 host(s)"
           echo "Latest antigravity-cli tag: ${ANTIGRAVITY_CLI_TAG}"
           echo "Latest codex version: ${CODEX_LATEST_VERSION}"
+          echo "Latest kilocode version: ${KILOCODE_LATEST_VERSION}"
           echo "Latest claude version: ${CLAUDE_LATEST_VERSION}"
 
   update:
@@ -172,6 +182,7 @@ jobs:
           CLIPROXYAPI_BASE_URL: ${{ secrets.CLIPROXYAPI_BASE_URL }}
           ANTIGRAVITY_CLI_LATEST_TAG: ${{ needs.prepare.outputs.antigravity_cli_tag }}
           CODEX_LATEST_VERSION: ${{ needs.prepare.outputs.codex_latest_version }}
+          KILOCODE_LATEST_VERSION: ${{ needs.prepare.outputs.kilocode_latest_version }}
           CLAUDE_LATEST_VERSION: ${{ needs.prepare.outputs.claude_latest_version }}
         run: |
           set -Eeuo pipefail
@@ -219,6 +230,7 @@ jobs:
              export CLIPROXYAPI_BASE_URL='${CLIPROXYAPI_BASE_URL}'
              export ANTIGRAVITY_CLI_LATEST_TAG='${ANTIGRAVITY_CLI_LATEST_TAG}'
              export CODEX_LATEST_VERSION='${CODEX_LATEST_VERSION}'
+             export KILOCODE_LATEST_VERSION='${KILOCODE_LATEST_VERSION}'
              export CLAUDE_LATEST_VERSION='${CLAUDE_LATEST_VERSION}'
              bash -s" \
             < scripts/remote_update_agent_stack.sh >"$REMOTE_OUTPUT_FILE" 2>&1
