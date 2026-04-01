@@ -25,6 +25,48 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 _default_keywords = "arm7,arm5,uhavenobotsxd,.monitor"  # 最小默认值
 MINER_KEYWORDS = os.environ.get("SECURITY_KEYWORDS", _default_keywords).split(",")
 
+# /tmp 文件名检测使用更收敛的关键词，避免误把正常依赖缓存命中为异常文件
+_default_tmp_file_keywords = "arm7,arm5,uhavenobotsxd,.monitor,xmrig,kinsing,kdevtmpfsi,watchdogs,sysupdate"
+TMP_FILE_KEYWORDS = [
+    item.strip().lower() for item in os.environ.get(
+        "SECURITY_TMP_FILE_KEYWORDS",
+        _default_tmp_file_keywords,
+    ).split(",")
+    if item.strip()
+]
+
+SAFE_TMP_FILE_SUFFIXES = (
+    ".js",
+    ".json",
+    ".map",
+    ".txt",
+    ".md",
+    ".rst",
+    ".log",
+    ".lock",
+    ".deb",
+    ".rpm",
+    ".apk",
+    ".dylib",
+    ".dll",
+    ".so",
+    ".so.0",
+    ".so.1",
+    ".a",
+    ".o",
+    ".gz",
+    ".xz",
+    ".zip",
+    ".tar",
+    ".tgz",
+    ".xml",
+    ".yml",
+    ".yaml",
+    ".toml",
+    ".ini",
+    ".cfg",
+)
+
 SYSTEMD_SERVICE_ALLOWLIST = [
     item.strip() for item in os.environ.get(
         "SECURITY_SYSTEMD_SERVICE_ALLOWLIST",
@@ -244,8 +286,17 @@ class SecurityChecker:
     def check_suspicious_tmp_files(self):
         """检查 /tmp 中的可疑文件"""
         print("\n[安全] 检查 /tmp 可疑文件...")
-        # 白名单目录 - AppImage 挂载点等正常目录
-        whitelist_dirs = ['.mount_', '_MEI', 'pyrefly', 'Antigravity-Manager', '/tmp/ag/unpack/Antigravity']  # AppImage 运行时挂载点, PyInstaller 临时目录, Pyrefly 类型存根, 用户开源项目, Antigravity 解包目录
+        # 白名单目录 - 已确认会在 /tmp 下展开正常依赖或缓存的工具链目录
+        whitelist_dirs = [
+            '.mount_',
+            '_MEI',
+            'pyrefly',
+            'Antigravity-Manager',
+            '/tmp/ag/unpack/Antigravity',
+            '/tmp/pw-run',
+            '/tmp/adb-bullseye',
+            '/tmp/codex-chrome-headless',
+        ]  # AppImage 挂载点, PyInstaller 临时目录, Pyrefly 类型存根, 正常项目解包目录, Playwright/npm 临时目录, adb Debian 解包目录, Chromium 临时 profile
         
         try:
             suspicious_files = []
@@ -257,9 +308,13 @@ class SecurityChecker:
                 
                 for f in files:
                     filepath = os.path.join(root, f)
-                    # 检查隐藏的可执行文件或可疑名称
-                    if (f.startswith('.') and os.access(filepath, os.X_OK)) or \
-                       any(keyword in f.lower() for keyword in MINER_KEYWORDS):
+                    lower_name = f.lower()
+                    is_hidden_executable = lower_name.startswith('.') and os.access(filepath, os.X_OK)
+                    has_suspicious_keyword = any(keyword in lower_name for keyword in TMP_FILE_KEYWORDS)
+                    is_safe_dependency_artifact = lower_name.endswith(SAFE_TMP_FILE_SUFFIXES)
+
+                    # 隐藏可执行文件始终告警；关键词命中则排除常见依赖/缓存制品
+                    if is_hidden_executable or (has_suspicious_keyword and not is_safe_dependency_artifact):
                         suspicious_files.append(filepath)
                 # 不深入遍历系统目录
                 dirs[:] = [d for d in dirs if not d.startswith('systemd-')]
