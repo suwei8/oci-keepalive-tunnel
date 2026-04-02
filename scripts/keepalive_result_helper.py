@@ -10,6 +10,10 @@ def read_json(path_str):
     return json.loads(Path(path_str).read_text())
 
 
+def read_text_lossy(path_str):
+    return Path(path_str).read_text(encoding="utf-8", errors="replace")
+
+
 def write_json(path_str, payload):
     path = Path(path_str)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -37,7 +41,7 @@ def cmd_merge_remote_log(argv):
         "workflow_status": "success" if remote_rc == "0" else "remote_failed",
         "notes": "",
     }
-    for line in Path(remote_log).read_text().splitlines():
+    for line in read_text_lossy(remote_log).splitlines():
         if not line.startswith("RESULT_") or "=" not in line:
             continue
         key, value = line.split("=", 1)
