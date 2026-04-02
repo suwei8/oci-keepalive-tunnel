@@ -162,12 +162,19 @@ jobs:
             "$RESULT_FILE" "$HOST_NAME" "$HOST_INDEX" "running" ""
 
           TUNNEL_PID=""
+          mark_running_failure() {
+            local line_no="${1:-unknown}"
+            python3 scripts/keepalive_result_helper.py replace-result-if-status \
+              "$RESULT_FILE" "running" "workflow_failed" "workflow shell failed before result finalization (line ${line_no})"
+          }
+
           cleanup() {
             if [ -n "${TUNNEL_PID:-}" ]; then
               kill "$TUNNEL_PID" 2>/dev/null || true
             fi
           }
           trap cleanup EXIT
+          trap 'mark_running_failure $LINENO' ERR
 
           SSH_OPTS="-o ConnectTimeout=30 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ServerAliveInterval=60 -o PreferredAuthentications=password -o PubkeyAuthentication=no"
 

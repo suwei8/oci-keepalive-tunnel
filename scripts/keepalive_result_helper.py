@@ -33,6 +33,16 @@ def cmd_write_result(argv):
     )
 
 
+def cmd_replace_result_if_status(argv):
+    path, expected_status, workflow_status, notes = argv
+    data = read_json(path)
+    if data.get("workflow_status") != expected_status:
+        return
+    data["workflow_status"] = workflow_status
+    data["notes"] = notes
+    write_json(path, data)
+
+
 def cmd_merge_remote_log(argv):
     remote_log, result_file, host, index, remote_rc = argv
     data = {
@@ -127,6 +137,7 @@ def cmd_enforce_fatal(argv):
     fatal_statuses = {
         "remote_failed",
         "tunnel_failed",
+        "workflow_failed",
         "repo_sync_failed",
         "keepalive_failed",
         "security_blocked",
@@ -300,6 +311,8 @@ def main():
 
     if command == "write-result":
         cmd_write_result(argv)
+    elif command == "replace-result-if-status":
+        cmd_replace_result_if_status(argv)
     elif command == "merge-remote-log":
         cmd_merge_remote_log(argv)
     elif command == "update-runner-fields":
