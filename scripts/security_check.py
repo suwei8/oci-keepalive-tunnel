@@ -20,20 +20,30 @@ from typing import List, Tuple, Dict, Sequence
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 
+
+def load_csv_env(name: str, default: str, lowercase: bool = False) -> List[str]:
+    """读取逗号分隔环境变量；空字符串视为未设置，回退到默认值。"""
+    raw_value = os.environ.get(name)
+    if raw_value is None or not raw_value.strip():
+        raw_value = default
+
+    items = [item.strip() for item in raw_value.split(",") if item.strip()]
+    if lowercase:
+        items = [item.lower() for item in items]
+    return items
+
 # 挖矿进程关键词 (从环境变量读取，避免在代码中暴露敏感关键词)
 # 格式: 逗号分隔的关键词列表
 _default_keywords = "arm7,arm5,uhavenobotsxd,.monitor"  # 最小默认值
-MINER_KEYWORDS = os.environ.get("SECURITY_KEYWORDS", _default_keywords).split(",")
+MINER_KEYWORDS = load_csv_env("SECURITY_KEYWORDS", _default_keywords, lowercase=True)
 
 # /tmp 文件名检测使用更收敛的关键词，避免误把正常依赖缓存命中为异常文件
 _default_tmp_file_keywords = "arm7,arm5,uhavenobotsxd,.monitor,xmrig,kinsing,kdevtmpfsi,watchdogs,sysupdate"
-TMP_FILE_KEYWORDS = [
-    item.strip().lower() for item in os.environ.get(
-        "SECURITY_TMP_FILE_KEYWORDS",
-        _default_tmp_file_keywords,
-    ).split(",")
-    if item.strip()
-]
+TMP_FILE_KEYWORDS = load_csv_env(
+    "SECURITY_TMP_FILE_KEYWORDS",
+    _default_tmp_file_keywords,
+    lowercase=True,
+)
 
 SAFE_TMP_FILE_SUFFIXES = (
     ".js",
@@ -67,23 +77,18 @@ SAFE_TMP_FILE_SUFFIXES = (
     ".cfg",
 )
 
-SYSTEMD_SERVICE_ALLOWLIST = [
-    item.strip() for item in os.environ.get(
-        "SECURITY_SYSTEMD_SERVICE_ALLOWLIST",
-        "actions.runner.*",
-    ).split(",")
-    if item.strip()
-]
+SYSTEMD_SERVICE_ALLOWLIST = load_csv_env(
+    "SECURITY_SYSTEMD_SERVICE_ALLOWLIST",
+    "actions.runner.*",
+)
 SYSTEMD_SERVICE_ALLOWLIST_LOWER = [item.lower() for item in SYSTEMD_SERVICE_ALLOWLIST]
 
-SYSTEMD_EXEC_ALLOWLIST = [
-    item.strip().lower() for item in os.environ.get(
-        "SECURITY_SYSTEMD_EXEC_ALLOWLIST",
-        "/home/*/.nvm/*,/home/*/.local/bin/*,/home/*/.cargo/bin/*,"
-        "/home/*/.pyenv/*,/home/*/.rbenv/*,/home/*/.asdf/*,/home/*/bin/*",
-    ).split(",")
-    if item.strip()
-]
+SYSTEMD_EXEC_ALLOWLIST = load_csv_env(
+    "SECURITY_SYSTEMD_EXEC_ALLOWLIST",
+    "/home/*/.nvm/*,/home/*/.local/bin/*,/home/*/.cargo/bin/*,"
+    "/home/*/.pyenv/*,/home/*/.rbenv/*,/home/*/.asdf/*,/home/*/bin/*",
+    lowercase=True,
+)
 
 # 可疑 crontab 模式
 SUSPICIOUS_CRON_PATTERNS = [
