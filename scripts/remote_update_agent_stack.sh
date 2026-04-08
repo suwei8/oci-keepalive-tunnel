@@ -462,6 +462,54 @@ repair_bridge_runtime_config() {
   repair_env_token_from_mcp_config
 }
 
+sync_gemini_md_template() {
+  local target_file="/home/sw/.gemini/GEMINI.md"
+  local output=""
+  local rc=0
+
+  [ -n "${GEMINI_MD_TEMPLATE_BASE64:-}" ] || return 0
+  [ -f /home/sw/.antigravity/argv.json ] || return 0
+
+  set +e
+  output="$(python3 - "$target_file" "${GEMINI_MD_TEMPLATE_BASE64}" <<'PY'
+import base64
+import sys
+from pathlib import Path
+
+target = Path(sys.argv[1])
+
+try:
+    expected = base64.b64decode(sys.argv[2], validate=True)
+except Exception:
+    raise SystemExit(2)
+
+current = target.read_bytes() if target.exists() else None
+if current != expected:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(expected)
+    print("updated")
+PY
+)"
+  rc=$?
+  set -e
+
+  if [ "$rc" -eq 2 ]; then
+    RESULT_MANUAL_ACTION_REQUIRED="yes"
+    add_note "invalid GEMINI.md template payload"
+    return 0
+  fi
+
+  if [ "$rc" -ne 0 ]; then
+    RESULT_MANUAL_ACTION_REQUIRED="yes"
+    add_note "failed to sync /home/sw/.gemini/GEMINI.md"
+    return 0
+  fi
+
+  if [ "$output" = "updated" ]; then
+    add_note "synced /home/sw/.gemini/GEMINI.md"
+  fi
+}
+
 get_env_status() {
   local env_file="/home/sw/.env"
   local token_line=""
@@ -1248,6 +1296,24 @@ update_codex() {
   RESULT_CODEX_VERSION="$(parse_codex_version || true)"
   [ -n "$RESULT_CODEX_VERSION" ] || RESULT_CODEX_VERSION="unknown"
 
+  if [ "$RESULT_CODEX_STATUS" = "success" ] || [ "$RESULT_CODEX_STATUS" = "already_latest" ]; then
+    if ! dpkg -s bubblewrap >/dev/null 2>&1; then
+      log_info "bubblewrap not installed, installing"
+      if ! wait_for_dpkg_lock 180; then
+        RESULT_CODEX_STATUS="codex_failed"
+        RESULT_WORKFLOW_STATUS="codex_failed"
+        add_note "dpkg lock busy during bubblewrap install"
+        return
+      fi
+      if ! sudo apt update || ! sudo apt install -y bubblewrap; then
+        RESULT_CODEX_STATUS="codex_failed"
+        RESULT_WORKFLOW_STATUS="codex_failed"
+        add_note "bubblewrap apt update/install failed"
+        return
+      fi
+    fi
+  fi
+
   update_kilocode
 }
 
@@ -1420,6 +1486,7 @@ main() {
   repair_bridge_runtime_config
   get_env_status
   update_antigravity
+  sync_gemini_md_template
   update_antigravity_cli
   update_bridge
   update_codex
