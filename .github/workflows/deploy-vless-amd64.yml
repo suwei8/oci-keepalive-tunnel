@@ -126,9 +126,9 @@ jobs:
             echo "==========================================="
             
             # 根据主机名选择 SSH 用户名
-            if echo "$HOST_NAME" | grep -qi "GCP"; then
+            if echo "$HOST_NAME" | grep -Eqi "GCP|ampere"; then
               CURRENT_SSH_USER="$GCP_SSH_USERNAME"
-              echo ">>> 使用 GCP 用户名: $CURRENT_SSH_USER"
+              echo ">>> 使用 GCP/ampere 用户名: $CURRENT_SSH_USER"
             else
               CURRENT_SSH_USER="$SSH_USERNAME"
             fi
