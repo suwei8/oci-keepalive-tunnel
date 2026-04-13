@@ -71,7 +71,8 @@ jobs:
                   continue
               if host.get("name") in excluded:
                   continue
-              if "ampere" in (host.get("name") or "").lower():
+              host_name = (host.get("name") or "").lower()
+              if "ampere" in host_name or "trustclaw" in host_name:
                   continue
               ssh_host = (host.get("ssh_host") or "").strip()
               if not ssh_host:
