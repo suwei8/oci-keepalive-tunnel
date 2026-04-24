@@ -1011,6 +1011,8 @@ update_antigravity_cli() {
 }
 
 update_bridge() {
+  local bridge_env_sync_result="unchanged"
+
   cleanup_forbidden_bridge_files
 
   if ! has_bridge_related_install; then
@@ -1080,8 +1082,17 @@ update_bridge() {
     return
   fi
 
+  bridge_env_sync_result="$(sync_agentbridge_claude_env || echo unchanged)"
+
   if has_running_bridge_process && bridge_files_present && ! has_legacy_bridge_artifacts && bridge_version_matches_latest "$RESULT_BRIDGE_RELEASE_TAG"; then
-    if ! ensure_agentbridge_effective "start_only_if_missing"; then
+    if [ "$bridge_env_sync_result" = "yes" ]; then
+      if ! ensure_agentbridge_effective "restart"; then
+        RESULT_BRIDGE_STATUS="bridge_failed"
+        RESULT_WORKFLOW_STATUS="bridge_failed"
+        add_note "failed to restart bridge after env sync"
+        return
+      fi
+    elif ! ensure_agentbridge_effective "start_only_if_missing"; then
       RESULT_BRIDGE_STATUS="bridge_failed"
       RESULT_WORKFLOW_STATUS="bridge_failed"
       add_note "failed to normalize bridge processes"
@@ -1330,6 +1341,88 @@ for raw_line in path.read_text(encoding="utf-8", errors="replace").splitlines():
     print(raw_line.split("=", 1)[1])
     raise SystemExit
 PY
+}
+
+upsert_env_file_value() {
+  local key="$1"
+  local value="$2"
+  local env_file="/home/sw/.env"
+
+  [ -f "$env_file" ] || return 0
+
+  python3 - "$env_file" "$key" "$value" <<'PY'
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+key = sys.argv[2]
+value = sys.argv[3]
+
+lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+updated = []
+found = False
+changed = False
+
+for line in lines:
+    if line.startswith(f"{key}="):
+        found = True
+        desired = f"{key}={value}"
+        if line != desired:
+            updated.append(desired)
+            changed = True
+        else:
+            updated.append(line)
+    else:
+        updated.append(line)
+
+if not found:
+    updated.append(f"{key}={value}")
+    changed = True
+
+if changed:
+    path.write_text("\n".join(updated) + "\n", encoding="utf-8")
+    print("updated")
+else:
+    print("unchanged")
+PY
+}
+
+sync_agentbridge_claude_env() {
+  local env_file="/home/sw/.env"
+  local claude_base_url=""
+  local claude_api_key=""
+  local changed="no"
+  local output=""
+
+  [ -f "$env_file" ] || return 0
+
+  claude_base_url="$(strip_api_v1_suffix "${CLIPROXYAPI_BASE_URL:-}")"
+  claude_api_key="${CLIPROXYAPI_OPENAI_API_KEY:-}"
+
+  if [ -z "$claude_base_url" ] || [ -z "$claude_api_key" ]; then
+    echo "unchanged"
+    return 0
+  fi
+
+  for key in CLAUDE_BASE_URL ANTHROPIC_BASE_URL; do
+    output="$(upsert_env_file_value "$key" "$claude_base_url")"
+    if [ "$output" = "updated" ]; then
+      changed="yes"
+    fi
+  done
+
+  for key in CLAUDE_API_KEY ANTHROPIC_API_KEY; do
+    output="$(upsert_env_file_value "$key" "$claude_api_key")"
+    if [ "$output" = "updated" ]; then
+      changed="yes"
+    fi
+  done
+
+  if [ "$changed" = "yes" ]; then
+    add_note "synced AgentBridge Claude env"
+  fi
+
+  echo "$changed"
 }
 
 parse_windsurf_version() {
