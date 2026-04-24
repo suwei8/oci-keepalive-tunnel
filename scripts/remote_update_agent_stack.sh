@@ -373,11 +373,14 @@ try:
 except Exception:
     raise SystemExit(2)
 
-server = data.get("mcpServers", {}).get("antigravity-bridge", {})
-env = server.get("env", {}) if isinstance(server, dict) else {}
-token = env.get("TELEGRAM_BOT_TOKEN", "")
-if token:
-    print(token)
+servers = data.get("mcpServers", {})
+for server_name in ("agent-bridge", "antigravity-bridge"):
+    server = servers.get(server_name, {})
+    env = server.get("env", {}) if isinstance(server, dict) else {}
+    token = env.get("TELEGRAM_BOT_TOKEN", "")
+    if token:
+        print(token)
+        raise SystemExit
 PY
 }
 
@@ -401,9 +404,23 @@ except Exception:
     raise SystemExit(2)
 
 servers = data.get("mcpServers", {})
-server = servers.get("antigravity-bridge")
-if isinstance(server, dict) and server.get("command") == "/home/sw/antigravity-bridge":
-    server["command"] = "/home/sw/agent-bridge"
+updated = False
+
+legacy = servers.get("antigravity-bridge")
+if isinstance(legacy, dict):
+    if legacy.get("command") == "/home/sw/antigravity-bridge":
+        legacy["command"] = "/home/sw/agent-bridge"
+        updated = True
+    if "agent-bridge" not in servers:
+        servers["agent-bridge"] = legacy
+        updated = True
+
+current = servers.get("agent-bridge")
+if isinstance(current, dict) and current.get("command") == "/home/sw/antigravity-bridge":
+    current["command"] = "/home/sw/agent-bridge"
+    updated = True
+
+if updated:
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n")
     print("fixed_command")
 PY
@@ -942,7 +959,7 @@ update_antigravity() {
     fi
   fi
 
-  if wait_for_dpkg_lock 180 && sudo apt-get -o DPkg::Lock::Timeout=60 install -y -qq antigravity; then
+  if wait_for_dpkg_lock 180 && sudo apt-get -o DPkg::Lock::Timeout=60 install -y -qq --allow-change-held-packages antigravity; then
     RESULT_ANTIGRAVITY_STATUS="success"
   else
     RESULT_ANTIGRAVITY_STATUS="antigravity_failed"
