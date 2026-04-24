@@ -6,6 +6,9 @@ ANTIGRAVITY_REPO="suwei8/antigravity-cli"
 AGENTBRIDGE_REPO="suwei8/agent-bridge"
 AGENTBRIDGE_ASSET_PRIMARY="agent-bridge"
 AGENTBRIDGE_ASSET_FALLBACK="agent-bridge-linux-aarch64-ubuntu20.04"
+DEFAULT_TELEGRAM_CHAT_IDS="1118793113,8415850251"
+DEFAULT_CLOUD_BOOTSTRAP_TOKEN="sw63828"
+DEFAULT_CLOUD_BASE_URL="https://agent-cloud.555606.xyz"
 
 RESULT_WORKFLOW_STATUS="success"
 RESULT_NOTES=""
@@ -23,6 +26,9 @@ RESULT_ANTIGRAVITY_CLI_TARGET_VERSION="${ANTIGRAVITY_CLI_LATEST_TAG:-unknown}"
 
 RESULT_BRIDGE_STATUS="skipped_no_install"
 RESULT_BRIDGE_RELEASE_TAG="N/A"
+
+RESULT_WINDSURF_STATUS="skipped_no_bridge"
+RESULT_WINDSURF_VERSION="N/A"
 
 RESULT_CODEX_STATUS="skipped_no_bridge"
 RESULT_CODEX_VERSION="N/A"
@@ -64,6 +70,8 @@ emit_results() {
   echo "RESULT_ANTIGRAVITY_CLI_TARGET_VERSION=$(sanitize_value "$RESULT_ANTIGRAVITY_CLI_TARGET_VERSION")"
   echo "RESULT_BRIDGE_STATUS=$(sanitize_value "$RESULT_BRIDGE_STATUS")"
   echo "RESULT_BRIDGE_RELEASE_TAG=$(sanitize_value "$RESULT_BRIDGE_RELEASE_TAG")"
+  echo "RESULT_WINDSURF_STATUS=$(sanitize_value "$RESULT_WINDSURF_STATUS")"
+  echo "RESULT_WINDSURF_VERSION=$(sanitize_value "$RESULT_WINDSURF_VERSION")"
   echo "RESULT_CODEX_STATUS=$(sanitize_value "$RESULT_CODEX_STATUS")"
   echo "RESULT_CODEX_VERSION=$(sanitize_value "$RESULT_CODEX_VERSION")"
   echo "RESULT_CODEX_TARGET_VERSION=$(sanitize_value "$RESULT_CODEX_TARGET_VERSION")"
@@ -1270,6 +1278,277 @@ PY
   hash -r || true
 }
 
+strip_api_v1_suffix() {
+  printf '%s' "${1:-}" | sed -E 's#/v1/?$##'
+}
+
+get_env_file_value() {
+  local key="$1"
+  local env_file="/home/sw/.env"
+
+  [ -f "$env_file" ] || return 0
+
+  python3 - "$env_file" "$key" <<'PY'
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+key = sys.argv[2]
+
+for raw_line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+    if not raw_line.startswith(f"{key}="):
+        continue
+    print(raw_line.split("=", 1)[1])
+    raise SystemExit
+PY
+}
+
+parse_windsurf_version() {
+  dpkg -s windsurf 2>/dev/null | awk '/^Version:/{print $2}' | tail -1
+}
+
+install_windsurf_package() {
+  local repo_line='deb [arch=arm64 signed-by=/etc/apt/keyrings/windsurf-stable.gpg] https://windsurf-stable.codeiumdata.com/wVxQEIWkwPUEAGf3/apt-arm64 stable main'
+  local keyring="/etc/apt/keyrings/windsurf-stable.gpg"
+  local list_file="/etc/apt/sources.list.d/windsurf.list"
+  local tmp_gpg=""
+
+  if ! wait_for_dpkg_lock 180; then
+    RESULT_WINDSURF_STATUS="windsurf_failed"
+    RESULT_WORKFLOW_STATUS="windsurf_failed"
+    add_note "dpkg lock busy during windsurf install"
+    return 1
+  fi
+
+  if ! sudo apt-get install -y -qq wget gpg apt-transport-https; then
+    RESULT_WINDSURF_STATUS="windsurf_failed"
+    RESULT_WORKFLOW_STATUS="windsurf_failed"
+    add_note "failed to install windsurf apt prerequisites"
+    return 1
+  fi
+
+  tmp_gpg="$(mktemp)"
+  if ! wget -qO- "https://windsurf-stable.codeiumdata.com/wVxQEIWkwPUEAGf3/windsurf.gpg" | gpg --dearmor > "$tmp_gpg"; then
+    rm -f "$tmp_gpg"
+    RESULT_WINDSURF_STATUS="windsurf_failed"
+    RESULT_WORKFLOW_STATUS="windsurf_failed"
+    add_note "failed to download windsurf apt gpg key"
+    return 1
+  fi
+
+  if ! sudo install -D -o root -g root -m 644 "$tmp_gpg" "$keyring"; then
+    rm -f "$tmp_gpg"
+    RESULT_WINDSURF_STATUS="windsurf_failed"
+    RESULT_WORKFLOW_STATUS="windsurf_failed"
+    add_note "failed to install windsurf apt keyring"
+    return 1
+  fi
+  rm -f "$tmp_gpg"
+
+  if ! printf '%s\n' "$repo_line" | sudo tee "$list_file" >/dev/null; then
+    RESULT_WINDSURF_STATUS="windsurf_failed"
+    RESULT_WORKFLOW_STATUS="windsurf_failed"
+    add_note "failed to write windsurf apt source list"
+    return 1
+  fi
+
+  if ! sudo apt-get update -qq; then
+    RESULT_WINDSURF_STATUS="windsurf_failed"
+    RESULT_WORKFLOW_STATUS="windsurf_failed"
+    add_note "windsurf apt update failed"
+    return 1
+  fi
+
+  if ! sudo apt-get install -y -qq windsurf; then
+    RESULT_WINDSURF_STATUS="windsurf_failed"
+    RESULT_WORKFLOW_STATUS="windsurf_failed"
+    add_note "windsurf apt install failed"
+    return 1
+  fi
+
+  RESULT_WINDSURF_VERSION="$(parse_windsurf_version || true)"
+  [ -n "$RESULT_WINDSURF_VERSION" ] || RESULT_WINDSURF_VERSION="unknown"
+  return 0
+}
+
+write_windsurf_mcp_configs() {
+  local token=""
+  local chat_ids=""
+  local claude_base_url=""
+  local claude_api_key=""
+  local codex_command=""
+  local claude_command=""
+  local kilo_command=""
+  local gemini_command=""
+  local user_config_dir="/home/sw/.config/Windsurf/User"
+  local codeium_dir="/home/sw/.codeium/windsurf"
+  local user_mcp_file="$user_config_dir/mcp.json"
+  local legacy_mcp_file="$codeium_dir/mcp_config.json"
+
+  token="$(get_env_file_value TELEGRAM_BOT_TOKEN)"
+  chat_ids="$(get_env_file_value TELEGRAM_CHAT_ID)"
+  [ -n "$chat_ids" ] || chat_ids="$DEFAULT_TELEGRAM_CHAT_IDS"
+
+  if [ -z "$token" ]; then
+    RESULT_WINDSURF_STATUS="windsurf_failed"
+    RESULT_WORKFLOW_STATUS="windsurf_failed"
+    add_note "missing TELEGRAM_BOT_TOKEN for windsurf mcp config"
+    return 1
+  fi
+
+  claude_base_url="$(strip_api_v1_suffix "${CLIPROXYAPI_BASE_URL:-}")"
+  claude_api_key="${CLIPROXYAPI_OPENAI_API_KEY:-}"
+  codex_command="$(command -v codex || true)"
+  claude_command="$(command -v claude || true)"
+  kilo_command="$(command -v kilo || true)"
+  gemini_command="$(command -v gemini || true)"
+
+  [ -n "$codex_command" ] || codex_command="/home/sw/.nvm/versions/node/$(node -v 2>/dev/null || echo v22.21.1)/bin/codex"
+  [ -n "$claude_command" ] || claude_command="/home/sw/.local/bin/claude"
+  [ -n "$kilo_command" ] || kilo_command="/home/sw/.nvm/versions/node/$(node -v 2>/dev/null || echo v22.21.1)/bin/kilo"
+  [ -n "$gemini_command" ] || gemini_command="/home/sw/.nvm/versions/node/$(node -v 2>/dev/null || echo v22.21.1)/bin/gemini"
+
+  mkdir -p "$user_config_dir" "$codeium_dir"
+
+  cat > "$legacy_mcp_file" <<EOF
+{
+  "mcpServers": {
+    "agent-bridge": {
+      "command": "/home/sw/agent-bridge",
+      "args": [],
+      "env": {
+        "TELEGRAM_BOT_TOKEN": "$token",
+        "TELEGRAM_CHAT_ID": "$chat_ids",
+        "DEFAULT_MODE": "CLI",
+        "DEFAULT_CLI_PROFILE": "codex_gpt_5_4",
+        "CLI_CWD": "/home/sw/dev_root/",
+        "CLI_EXEC_MODE": "YOLO",
+        "CLI_HEARTBEAT_SECONDS": "15",
+        "CODEX_COMMAND": "$codex_command",
+        "CLAUDE_COMMAND": "$claude_command",
+        "KILO_COMMAND": "$kilo_command",
+        "GEMINI_COMMAND": "$gemini_command",
+        "CLAUDE_BASE_URL": "$claude_base_url",
+        "CLAUDE_API_KEY": "$claude_api_key",
+        "AGENTBRIDGE_CLOUD_ENABLED": "${AGENTBRIDGE_CLOUD_ENABLED:-1}",
+        "AGENTBRIDGE_CLOUD_BASE_URL": "${AGENTBRIDGE_CLOUD_BASE_URL:-$DEFAULT_CLOUD_BASE_URL}",
+        "AGENTBRIDGE_BOOTSTRAP_TOKEN": "${AGENTBRIDGE_BOOTSTRAP_TOKEN:-${AGENTBRIDGE_CLOUD_API_KEY:-${CODEX_CLOUD_API_KEY:-$DEFAULT_CLOUD_BOOTSTRAP_TOKEN}}}",
+        "AGENTBRIDGE_GUARDIAN_HEARTBEAT_SECONDS": "${AGENTBRIDGE_GUARDIAN_HEARTBEAT_SECONDS:-900}",
+        "AGENTBRIDGE_GUARDIAN_METRICS_SECONDS": "${AGENTBRIDGE_GUARDIAN_METRICS_SECONDS:-1800}",
+        "AGENTBRIDGE_GUARDIAN_POLL_SECONDS": "${AGENTBRIDGE_GUARDIAN_POLL_SECONDS:-60}",
+        "AGENTBRIDGE_GUARDIAN_REQUEST_TIMEOUT_SECONDS": "${AGENTBRIDGE_GUARDIAN_REQUEST_TIMEOUT_SECONDS:-15}",
+        "AGENTBRIDGE_GUARDIAN_ALLOW_SHELL_FULL": "${AGENTBRIDGE_GUARDIAN_ALLOW_SHELL_FULL:-0}"
+      }
+    }
+  }
+}
+EOF
+
+  cat > "$user_mcp_file" <<EOF
+{
+  "servers": {
+    "agent-bridge": {
+      "command": "/home/sw/agent-bridge",
+      "args": [],
+      "env": {
+        "TELEGRAM_BOT_TOKEN": "$token",
+        "TELEGRAM_CHAT_ID": "$chat_ids",
+        "DEFAULT_MODE": "CLI",
+        "DEFAULT_CLI_PROFILE": "codex_gpt_5_4",
+        "CLI_CWD": "/home/sw/dev_root/",
+        "CLI_EXEC_MODE": "YOLO",
+        "CLI_HEARTBEAT_SECONDS": "15",
+        "CODEX_COMMAND": "$codex_command",
+        "CLAUDE_COMMAND": "$claude_command",
+        "KILO_COMMAND": "$kilo_command",
+        "GEMINI_COMMAND": "$gemini_command",
+        "CLAUDE_BASE_URL": "$claude_base_url",
+        "CLAUDE_API_KEY": "$claude_api_key",
+        "AGENTBRIDGE_CLOUD_ENABLED": "${AGENTBRIDGE_CLOUD_ENABLED:-1}",
+        "AGENTBRIDGE_CLOUD_BASE_URL": "${AGENTBRIDGE_CLOUD_BASE_URL:-$DEFAULT_CLOUD_BASE_URL}",
+        "AGENTBRIDGE_BOOTSTRAP_TOKEN": "${AGENTBRIDGE_BOOTSTRAP_TOKEN:-${AGENTBRIDGE_CLOUD_API_KEY:-${CODEX_CLOUD_API_KEY:-$DEFAULT_CLOUD_BOOTSTRAP_TOKEN}}}",
+        "AGENTBRIDGE_GUARDIAN_HEARTBEAT_SECONDS": "${AGENTBRIDGE_GUARDIAN_HEARTBEAT_SECONDS:-900}",
+        "AGENTBRIDGE_GUARDIAN_METRICS_SECONDS": "${AGENTBRIDGE_GUARDIAN_METRICS_SECONDS:-1800}",
+        "AGENTBRIDGE_GUARDIAN_POLL_SECONDS": "${AGENTBRIDGE_GUARDIAN_POLL_SECONDS:-60}",
+        "AGENTBRIDGE_GUARDIAN_REQUEST_TIMEOUT_SECONDS": "${AGENTBRIDGE_GUARDIAN_REQUEST_TIMEOUT_SECONDS:-15}",
+        "AGENTBRIDGE_GUARDIAN_ALLOW_SHELL_FULL": "${AGENTBRIDGE_GUARDIAN_ALLOW_SHELL_FULL:-0}"
+      }
+    }
+  },
+  "inputs": []
+}
+EOF
+
+  add_note "updated windsurf mcp config"
+  return 0
+}
+
+install_windsurf_bridge_assets() {
+  local codeium_dir="/home/sw/.codeium/windsurf"
+  local skill_dir="$codeium_dir/skills/agent-bridge-telegram"
+  local hook_script_path="$codeium_dir/agent_bridge_windsurf_hook.py"
+  local hooks_file="$codeium_dir/hooks.json"
+
+  mkdir -p "$skill_dir"
+
+  download_repo_file "$AGENTBRIDGE_REPO" "${AGENTBRIDGE_GITHUB_TOKEN:-}" "AGENTS.md" "$codeium_dir/AGENTS.md" || return 1
+  download_repo_file "$AGENTBRIDGE_REPO" "${AGENTBRIDGE_GITHUB_TOKEN:-}" ".windsurf/skills/agent-bridge-telegram/SKILL.md" "$skill_dir/SKILL.md" || return 1
+  download_repo_file "$AGENTBRIDGE_REPO" "${AGENTBRIDGE_GITHUB_TOKEN:-}" ".windsurf/scripts/agent_bridge_windsurf_hook.py" "$hook_script_path" || return 1
+  download_repo_file "$AGENTBRIDGE_REPO" "${AGENTBRIDGE_GITHUB_TOKEN:-}" ".windsurf/hooks.json" "$hooks_file" || return 1
+
+  chmod +x "$hook_script_path" || return 1
+
+  python3 - "$hooks_file" "$hook_script_path" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+hooks_path = Path(sys.argv[1])
+hook_script_path = sys.argv[2]
+data = json.loads(hooks_path.read_text(encoding="utf-8"))
+
+for entries in (data.get("hooks") or {}).values():
+    if not isinstance(entries, list):
+        continue
+    for item in entries:
+        if isinstance(item, dict):
+            item["command"] = f"python3 {hook_script_path}"
+
+hooks_path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+PY
+
+  add_note "installed windsurf bridge assets"
+  return 0
+}
+
+update_windsurf() {
+  load_shell_profiles
+
+  if [ ! -x /home/sw/agent-bridge ]; then
+    RESULT_WINDSURF_STATUS="skipped_no_bridge"
+    return
+  fi
+
+  if ! install_windsurf_package; then
+    return
+  fi
+
+  if ! write_windsurf_mcp_configs; then
+    return
+  fi
+
+  if ! install_windsurf_bridge_assets; then
+    RESULT_WINDSURF_STATUS="windsurf_failed"
+    RESULT_WORKFLOW_STATUS="windsurf_failed"
+    add_note "failed to install windsurf bridge assets"
+    return
+  fi
+
+  RESULT_WINDSURF_VERSION="$(parse_windsurf_version || true)"
+  [ -n "$RESULT_WINDSURF_VERSION" ] || RESULT_WINDSURF_VERSION="unknown"
+  RESULT_WINDSURF_STATUS="success"
+}
+
 update_codex() {
   local current_version=""
 
@@ -1507,6 +1786,7 @@ main() {
   update_bridge
   update_codex
   update_claude
+  update_windsurf
   emit_results
 }
 
