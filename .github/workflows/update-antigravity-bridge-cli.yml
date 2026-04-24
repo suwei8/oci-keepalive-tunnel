@@ -3,6 +3,14 @@ name: Update Antigravity, AgentBridge, Windsurf, Codex, KiloCode & Claude (ARM64
 on:
   workflow_dispatch:
     inputs:
+      target_names:
+        description: "指定主机名，逗号分隔，例如 SG1-新加坡3,SG2-新加坡西7；留空表示全部"
+        required: false
+        default: ""
+      target_name:
+        description: "兼容旧式单主机名输入；留空表示不按主机名过滤"
+        required: false
+        default: ""
       target_indexes:
         description: "指定主机索引，逗号分隔，例如 6,7,8；留空表示全部"
         required: false
@@ -32,6 +40,8 @@ jobs:
         id: prepare
         env:
           HOSTS_CONFIG_URL: ${{ secrets.HOSTS_CONFIG_URL }}
+          TARGET_NAMES: ${{ github.event.inputs.target_names }}
+          TARGET_NAME: ${{ github.event.inputs.target_name }}
           TARGET_INDEXES: ${{ github.event.inputs.target_indexes }}
           TARGET_INDEX: ${{ github.event.inputs.target_index }}
           BLOG_GITHUB_TOKEN: ${{ secrets.BLOG_GITHUB_TOKEN }}
@@ -46,9 +56,21 @@ jobs:
           import os
 
           hosts = json.loads(os.environ["HOSTS_JSON"])
+          target_names_raw = os.environ.get("TARGET_NAMES", "").strip()
+          target_name = os.environ.get("TARGET_NAME", "").strip()
           target_indexes_raw = os.environ.get("TARGET_INDEXES", "").strip()
           target_index = os.environ.get("TARGET_INDEX", "").strip()
+          selected_names = set()
           selected_indexes = set()
+
+          if target_names_raw:
+              for item in target_names_raw.split(","):
+                  item = item.strip()
+                  if not item:
+                      continue
+                  selected_names.add(item)
+          elif target_name:
+              selected_names.add(target_name)
 
           if target_indexes_raw:
               for item in target_indexes_raw.split(","):
@@ -67,11 +89,15 @@ jobs:
 
           matrix = []
           for index, host in enumerate(hosts):
-              if selected_indexes and str(index) not in selected_indexes:
-                  continue
+              host_name = host.get("name", "").strip()
+              if selected_indexes or selected_names:
+                  matches_index = str(index) in selected_indexes
+                  matches_name = host_name in selected_names
+                  if not matches_index and not matches_name:
+                      continue
               if host.get("cpu_type") != "arm64":
                   continue
-              if host.get("name") in excluded:
+              if host_name in excluded:
                   continue
               ssh_host = host.get("ssh_host", "").strip()
               if not ssh_host:

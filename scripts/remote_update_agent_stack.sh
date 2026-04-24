@@ -44,6 +44,7 @@ RESULT_CLAUDE_TARGET_VERSION="${CLAUDE_LATEST_VERSION:-unknown}"
 
 BRIDGE_RELEASE_JSON_CACHE=""
 NPM_REFRESH_DONE="no"
+RESULTS_EMITTED="no"
 
 add_note() {
   local text="$1"
@@ -59,6 +60,7 @@ sanitize_value() {
 }
 
 emit_results() {
+  RESULTS_EMITTED="yes"
   echo "RESULT_WORKFLOW_STATUS=$(sanitize_value "$RESULT_WORKFLOW_STATUS")"
   echo "RESULT_ENV_STATUS=$(sanitize_value "$RESULT_ENV_STATUS")"
   echo "RESULT_MANUAL_ACTION_REQUIRED=$(sanitize_value "$RESULT_MANUAL_ACTION_REQUIRED")"
@@ -82,6 +84,21 @@ emit_results() {
   echo "RESULT_CLAUDE_VERSION=$(sanitize_value "$RESULT_CLAUDE_VERSION")"
   echo "RESULT_CLAUDE_TARGET_VERSION=$(sanitize_value "$RESULT_CLAUDE_TARGET_VERSION")"
   echo "RESULT_NOTES=$(sanitize_value "$RESULT_NOTES")"
+}
+
+finalize_results() {
+  local exit_code="$1"
+
+  if [ "${RESULTS_EMITTED:-no}" = "yes" ]; then
+    return
+  fi
+
+  if [ "$exit_code" -ne 0 ] && [ "$RESULT_WORKFLOW_STATUS" = "success" ]; then
+    RESULT_WORKFLOW_STATUS="remote_failed"
+    add_note "remote script exited unexpectedly"
+  fi
+
+  emit_results
 }
 
 log_info() {
@@ -1210,6 +1227,18 @@ parse_claude_version() {
   claude -v 2>/dev/null | awk 'NF {print $1; exit}'
 }
 
+run_claude_installer() {
+  local timeout_seconds="${CLAUDE_INSTALL_TIMEOUT_SECONDS:-600}"
+  local install_cmd='curl -fsSL https://claude.ai/install.sh | bash'
+
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "$timeout_seconds" bash -lc "$install_cmd"
+    return $?
+  fi
+
+  bash -lc "$install_cmd"
+}
+
 write_claude_shell_config() {
   local bashrc="/home/sw/.bashrc"
   local anthropic_base_url="${CLIPROXYAPI_BASE_URL:-}"
@@ -1523,9 +1552,22 @@ PY
 
 update_windsurf() {
   load_shell_profiles
+  get_env_status
 
   if [ ! -x /home/sw/agent-bridge ]; then
     RESULT_WINDSURF_STATUS="skipped_no_bridge"
+    return
+  fi
+
+  if [ "$RESULT_ENV_STATUS" = "missing" ] || [ "$RESULT_ENV_STATUS" = "missing_token" ]; then
+    RESULT_WINDSURF_STATUS="skipped_missing_env"
+    return
+  fi
+
+  if [ "$RESULT_ENV_STATUS" = "invalid_token" ]; then
+    RESULT_WINDSURF_STATUS="skipped_invalid_env"
+    RESULT_MANUAL_ACTION_REQUIRED="yes"
+    add_note "invalid TELEGRAM_BOT_TOKEN in /home/sw/.env"
     return
   fi
 
@@ -1705,7 +1747,7 @@ update_claude() {
   current_version="$(parse_claude_version || true)"
 
   if [ -z "$current_version" ]; then
-    if curl -fsSL https://claude.ai/install.sh | bash; then
+    if run_claude_installer; then
       hash -r || true
       if ! write_claude_shell_config; then
         RESULT_CLAUDE_STATUS="claude_failed"
@@ -1718,7 +1760,7 @@ update_claude() {
     else
       RESULT_CLAUDE_STATUS="claude_failed"
       RESULT_WORKFLOW_STATUS="claude_failed"
-      add_note "claude install.sh failed"
+      add_note "claude installer failed"
       return
     fi
   else
@@ -1746,13 +1788,13 @@ update_claude() {
     fi
 
     if [ "$should_update" = "yes" ]; then
-      if claude update; then
+      if run_claude_installer; then
         hash -r || true
         RESULT_CLAUDE_STATUS="success"
       else
         RESULT_CLAUDE_STATUS="claude_failed"
         RESULT_WORKFLOW_STATUS="claude_failed"
-        add_note "claude update failed"
+        add_note "claude installer upgrade failed"
         return
       fi
     fi
@@ -1775,8 +1817,15 @@ update_claude() {
   fi
 }
 
+on_exit() {
+  local exit_code=$?
+  cleanup_forbidden_bridge_files
+  finalize_results "$exit_code"
+  exit "$exit_code"
+}
+
 main() {
-  trap cleanup_forbidden_bridge_files EXIT
+  trap on_exit EXIT
   load_shell_profiles
   repair_bridge_runtime_config
   get_env_status
@@ -1785,8 +1834,8 @@ main() {
   update_antigravity_cli
   update_bridge
   update_codex
-  update_claude
   update_windsurf
+  update_claude
   emit_results
 }
 
