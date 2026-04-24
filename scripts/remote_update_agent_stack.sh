@@ -1221,16 +1221,33 @@ from pathlib import Path
 path = Path(sys.argv[1])
 anthropic_base_url = sys.argv[2]
 anthropic_auth_token = sys.argv[3]
-lines = [
-    'export PATH="$HOME/.local/bin:$PATH"',
-    f'export ANTHROPIC_BASE_URL="{anthropic_base_url}"',
-    f'export ANTHROPIC_AUTH_TOKEN="{anthropic_auth_token}"',
-]
-block = "\n".join(lines) + "\n"
+marker_start = "# === CLAUDE CONFIG START ==="
+marker_end = "# === CLAUDE CONFIG END ==="
+block = f"""\
+{marker_start}
+export PATH="$HOME/.local/bin:$PATH"
+
+claude() {{
+    (
+        unset ANTHROPIC_AUTH_TOKEN ANTHROPIC_API_KEY ANTHROPIC_BASE_URL
+        ANTHROPIC_BASE_URL="{anthropic_base_url}" \\
+        ANTHROPIC_API_KEY="{anthropic_auth_token}" \\
+        command claude "$@"
+    )
+}}
+
+alias clauded="claude --dangerously-skip-permissions"
+{marker_end}
+"""
 
 text = path.read_text() if path.exists() else ""
-for line in lines:
-    text = re.sub(rf"^{re.escape(line)}\n?", "", text, flags=re.M)
+text = re.sub(
+    rf"{re.escape(marker_start)}\n.*?{re.escape(marker_end)}\n?",
+    "",
+    text,
+    flags=re.S,
+)
+text = re.sub(r'^export PATH="\$HOME/\.local/bin:\$PATH"\n?', "", text, flags=re.M)
 text = re.sub(r'^export ANTHROPIC_BASE_URL=.*\n?', "", text, flags=re.M)
 text = re.sub(r'^export ANTHROPIC_AUTH_TOKEN=.*\n?', "", text, flags=re.M)
 
@@ -1243,8 +1260,7 @@ path.write_text(updated)
 PY
 
   export PATH="/home/sw/.local/bin:${PATH}"
-  export ANTHROPIC_BASE_URL="$anthropic_base_url"
-  export ANTHROPIC_AUTH_TOKEN="$anthropic_auth_token"
+  unset ANTHROPIC_AUTH_TOKEN ANTHROPIC_API_KEY ANTHROPIC_BASE_URL
   set +u
   [ -f "$bashrc" ] && source "$bashrc" >/dev/null 2>&1 || true
   set -u
