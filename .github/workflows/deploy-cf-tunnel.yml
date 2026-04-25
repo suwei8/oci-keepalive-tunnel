@@ -44,6 +44,7 @@ jobs:
           SSH_USERNAME: ${{ github.event.inputs.ssh_username }}
           SSH_PASSWORD: ${{ github.event.inputs.ssh_password }}
         run: |
+          set -euo pipefail
           SSH_OPTS="-o ConnectTimeout=30 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ServerAliveInterval=30"
           
           # 屏蔽敏感信息
@@ -51,20 +52,22 @@ jobs:
           echo "::add-mask::$SSH_PASSWORD"
           
           echo ">>> 安装 cloudflared..."
-          sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS ${SSH_USERNAME}@${SSH_IP} '
-            # 添加 Cloudflare GPG 密钥
-            sudo mkdir -p --mode=0755 /usr/share/keyrings
-            curl -fsSL https://pkg.cloudflare.com/cloudflare-public-v2.gpg | sudo tee /usr/share/keyrings/cloudflare-public-v2.gpg >/dev/null
-            
-            # 添加 repo 到 apt 源
-            echo "deb [signed-by=/usr/share/keyrings/cloudflare-public-v2.gpg] https://pkg.cloudflare.com/cloudflared any main" | sudo tee /etc/apt/sources.list.d/cloudflared.list
-            
-            # 安装 cloudflared
-            sudo apt-get update && sudo apt-get install -y cloudflared
-            
-            # 验证安装
-            cloudflared --version
-          '
+          REMOTE_SCRIPT=$(cat <<'EOF'
+          set -euo pipefail
+          SUDO="sudo"
+          if [ "$(id -u)" -ne 0 ]; then
+            SUDO="printf '%s\n' \"$SSH_PASSWORD\" | sudo -S -k"
+          fi
+
+          sh -lc "$SUDO mkdir -p --mode=0755 /usr/share/keyrings"
+          curl -fsSL https://pkg.cloudflare.com/cloudflare-public-v2.gpg | sh -lc "$SUDO tee /usr/share/keyrings/cloudflare-public-v2.gpg >/dev/null"
+          printf '%s\n' 'deb [signed-by=/usr/share/keyrings/cloudflare-public-v2.gpg] https://pkg.cloudflare.com/cloudflared any main' | sh -lc "$SUDO tee /etc/apt/sources.list.d/cloudflared.list >/dev/null"
+          sh -lc "$SUDO apt-get update"
+          sh -lc "$SUDO apt-get install -y cloudflared"
+          cloudflared --version
+          EOF
+          )
+          sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS ${SSH_USERNAME}@${SSH_IP} "export SSH_PASSWORD='$SSH_PASSWORD'; bash -se" <<< "$REMOTE_SCRIPT"
           echo "✅ cloudflared 安装完成"
 
       - name: Create Tunnel via Cloudflare API
@@ -148,6 +151,7 @@ jobs:
           SSH_PASSWORD: ${{ github.event.inputs.ssh_password }}
           TUNNEL_TOKEN: ${{ steps.token.outputs.tunnel_token }}
         run: |
+          set -euo pipefail
           SSH_OPTS="-o ConnectTimeout=30 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ServerAliveInterval=30"
           
           echo "::add-mask::$SSH_IP"
@@ -155,19 +159,20 @@ jobs:
           echo "::add-mask::$TUNNEL_TOKEN"
           
           echo ">>> 安装 Tunnel 服务..."
-          sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS ${SSH_USERNAME}@${SSH_IP} "
-            # 停止并删除可能存在的旧服务
-            sudo cloudflared service uninstall 2>/dev/null || true
-            
-            # 安装 Tunnel 服务
-            sudo cloudflared service install ${TUNNEL_TOKEN}
-            
-            # 等待服务启动
-            sleep 5
-            
-            # 检查服务状态
-            sudo systemctl status cloudflared --no-pager || true
-          "
+          REMOTE_SCRIPT=$(cat <<'EOF'
+          set -euo pipefail
+          SUDO="sudo"
+          if [ "$(id -u)" -ne 0 ]; then
+            SUDO="printf '%s\n' \"$SSH_PASSWORD\" | sudo -S -k"
+          fi
+
+          sh -lc "$SUDO cloudflared service uninstall" >/dev/null 2>&1 || true
+          sh -lc "$SUDO cloudflared service install \"$TUNNEL_TOKEN\""
+          sleep 5
+          sh -lc "$SUDO systemctl status cloudflared --no-pager" || true
+          EOF
+          )
+          sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS ${SSH_USERNAME}@${SSH_IP} "export SSH_PASSWORD='$SSH_PASSWORD' TUNNEL_TOKEN='$TUNNEL_TOKEN'; bash -se" <<< "$REMOTE_SCRIPT"
           echo "✅ Tunnel 服务安装完成"
 
       - name: Configure SSH Public Hostname and DNS
@@ -316,22 +321,27 @@ jobs:
           echo "::add-mask::$NEW_PASSWORD"
           
           echo ">>> 创建普通用户: $NEW_USERNAME"
-          sshpass -p "$ROOT_PASSWORD" ssh $SSH_OPTS ${ROOT_USERNAME}@${SSH_IP} "
-            # 检查用户是否存在
-            if id '${NEW_USERNAME}' &>/dev/null; then
-              echo '用户 ${NEW_USERNAME} 已存在'
-            else
-              # 创建用户
-              sudo useradd -m -s /bin/bash '${NEW_USERNAME}'
-              echo '${NEW_USERNAME}:${NEW_PASSWORD}' | sudo chpasswd
-              echo '✅ 用户 ${NEW_USERNAME} 已创建'
-            fi
-            
-            # 配置免密 sudo
-            echo '${NEW_USERNAME} ALL=(ALL) NOPASSWD:ALL' | sudo tee /etc/sudoers.d/${NEW_USERNAME}
-            sudo chmod 440 /etc/sudoers.d/${NEW_USERNAME}
-            echo '✅ 已配置免密 sudo'
-          "
+          REMOTE_SCRIPT=$(cat <<'EOF'
+          set -euo pipefail
+          SUDO="sudo"
+          if [ "$(id -u)" -ne 0 ]; then
+            SUDO="printf '%s\n' \"$ROOT_PASSWORD\" | sudo -S -k"
+          fi
+
+          if id "$NEW_USERNAME" >/dev/null 2>&1; then
+            echo "用户 $NEW_USERNAME 已存在"
+          else
+            sh -lc "$SUDO useradd -m -s /bin/bash \"$NEW_USERNAME\""
+            printf '%s:%s\n' "$NEW_USERNAME" "$NEW_PASSWORD" | sh -lc "$SUDO chpasswd"
+            echo "✅ 用户 $NEW_USERNAME 已创建"
+          fi
+
+          printf '%s\n' "$NEW_USERNAME ALL=(ALL) NOPASSWD:ALL" | sh -lc "$SUDO tee /etc/sudoers.d/$NEW_USERNAME >/dev/null"
+          sh -lc "$SUDO chmod 440 /etc/sudoers.d/$NEW_USERNAME"
+          echo "✅ 已配置免密 sudo"
+          EOF
+          )
+          sshpass -p "$ROOT_PASSWORD" ssh $SSH_OPTS ${ROOT_USERNAME}@${SSH_IP} "export ROOT_PASSWORD='$ROOT_PASSWORD' NEW_USERNAME='$NEW_USERNAME' NEW_PASSWORD='$NEW_PASSWORD'; bash -se" <<< "$REMOTE_SCRIPT"
 
       - name: Send Telegram notification
         env:
