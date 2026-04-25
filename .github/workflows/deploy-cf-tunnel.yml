@@ -54,16 +54,29 @@ jobs:
           echo ">>> 安装 cloudflared..."
           REMOTE_SCRIPT=$(cat <<'EOF'
           set -euo pipefail
-          SUDO="sudo"
-          if [ "$(id -u)" -ne 0 ]; then
-            SUDO="printf '%s\n' \"$SSH_PASSWORD\" | sudo -S -k"
-          fi
+          run_root() {
+            if [ "$(id -u)" -eq 0 ]; then
+              "$@"
+            elif sudo -n true 2>/dev/null; then
+              sudo "$@"
+            else
+              printf '%s\n' "$SSH_PASSWORD" | sudo -S -k "$@"
+            fi
+          }
 
-          sh -lc "$SUDO mkdir -p --mode=0755 /usr/share/keyrings"
-          curl -fsSL https://pkg.cloudflare.com/cloudflare-public-v2.gpg | sh -lc "$SUDO tee /usr/share/keyrings/cloudflare-public-v2.gpg >/dev/null"
-          printf '%s\n' 'deb [signed-by=/usr/share/keyrings/cloudflare-public-v2.gpg] https://pkg.cloudflare.com/cloudflared any main' | sh -lc "$SUDO tee /etc/apt/sources.list.d/cloudflared.list >/dev/null"
-          sh -lc "$SUDO apt-get update"
-          sh -lc "$SUDO apt-get install -y cloudflared"
+          tmp_key="$(mktemp)"
+          tmp_list="$(mktemp)"
+          trap 'rm -f "$tmp_key" "$tmp_list"' EXIT
+
+          run_root mkdir -p --mode=0755 /usr/share/keyrings
+          curl -fsSL https://pkg.cloudflare.com/cloudflare-public-v2.gpg -o "$tmp_key"
+          run_root install -D -m 644 "$tmp_key" /usr/share/keyrings/cloudflare-public-v2.gpg
+
+          printf '%s\n' 'deb [signed-by=/usr/share/keyrings/cloudflare-public-v2.gpg] https://pkg.cloudflare.com/cloudflared any main' > "$tmp_list"
+          run_root install -D -m 644 "$tmp_list" /etc/apt/sources.list.d/cloudflared.list
+
+          run_root apt-get update
+          run_root apt-get install -y cloudflared
           cloudflared --version
           EOF
           )
@@ -161,15 +174,20 @@ jobs:
           echo ">>> 安装 Tunnel 服务..."
           REMOTE_SCRIPT=$(cat <<'EOF'
           set -euo pipefail
-          SUDO="sudo"
-          if [ "$(id -u)" -ne 0 ]; then
-            SUDO="printf '%s\n' \"$SSH_PASSWORD\" | sudo -S -k"
-          fi
+          run_root() {
+            if [ "$(id -u)" -eq 0 ]; then
+              "$@"
+            elif sudo -n true 2>/dev/null; then
+              sudo "$@"
+            else
+              printf '%s\n' "$SSH_PASSWORD" | sudo -S -k "$@"
+            fi
+          }
 
-          sh -lc "$SUDO cloudflared service uninstall" >/dev/null 2>&1 || true
-          sh -lc "$SUDO cloudflared service install \"$TUNNEL_TOKEN\""
+          run_root cloudflared service uninstall >/dev/null 2>&1 || true
+          run_root cloudflared service install "$TUNNEL_TOKEN"
           sleep 5
-          sh -lc "$SUDO systemctl status cloudflared --no-pager" || true
+          run_root systemctl status cloudflared --no-pager || true
           EOF
           )
           sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS ${SSH_USERNAME}@${SSH_IP} "export SSH_PASSWORD='$SSH_PASSWORD' TUNNEL_TOKEN='$TUNNEL_TOKEN'; bash -se" <<< "$REMOTE_SCRIPT"
@@ -323,21 +341,31 @@ jobs:
           echo ">>> 创建普通用户: $NEW_USERNAME"
           REMOTE_SCRIPT=$(cat <<'EOF'
           set -euo pipefail
-          SUDO="sudo"
-          if [ "$(id -u)" -ne 0 ]; then
-            SUDO="printf '%s\n' \"$ROOT_PASSWORD\" | sudo -S -k"
-          fi
+          run_root() {
+            if [ "$(id -u)" -eq 0 ]; then
+              "$@"
+            elif sudo -n true 2>/dev/null; then
+              sudo "$@"
+            else
+              printf '%s\n' "$ROOT_PASSWORD" | sudo -S -k "$@"
+            fi
+          }
+
+          tmp_creds="$(mktemp)"
+          tmp_sudoers="$(mktemp)"
+          trap 'rm -f "$tmp_creds" "$tmp_sudoers"' EXIT
 
           if id "$NEW_USERNAME" >/dev/null 2>&1; then
             echo "用户 $NEW_USERNAME 已存在"
           else
-            sh -lc "$SUDO useradd -m -s /bin/bash \"$NEW_USERNAME\""
-            printf '%s:%s\n' "$NEW_USERNAME" "$NEW_PASSWORD" | sh -lc "$SUDO chpasswd"
+            run_root useradd -m -s /bin/bash "$NEW_USERNAME"
+            printf '%s:%s\n' "$NEW_USERNAME" "$NEW_PASSWORD" > "$tmp_creds"
+            run_root sh -c "chpasswd < '$tmp_creds'"
             echo "✅ 用户 $NEW_USERNAME 已创建"
           fi
 
-          printf '%s\n' "$NEW_USERNAME ALL=(ALL) NOPASSWD:ALL" | sh -lc "$SUDO tee /etc/sudoers.d/$NEW_USERNAME >/dev/null"
-          sh -lc "$SUDO chmod 440 /etc/sudoers.d/$NEW_USERNAME"
+          printf '%s\n' "$NEW_USERNAME ALL=(ALL) NOPASSWD:ALL" > "$tmp_sudoers"
+          run_root install -D -m 440 "$tmp_sudoers" "/etc/sudoers.d/$NEW_USERNAME"
           echo "✅ 已配置免密 sudo"
           EOF
           )
