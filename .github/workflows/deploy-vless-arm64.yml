@@ -533,8 +533,20 @@ jobs:
               if [ ! -f /usr/local/bin/xray ]; then
                 echo '>>> 下载 Xray...'
                 cd /tmp
-                wget -q https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-arm64-v8a.zip -O xray.zip
-                unzip -o xray.zip xray geoip.dat geosite.dat
+                XRAY_TAG=\$(wget -qO- https://api.github.com/repos/XTLS/Xray-core/releases/latest | sed -n 's/.*\"tag_name\": \"\\([^\"]*\\)\".*/\\1/p' | head -n1)
+                if [ -z "\$XRAY_TAG" ]; then
+                  echo '❌ 无法获取 Xray 最新版本号'
+                  exit 1
+                fi
+                XRAY_URL="https://github.com/XTLS/Xray-core/releases/download/\$XRAY_TAG/Xray-linux-arm64-v8a.zip"
+                rm -f xray.zip xray geoip.dat geosite.dat
+                wget -q --tries=3 --timeout=30 "\$XRAY_URL" -O xray.zip
+                if [ ! -s xray.zip ] || ! unzip -tq xray.zip >/dev/null 2>&1; then
+                  echo "❌ Xray 安装包无效: \$XRAY_URL"
+                  rm -f xray.zip
+                  exit 1
+                fi
+                unzip -oq xray.zip xray geoip.dat geosite.dat
                 sudo mv xray /usr/local/bin/
                 sudo chmod +x /usr/local/bin/xray
                 sudo mkdir -p /usr/local/share/xray
