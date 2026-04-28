@@ -137,6 +137,9 @@ jobs:
           NODES_DIRECT_INFO=""
           DEPLOYED_COUNT=0
           SKIPPED_COUNT=0
+          FAILED_COUNT=0
+          XRAY_ASSET_NAME="Xray-linux-arm64-v8a.zip"
+          XRAY_CACHE_PATH="/tmp/${XRAY_ASSET_NAME}"
           
           HOST_COUNT=$(echo "$HOSTS_CONFIG" | jq '. | length')
           echo "Total hosts: $HOST_COUNT"
@@ -512,6 +515,35 @@ jobs:
             # ============================================
             # 步骤2: 部署 Xray (包含直连免流配置)
             # ============================================
+            if [ ! -s "$XRAY_CACHE_PATH" ] || ! unzip -tq "$XRAY_CACHE_PATH" >/dev/null 2>&1; then
+              echo ">>> 在 Runner 下载 Xray 安装包 (${XRAY_ASSET_NAME})..."
+              XRAY_TAG=$(curl -fsSL https://api.github.com/repos/XTLS/Xray-core/releases/latest | jq -r '.tag_name // empty')
+              if [ -z "$XRAY_TAG" ]; then
+                echo "❌ 无法在 Runner 获取 Xray 最新版本号"
+                FAILED_COUNT=$((FAILED_COUNT + 1))
+                kill $TUNNEL_PID 2>/dev/null || true
+                continue
+              fi
+              XRAY_URL="https://github.com/XTLS/Xray-core/releases/download/${XRAY_TAG}/${XRAY_ASSET_NAME}"
+              rm -f "$XRAY_CACHE_PATH"
+              curl -fsSL --retry 3 --connect-timeout 30 "$XRAY_URL" -o "$XRAY_CACHE_PATH"
+              if [ ! -s "$XRAY_CACHE_PATH" ] || ! unzip -tq "$XRAY_CACHE_PATH" >/dev/null 2>&1; then
+                echo "❌ Runner 下载到的 Xray 安装包无效: $XRAY_URL"
+                rm -f "$XRAY_CACHE_PATH"
+                FAILED_COUNT=$((FAILED_COUNT + 1))
+                kill $TUNNEL_PID 2>/dev/null || true
+                continue
+              fi
+            fi
+
+            echo ">>> 传输 Xray 安装包到远端..."
+            if ! sshpass -p "$SSH_PASSWORD" scp $SSH_OPTS -P 2222 "$XRAY_CACHE_PATH" "${SSH_USERNAME}@127.0.0.1:/tmp/xray.zip" >/dev/null 2>&1; then
+              echo "❌ Xray 安装包传输失败: $HOST_NAME"
+              FAILED_COUNT=$((FAILED_COUNT + 1))
+              kill $TUNNEL_PID 2>/dev/null || true
+              continue
+            fi
+
             echo ">>> 检查/安装 Xray..."
             sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" "
               echo '#!/bin/sh' > ~/.askpass.sh; echo 'echo \"$SSH_PASSWORD\"' >> ~/.askpass.sh; chmod +x ~/.askpass.sh; export SUDO_ASKPASS=~/.askpass.sh; sudo() { command sudo -A \"\$@\"; }; export -f sudo;
@@ -531,21 +563,13 @@ jobs:
               
               # 检查安装
               if [ ! -f /usr/local/bin/xray ]; then
-                echo '>>> 下载 Xray...'
+                echo '>>> 安装 Xray...'
                 cd /tmp
-                XRAY_TAG=\$(wget -qO- https://api.github.com/repos/XTLS/Xray-core/releases/latest | sed -n 's/.*\"tag_name\": \"\\([^\"]*\\)\".*/\\1/p' | head -n1)
-                if [ -z "\$XRAY_TAG" ]; then
-                  echo '❌ 无法获取 Xray 最新版本号'
-                  exit 1
-                fi
-                XRAY_URL="https://github.com/XTLS/Xray-core/releases/download/\$XRAY_TAG/Xray-linux-arm64-v8a.zip"
-                rm -f xray.zip xray geoip.dat geosite.dat
-                wget -q --tries=3 --timeout=30 "\$XRAY_URL" -O xray.zip
                 if [ ! -s xray.zip ] || ! unzip -tq xray.zip >/dev/null 2>&1; then
-                  echo "❌ Xray 安装包无效: \$XRAY_URL"
-                  rm -f xray.zip
+                  echo '❌ 远端缺少有效的 Xray 安装包'
                   exit 1
                 fi
+                rm -f xray geoip.dat geosite.dat
                 unzip -oq xray.zip xray geoip.dat geosite.dat
                 sudo mv xray /usr/local/bin/
                 sudo chmod +x /usr/local/bin/xray
@@ -682,6 +706,7 @@ jobs:
               fi
             else
               echo "❌ 部署失败: $HOST_NAME"
+              FAILED_COUNT=$((FAILED_COUNT + 1))
             fi
             
             kill $TUNNEL_PID 2>/dev/null || true
@@ -689,11 +714,16 @@ jobs:
           
           echo ""
           echo "==========================================="
-          echo "完成: 新部署 $DEPLOYED_COUNT, 跳过 $SKIPPED_COUNT"
+          echo "完成: 新部署 $DEPLOYED_COUNT, 跳过 $SKIPPED_COUNT, 失败 $FAILED_COUNT"
           echo "==========================================="
           
           echo -en "$NODES_INFO" > /tmp/nodes_info.txt
           echo -en "$NODES_DIRECT_INFO" > /tmp/nodes_direct_info.txt
+
+          if [ "$FAILED_COUNT" -gt 0 ]; then
+            echo "❌ 存在部署失败主机，工作流标记为失败"
+            exit 1
+          fi
 
       - name: Send Telegram notification
         env:
