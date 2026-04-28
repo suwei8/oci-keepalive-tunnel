@@ -80,6 +80,59 @@ jobs:
             local suffix=$(echo "$domain" | grep -oE '[^.]+\.[^.]+$' | tail -c 8)
             echo "${prefix}.**${suffix}"
           }
+
+          update_dns_record() {
+            local zone_id="$1"
+            local cf_email="$2"
+            local cf_key="$3"
+            local record_name="$4"
+            local record_type="$5"
+            local record_content="$6"
+            local masked_name="$7"
+            local dns_check=""
+            local existing_id=""
+            local existing_content=""
+            local dns_result=""
+
+            dns_check=$(curl -s "https://api.cloudflare.com/client/v4/zones/${zone_id}/dns_records?name=${record_name}&type=${record_type}" \
+              -H "X-Auth-Email: ${cf_email}" \
+              -H "X-Auth-Key: ${cf_key}")
+
+            existing_id=$(echo "$dns_check" | jq -r '.result[0].id // empty')
+            existing_content=$(echo "$dns_check" | jq -r '.result[0].content // empty')
+
+            if [ -z "$existing_id" ]; then
+              echo ">>> 创建 DNS ${record_type}: ${masked_name} -> ${record_content}"
+              dns_result=$(curl -s -X POST "https://api.cloudflare.com/client/v4/zones/${zone_id}/dns_records" \
+                -H "X-Auth-Email: ${cf_email}" \
+                -H "X-Auth-Key: ${cf_key}" \
+                -H "Content-Type: application/json" \
+                -d "{\"type\":\"${record_type}\",\"name\":\"${record_name}\",\"content\":\"${record_content}\",\"proxied\":false}")
+
+              if echo "$dns_result" | jq -e '.success' > /dev/null; then
+                echo "✅ ${record_type} 记录已创建"
+              else
+                echo "❌ ${record_type} 记录创建失败"
+                echo "$dns_result" | jq '.errors'
+              fi
+            elif [ "$existing_content" != "$record_content" ]; then
+              echo ">>> 更新 DNS ${record_type}: ${masked_name} -> ${record_content} (原值: ${existing_content})"
+              dns_result=$(curl -s -X PUT "https://api.cloudflare.com/client/v4/zones/${zone_id}/dns_records/${existing_id}" \
+                -H "X-Auth-Email: ${cf_email}" \
+                -H "X-Auth-Key: ${cf_key}" \
+                -H "Content-Type: application/json" \
+                -d "{\"type\":\"${record_type}\",\"name\":\"${record_name}\",\"content\":\"${record_content}\",\"proxied\":false}")
+
+              if echo "$dns_result" | jq -e '.success' > /dev/null; then
+                echo "✅ ${record_type} 记录已更新"
+              else
+                echo "❌ ${record_type} 记录更新失败"
+                echo "$dns_result" | jq '.errors'
+              fi
+            else
+              echo "✅ ${record_type} 记录已存在且正确 ${masked_name} -> ${record_content}"
+            fi
+          }
           
           NODES_INFO=""
           NODES_DIRECT_INFO=""
@@ -140,13 +193,14 @@ jobs:
             sleep 5
             
             if ! kill -0 $TUNNEL_PID 2>/dev/null; then
-              echo "❌ Tunnel 连接失败"
+              echo "❌ Tunnel 连接失败: $HOST_NAME ($SSH_HOST)"
+              SKIPPED_COUNT=$((SKIPPED_COUNT + 1))
               continue
             fi
             
             # 如果 vless_host 和 proxy_domains 均为空，则清理 VLESS 服务
             if ([ "$VLESS_HOST" = "null" ] || [ -z "$VLESS_HOST" ]) && ([ "$PROXY_DOMAIN" = "null" ] || [ -z "$PROXY_DOMAIN" ]); then
-              echo ">>> 节点配置为空，清理 Xray VLESS 服务并跳过..."
+              echo ">>> 节点配置为空，清理 Xray VLESS 服务并跳过: host=$HOST_NAME vless_host=${VLESS_HOST:-<empty>} proxy_domains=${PROXY_DOMAIN:-<empty>}"
               sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${CURRENT_SSH_USER}@127.0.0.1" "
                 echo '#!/bin/sh' > ~/.askpass.sh; echo 'echo \"$SSH_PASSWORD\"' >> ~/.askpass.sh; chmod +x ~/.askpass.sh; export SUDO_ASKPASS=~/.askpass.sh; sudo() { command sudo -A \"\$@\"; }; export -f sudo;
                 sudo systemctl stop xray-vless 2>/dev/null || true
@@ -155,8 +209,25 @@ jobs:
                 sudo systemctl daemon-reload 2>/dev/null || true
               " 2>&1 || true
               echo "✅ 清理完成: $HOST_NAME"
+              SKIPPED_COUNT=$((SKIPPED_COUNT + 1))
               kill $TUNNEL_PID 2>/dev/null || true
               continue
+            fi
+
+            HOST_IPV4=$(sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${CURRENT_SSH_USER}@127.0.0.1" 'curl -s4 -m 10 ipv4.icanhazip.com || curl -s4 -m 10 ifconfig.me' 2>/dev/null | tr -d '[:space:]') || true
+            HOST_IPV6=$(sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${CURRENT_SSH_USER}@127.0.0.1" 'curl -s6 -m 10 ipv6.icanhazip.com || curl -s6 -m 10 ifconfig.me' 2>/dev/null | tr -d '[:space:]') || true
+            if [ -n "$HOST_IPV4" ] || [ -n "$HOST_IPV6" ]; then
+              echo ">>> 主机公网 IP: IPv4=${HOST_IPV4:-none} IPv6=${HOST_IPV6:-none}"
+            else
+              echo "⚠️ 无法获取主机公网 IP: $HOST_NAME"
+            fi
+
+            DIRECT_LISTEN="0.0.0.0"
+            XRAY_DOMAIN_STRATEGY="UseIPv4"
+            if [ -z "$HOST_IPV4" ] && [ -n "$HOST_IPV6" ]; then
+              DIRECT_LISTEN="::"
+              XRAY_DOMAIN_STRATEGY="UseIPv6"
+              echo ">>> 检测到纯 IPv6 主机，直连入口将监听 ::，Xray 出站使用 ${XRAY_DOMAIN_STRATEGY}"
             fi
             
             # 检查 xray-vless 服务状态 (使用 systemd)
@@ -251,36 +322,15 @@ jobs:
                   PROXY_CF_KEY="$CF_API_KEY"
                   PROXY_ZONE_ID="$CF_ZONE_ID"
                 fi
-                
-                # 获取主机真实 IP
-                HOST_IP=$(sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${CURRENT_SSH_USER}@127.0.0.1" 'curl -s4 -m 10 ipv4.icanhazip.com || curl -s4 -m 10 ifconfig.me' 2>/dev/null)
-                if [ -n "$HOST_IP" ]; then
-                  DNS_CHECK=$(curl -s "https://api.cloudflare.com/client/v4/zones/${PROXY_ZONE_ID}/dns_records?name=${PROXY_DOMAIN}" \
-                    -H "X-Auth-Email: ${PROXY_CF_EMAIL}" \
-                    -H "X-Auth-Key: ${PROXY_CF_KEY}")
-                  
-                  EXISTING_DNS_ID=$(echo "$DNS_CHECK" | jq -r '.result[0].id // empty')
-                  EXISTING_DNS_CONTENT=$(echo "$DNS_CHECK" | jq -r '.result[0].content // empty')
-                  
-                  if [ -z "$EXISTING_DNS_ID" ]; then
-                    echo ">>> 创建缺失的 DNS A: $MASKED_PROXY_DOMAIN -> $HOST_IP"
-                    DNS_RESULT=$(curl -s -X POST "https://api.cloudflare.com/client/v4/zones/${PROXY_ZONE_ID}/dns_records" \
-                      -H "X-Auth-Email: ${PROXY_CF_EMAIL}" \
-                      -H "X-Auth-Key: ${PROXY_CF_KEY}" \
-                      -H "Content-Type: application/json" \
-                      -d "{\"type\":\"A\",\"name\":\"${PROXY_DOMAIN}\",\"content\":\"${HOST_IP}\",\"proxied\":false}")
-                  elif [ "$EXISTING_DNS_CONTENT" != "$HOST_IP" ]; then
-                    echo ">>> 更新 DNS A: $MASKED_PROXY_DOMAIN -> $HOST_IP (原IP: ${EXISTING_DNS_CONTENT})"
-                    DNS_RESULT=$(curl -s -X PUT "https://api.cloudflare.com/client/v4/zones/${PROXY_ZONE_ID}/dns_records/${EXISTING_DNS_ID}" \
-                      -H "X-Auth-Email: ${PROXY_CF_EMAIL}" \
-                      -H "X-Auth-Key: ${PROXY_CF_KEY}" \
-                      -H "Content-Type: application/json" \
-                      -d "{\"type\":\"A\",\"name\":\"${PROXY_DOMAIN}\",\"content\":\"${HOST_IP}\",\"proxied\":false}")
-                  else
-                    echo "✅ DNS 记录 $MASKED_PROXY_DOMAIN 已正确指向 $HOST_IP"
-                  fi
-                else
-                  echo "⚠️ 无法获取主机 $HOST_NAME 的公网 IP，跳过 proxy_domains 记录更新"
+
+                if [ -n "$HOST_IPV4" ]; then
+                  update_dns_record "$PROXY_ZONE_ID" "$PROXY_CF_EMAIL" "$PROXY_CF_KEY" "$PROXY_DOMAIN" "A" "$HOST_IPV4" "$MASKED_PROXY_DOMAIN"
+                fi
+                if [ -n "$HOST_IPV6" ]; then
+                  update_dns_record "$PROXY_ZONE_ID" "$PROXY_CF_EMAIL" "$PROXY_CF_KEY" "$PROXY_DOMAIN" "AAAA" "$HOST_IPV6" "$MASKED_PROXY_DOMAIN"
+                fi
+                if [ -z "$HOST_IPV4" ] && [ -z "$HOST_IPV6" ]; then
+                  echo "⚠️ 无法获取主机 $HOST_NAME 的 IPv4/IPv6 公网地址，跳过 proxy_domains 记录更新"
                 fi
               fi
               
@@ -361,7 +411,8 @@ jobs:
                 done
                 
                 if [ -z "$TUNNEL_ID" ]; then
-                  echo "⚠️ 未找到包含 SSH_HOST 的 Tunnel"
+                  echo "⚠️ 未找到包含 SSH_HOST 的 Tunnel: host=$HOST_NAME ssh_host=$SSH_HOST"
+                  SKIPPED_COUNT=$((SKIPPED_COUNT + 1))
                   kill $TUNNEL_PID 2>/dev/null || true
                   continue
                 fi
@@ -460,48 +511,15 @@ jobs:
                   PROXY_CF_KEY="$CF_API_KEY"
                   PROXY_ZONE_ID="$CF_ZONE_ID"
                 fi
-                
-                # 获取主机真实 IP
-                HOST_IP=$(sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${CURRENT_SSH_USER}@127.0.0.1" 'curl -s4 -m 10 ipv4.icanhazip.com || curl -s4 -m 10 ifconfig.me' 2>/dev/null) || true
-                if [ -n "$HOST_IP" ]; then
-                  DNS_CHECK=$(curl -s "https://api.cloudflare.com/client/v4/zones/${PROXY_ZONE_ID}/dns_records?name=${PROXY_DOMAIN}" \
-                    -H "X-Auth-Email: ${PROXY_CF_EMAIL}" \
-                    -H "X-Auth-Key: ${PROXY_CF_KEY}")
-                  
-                  EXISTING_DNS_ID=$(echo "$DNS_CHECK" | jq -r '.result[0].id // empty')
-                  EXISTING_DNS_CONTENT=$(echo "$DNS_CHECK" | jq -r '.result[0].content // empty')
-                  
-                  if [ -z "$EXISTING_DNS_ID" ]; then
-                    echo ">>> 创建 DNS A: $MASKED_PROXY_DOMAIN -> $HOST_IP"
-                    DNS_RESULT=$(curl -s -X POST "https://api.cloudflare.com/client/v4/zones/${PROXY_ZONE_ID}/dns_records" \
-                      -H "X-Auth-Email: ${PROXY_CF_EMAIL}" \
-                      -H "X-Auth-Key: ${PROXY_CF_KEY}" \
-                      -H "Content-Type: application/json" \
-                      -d "{\"type\":\"A\",\"name\":\"${PROXY_DOMAIN}\",\"content\":\"${HOST_IP}\",\"proxied\":false}")
-                      
-                    if echo "$DNS_RESULT" | jq -e '.success' > /dev/null; then
-                      echo "✅ proxy_domains DNS 已创建"
-                    else
-                      echo "❌ proxy_domains DNS 创建失败"
-                    fi
-                  elif [ "$EXISTING_DNS_CONTENT" != "$HOST_IP" ]; then
-                    echo ">>> 更新 DNS A: $MASKED_PROXY_DOMAIN -> $HOST_IP (原IP: ${EXISTING_DNS_CONTENT})"
-                    DNS_RESULT=$(curl -s -X PUT "https://api.cloudflare.com/client/v4/zones/${PROXY_ZONE_ID}/dns_records/${EXISTING_DNS_ID}" \
-                      -H "X-Auth-Email: ${PROXY_CF_EMAIL}" \
-                      -H "X-Auth-Key: ${PROXY_CF_KEY}" \
-                      -H "Content-Type: application/json" \
-                      -d "{\"type\":\"A\",\"name\":\"${PROXY_DOMAIN}\",\"content\":\"${HOST_IP}\",\"proxied\":false}")
-                      
-                    if echo "$DNS_RESULT" | jq -e '.success' > /dev/null; then
-                      echo "✅ proxy_domains DNS 已更新"
-                    else
-                      echo "❌ proxy_domains DNS 更新失败"
-                    fi
-                  else
-                    echo "✅ proxy_domains DNS 记录已存在且正确 $MASKED_PROXY_DOMAIN -> $HOST_IP"
-                  fi
-                else
-                  echo "⚠️ 无法获取主机 $HOST_NAME 的公网 IP，跳过 proxy_domains 记录更新"
+
+                if [ -n "$HOST_IPV4" ]; then
+                  update_dns_record "$PROXY_ZONE_ID" "$PROXY_CF_EMAIL" "$PROXY_CF_KEY" "$PROXY_DOMAIN" "A" "$HOST_IPV4" "$MASKED_PROXY_DOMAIN"
+                fi
+                if [ -n "$HOST_IPV6" ]; then
+                  update_dns_record "$PROXY_ZONE_ID" "$PROXY_CF_EMAIL" "$PROXY_CF_KEY" "$PROXY_DOMAIN" "AAAA" "$HOST_IPV6" "$MASKED_PROXY_DOMAIN"
+                fi
+                if [ -z "$HOST_IPV4" ] && [ -z "$HOST_IPV6" ]; then
+                  echo "⚠️ 无法获取主机 $HOST_NAME 的 IPv4/IPv6 公网地址，跳过 proxy_domains 记录更新"
                 fi
             else
                 echo ">>> proxy_domains 未配置，跳过直连域名 DNS 设置"
@@ -522,6 +540,9 @@ jobs:
 
               # 开放端口 (Idempotent check)
               sudo iptables -C INPUT -p tcp --dport 5443 -j ACCEPT 2>/dev/null || sudo iptables -I INPUT -p tcp --dport 5443 -j ACCEPT
+              if [ -n "$HOST_IPV6" ]; then
+                sudo ip6tables -C INPUT -p tcp --dport 5443 -j ACCEPT 2>/dev/null || sudo ip6tables -I INPUT -p tcp --dport 5443 -j ACCEPT
+              fi
               sudo netfilter-persistent save 2>/dev/null || true
               
               # 检查安装
@@ -551,6 +572,8 @@ jobs:
               XRAY_CONFIG=$(jq -n \
                 --arg uuid "$VLESS_UUID" \
                 --arg host "a.189.cn" \
+                --arg direct_listen "$DIRECT_LISTEN" \
+                --arg domain_strategy "$XRAY_DOMAIN_STRATEGY" \
                 '{
                   log: {loglevel: "warning"},
                   inbounds: [
@@ -563,13 +586,13 @@ jobs:
                     },
                     {
                       port: 5443,
-                      listen: "0.0.0.0",
+                      listen: $direct_listen,
                       protocol: "vless",
                       settings: {clients: [{id: $uuid, level: 0}], decryption: "none"},
                       streamSettings: {network: "ws", wsSettings: {path: "/", headers: {Host: $host}}}
                     }
                   ],
-                  outbounds: [{protocol: "freedom", settings: {domainStrategy: "UseIPv4"}}]
+                  outbounds: [{protocol: "freedom", settings: {domainStrategy: $domain_strategy}}]
                 }')
               echo "✅ 配置包含: Tunnel + Direct VLESS (无 TLS)"
             elif [ "$HAS_DIRECT" = "true" ]; then
@@ -577,24 +600,27 @@ jobs:
               XRAY_CONFIG=$(jq -n \
                 --arg uuid "$VLESS_UUID" \
                 --arg host "a.189.cn" \
+                --arg direct_listen "$DIRECT_LISTEN" \
+                --arg domain_strategy "$XRAY_DOMAIN_STRATEGY" \
                 '{
                   log: {loglevel: "warning"},
                   inbounds: [
                     {
                       port: 5443,
-                      listen: "0.0.0.0",
+                      listen: $direct_listen,
                       protocol: "vless",
                       settings: {clients: [{id: $uuid, level: 0}], decryption: "none"},
                       streamSettings: {network: "ws", wsSettings: {path: "/", headers: {Host: $host}}}
                     }
                   ],
-                  outbounds: [{protocol: "freedom", settings: {domainStrategy: "UseIPv4"}}]
+                  outbounds: [{protocol: "freedom", settings: {domainStrategy: $domain_strategy}}]
                 }')
               echo "✅ 配置包含: 仅 Direct VLESS (无 TLS)"
             elif [ "$HAS_TUNNEL" = "true" ]; then
                # 单入口配置 (仅 Tunnel)
               XRAY_CONFIG=$(jq -n \
                 --arg uuid "$VLESS_UUID" \
+                --arg domain_strategy "$XRAY_DOMAIN_STRATEGY" \
                 '{
                   log: {loglevel: "warning"},
                   inbounds: [
@@ -606,7 +632,7 @@ jobs:
                       streamSettings: {network: "ws", wsSettings: {path: "/library1629"}}
                     }
                   ],
-                  outbounds: [{protocol: "freedom", settings: {domainStrategy: "UseIPv4"}}]
+                  outbounds: [{protocol: "freedom", settings: {domainStrategy: $domain_strategy}}]
                 }')
               echo "✅ 配置包含: 仅 Tunnel"
             else
