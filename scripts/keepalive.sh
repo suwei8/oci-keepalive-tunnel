@@ -9,6 +9,9 @@ set -uo pipefail
 RESULTS_FILE="/tmp/keepalive_results.txt"
 REMOTE_SCRIPT="scripts/remote_keepalive.py"
 MAX_PARALLEL=5  # 最大并行数 (增加到5)
+SKIP_HOST_NAMES=("AWS2")
+SKIP_HOST_CONTAINS=("gcp")
+SKIP_HOST_PREFIXES=("FR-free-v6-")
 
 # 初始化结果文件
 echo "| Host | Status | Duration |" > "$RESULTS_FILE"
@@ -138,6 +141,30 @@ main() {
     # 将所有主机读入数组
     local -a host_names=()
     local -a host_addrs=()
+
+    should_skip_host() {
+        local host_name="$1"
+        local host_name_lower="${host_name,,}"
+        local skip_name
+        local needle
+        local prefix
+        for skip_name in "${SKIP_HOST_NAMES[@]}"; do
+            if [[ "$host_name" == "$skip_name" ]]; then
+                return 0
+            fi
+        done
+        for needle in "${SKIP_HOST_CONTAINS[@]}"; do
+            if [[ "$host_name_lower" == *"$needle"* ]]; then
+                return 0
+            fi
+        done
+        for prefix in "${SKIP_HOST_PREFIXES[@]}"; do
+            if [[ "$host_name" == "$prefix"* ]]; then
+                return 0
+            fi
+        done
+        return 1
+    }
     
     while IFS= read -r host; do
         name=$(echo "$host" | jq -r '.name')
@@ -145,6 +172,11 @@ main() {
         
         # 如果指定了目标主机，则只添加该主机
         if [ -n "${TARGET_HOST:-}" ] && [ "$name" != "$TARGET_HOST" ]; then
+            continue
+        fi
+
+        if should_skip_host "$name"; then
+            echo "Skipping keepalive for $name"
             continue
         fi
         

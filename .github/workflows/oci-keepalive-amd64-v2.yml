@@ -59,9 +59,13 @@ jobs:
               "US-GCP俄勒冈",
               "US-GCP俄勒冈2",
               "AWS",
+              "AWS2",
               "US-bestvm-232-amd",
               "US-bestvm-235-amd",
           }
+          excluded_prefixes = (
+              "fr-free-v6-",
+          )
 
           matrix = []
           for index, host in enumerate(hosts):
@@ -72,6 +76,10 @@ jobs:
               if host.get("name") in excluded:
                   continue
               host_name = (host.get("name") or "").lower()
+              if "gcp" in host_name:
+                  continue
+              if host_name.startswith(excluded_prefixes):
+                  continue
               if "ampere" in host_name or "trustclaw" in host_name:
                   continue
               ssh_host = (host.get("ssh_host") or "").strip()
