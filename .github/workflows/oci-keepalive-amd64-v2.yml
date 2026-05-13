@@ -2,7 +2,7 @@ name: OCI Keepalive via Tunnel (AMD64) V2
 
 on:
   schedule:
-    - cron: "0 */6 * * *"
+    - cron: "0 19 * * *"
   workflow_dispatch:
     inputs:
       target_indexes:
