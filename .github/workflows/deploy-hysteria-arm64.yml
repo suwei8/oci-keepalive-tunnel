@@ -54,7 +54,7 @@ jobs:
             UserKnownHostsFile /dev/null
             LogLevel ERROR
           EOF
-          sudo apt-get update -qq && sudo apt-get install -y -qq sshpass jq
+          sudo apt-get update -qq && sudo apt-get install -y -qq sshpass jq dnsutils
 
       - name: Deploy to all hosts
         id: deploy
@@ -83,11 +83,156 @@ jobs:
           # 获取配置 (添加随机参数避开 CDN 缓存)
           HOSTS_CONFIG=$(curl -s "${HOSTS_CONFIG_URL}?t=$(date +%s)") || true
 
+          mask_ip() {
+            local ip="$1"
+            if [ -z "$ip" ]; then
+              echo "<empty>"
+            else
+              echo "$ip" | awk -F. '{print $1"."$2".*.*"}'
+            fi
+          }
+
+          mask_domain() {
+            local domain="$1"
+            if [ -z "$domain" ] || [ "$domain" = "null" ]; then
+              echo "<empty>"
+              return
+            fi
+
+            local prefix suffix
+            prefix=$(echo "$domain" | cut -d. -f1)
+            suffix=$(echo "$domain" | grep -oE '[^.]+\.[^.]+$')
+
+            if [ -n "$prefix" ] && [ -n "$suffix" ]; then
+              echo "${prefix}.***.${suffix}"
+            else
+              echo "$domain"
+            fi
+          }
+
+          select_cf_account() {
+            local domain="$1"
+            CURRENT_ZONE_ID="$CF_ZONE_ID"
+            CURRENT_API_EMAIL="$CF_API_EMAIL"
+            CURRENT_API_KEY="$CF_API_KEY"
+            CURRENT_CF_LABEL="default"
+
+            if [[ "$domain" == *"555606.xyz" ]]; then
+              CURRENT_ZONE_ID="$CF_ZONE_ID_555606"
+              CURRENT_API_EMAIL="$CF_API_EMAIL_555606"
+              CURRENT_API_KEY="$CF_API_KEY_555606"
+              CURRENT_CF_LABEL="555606.xyz"
+            fi
+          }
+
+          update_dns_record() {
+            local zone_id="$1"
+            local cf_email="$2"
+            local cf_key="$3"
+            local record_name="$4"
+            local record_type="$5"
+            local record_content="$6"
+            local masked_name="$7"
+            local dns_check=""
+            local existing_id=""
+            local existing_content=""
+            local dns_result=""
+
+            DNS_CHANGED="false"
+            dns_check=$(curl -s "https://api.cloudflare.com/client/v4/zones/${zone_id}/dns_records?name=${record_name}&type=${record_type}" \
+              -H "X-Auth-Email: ${cf_email}" \
+              -H "X-Auth-Key: ${cf_key}")
+
+            existing_id=$(echo "$dns_check" | jq -r '.result[0].id // empty')
+            existing_content=$(echo "$dns_check" | jq -r '.result[0].content // empty')
+
+            if [ -z "$existing_id" ]; then
+              echo ">>> 创建 DNS ${record_type}: ${masked_name} -> $(mask_ip "$record_content")"
+              dns_result=$(curl -s -X POST "https://api.cloudflare.com/client/v4/zones/${zone_id}/dns_records" \
+                -H "X-Auth-Email: ${cf_email}" \
+                -H "X-Auth-Key: ${cf_key}" \
+                -H "Content-Type: application/json" \
+                -d "{\"type\":\"${record_type}\",\"name\":\"${record_name}\",\"content\":\"${record_content}\",\"proxied\":false,\"ttl\":1}")
+
+              if echo "$dns_result" | jq -e '.success' > /dev/null; then
+                echo "✅ DNS ${record_type} 记录已创建"
+                DNS_CHANGED="true"
+                return 0
+              fi
+
+              if echo "$dns_result" | jq -e '.errors[]? | select(.code == 81058)' > /dev/null; then
+                echo "⚠️ DNS ${record_type} 记录已存在，重新读取当前记录"
+                DNS_CHANGED="true"
+                dns_check=$(curl -s "https://api.cloudflare.com/client/v4/zones/${zone_id}/dns_records?name=${record_name}&type=${record_type}" \
+                  -H "X-Auth-Email: ${cf_email}" \
+                  -H "X-Auth-Key: ${cf_key}")
+                existing_id=$(echo "$dns_check" | jq -r '.result[0].id // empty')
+                existing_content=$(echo "$dns_check" | jq -r '.result[0].content // empty')
+              else
+                echo "❌ DNS ${record_type} 记录创建失败"
+                echo "$dns_result" | jq '.errors'
+                return 1
+              fi
+            fi
+
+            if [ -z "$existing_id" ]; then
+              echo "❌ DNS ${record_type} 记录不存在，无法继续"
+              return 1
+            fi
+
+            if [ "$existing_content" != "$record_content" ]; then
+              echo ">>> 更新 DNS ${record_type}: ${masked_name} -> $(mask_ip "$record_content")"
+              dns_result=$(curl -s -X PUT "https://api.cloudflare.com/client/v4/zones/${zone_id}/dns_records/${existing_id}" \
+                -H "X-Auth-Email: ${cf_email}" \
+                -H "X-Auth-Key: ${cf_key}" \
+                -H "Content-Type: application/json" \
+                -d "{\"type\":\"${record_type}\",\"name\":\"${record_name}\",\"content\":\"${record_content}\",\"proxied\":false,\"ttl\":1}")
+
+              if echo "$dns_result" | jq -e '.success' > /dev/null; then
+                echo "✅ DNS ${record_type} 记录已更新"
+                DNS_CHANGED="true"
+              else
+                echo "❌ DNS ${record_type} 记录更新失败"
+                echo "$dns_result" | jq '.errors'
+                return 1
+              fi
+            else
+              echo "✅ DNS ${record_type} 记录已存在且正确"
+            fi
+          }
+
+          wait_for_dns_record() {
+            local record_name="$1"
+            local expected_ip="$2"
+            local masked_name="$3"
+            local expected_masked_ip="$4"
+            local dns_1=""
+            local dns_2=""
+            local attempt=""
+
+            for attempt in $(seq 1 24); do
+              dns_1=$(dig +short @1.1.1.1 A "$record_name" | tail -1)
+              dns_2=$(dig +short @8.8.8.8 A "$record_name" | tail -1)
+
+              if [ "$dns_1" = "$expected_ip" ] && [ "$dns_2" = "$expected_ip" ]; then
+                echo "✅ 公共 DNS 已生效: ${masked_name} -> ${expected_masked_ip}"
+                return 0
+              fi
+
+              echo ">>> 等待 DNS 生效 (${attempt}/24): ${masked_name} 目标 ${expected_masked_ip}"
+              sleep 5
+            done
+
+            echo "❌ DNS 生效等待超时: ${masked_name} -> ${expected_masked_ip}"
+            return 1
+          }
+
           NODES_INFO=""
           DEPLOYED_COUNT=0
           SKIPPED_COUNT=0
           UPDATED_COUNT=0
           FAILED_COUNT=0
+          ELIGIBLE_COUNT=0
           
           HOST_COUNT=$(echo "$HOSTS_CONFIG" | jq '. | length')
           echo "Total hosts: $HOST_COUNT"
@@ -116,6 +261,9 @@ jobs:
             if [ -n "$TARGET_HOST" ] && [ "$HOST_NAME" != "$TARGET_HOST" ]; then
               continue
             fi
+
+            ELIGIBLE_COUNT=$((ELIGIBLE_COUNT + 1))
+            MASKED_PROXY_DOMAIN=$(mask_domain "$PROXY_DOMAIN")
 
             # 隐藏敏感信息
             echo "::add-mask::$SSH_HOST"
@@ -146,7 +294,7 @@ jobs:
               CLEAN_IP=$(echo "$RAW_OUTPUT" | grep -oE "\b([0-9]{1,3}\.){3}[0-9]{1,3}\b" | head -1)
               if [ -n "$CLEAN_IP" ]; then
                 PUBLIC_IP="$CLEAN_IP"
-                echo "✅ Got IP from $ip_service: $PUBLIC_IP"
+                echo "✅ Got IP from $ip_service: $(mask_ip "$PUBLIC_IP")"
                 break
               else
                 echo "⚠️ Failed to get IP from $ip_service"
@@ -161,43 +309,28 @@ jobs:
               continue
             fi
             echo "::add-mask::$PUBLIC_IP"
-            MASKED_IP=$(echo "$PUBLIC_IP" | awk -F. '{print $1"."$2".*.*"}')
+            MASKED_IP=$(mask_ip "$PUBLIC_IP")
             echo "✅ 公网 IP: $MASKED_IP"
             
             # 动态选择 Zone ID 和 凭证
-            CURRENT_ZONE_ID="$CF_ZONE_ID"
-            CURRENT_API_EMAIL="$CF_API_EMAIL"
-            CURRENT_API_KEY="$CF_API_KEY"
+            select_cf_account "$PROXY_DOMAIN"
+            echo ">>> 使用 Cloudflare 凭证: $CURRENT_CF_LABEL"
             
-            if [[ "$PROXY_DOMAIN" == *"555606.xyz"* ]]; then
-              CURRENT_ZONE_ID="$CF_ZONE_ID_555606"
-              CURRENT_API_EMAIL="$CF_API_EMAIL_555606"
-              CURRENT_API_KEY="$CF_API_KEY_555606"
-              echo ">>> 使用 555606.xyz 凭证配置"
-            else
-              echo ">>> 使用默认 hhwpxh.com 凭证配置"
-            fi
-            
-            # DNS 配置 (每次都检查，确保 DNS 记录存在)
+            # DNS 配置
             echo ">>> 检查 DNS..."
-            DNS_RECORD=$(curl -s "https://api.cloudflare.com/client/v4/zones/${CURRENT_ZONE_ID}/dns_records?name=${PROXY_DOMAIN}" -H "X-Auth-Email: ${CURRENT_API_EMAIL}" -H "X-Auth-Key: ${CURRENT_API_KEY}" | jq -r '.result[0].content // empty')
-            
-            if [ -z "$DNS_RECORD" ]; then
-              echo ">>> 创建 DNS A 记录: ${PROXY_DOMAIN} -> ${MASKED_IP}"
-              DNS_RESULT=$(curl -s -X POST "https://api.cloudflare.com/client/v4/zones/${CURRENT_ZONE_ID}/dns_records" -H "X-Auth-Email: ${CURRENT_API_EMAIL}" -H "X-Auth-Key: ${CURRENT_API_KEY}" -H "Content-Type: application/json" -d "{\"type\":\"A\",\"name\":\"${PROXY_DOMAIN}\",\"content\":\"${PUBLIC_IP}\",\"proxied\":false,\"ttl\":1}")
-              if echo "$DNS_RESULT" | jq -e '.success' > /dev/null; then
-                echo "✅ DNS 记录已创建"
-              else
-                echo "❌ DNS 创建失败"
-                echo "$DNS_RESULT" | jq '.errors'
+
+            if ! update_dns_record "$CURRENT_ZONE_ID" "$CURRENT_API_EMAIL" "$CURRENT_API_KEY" "$PROXY_DOMAIN" "A" "$PUBLIC_IP" "$MASKED_PROXY_DOMAIN"; then
+              FAILED_COUNT=$((FAILED_COUNT + 1))
+              kill $TUNNEL_PID 2>/dev/null || true
+              continue
+            fi
+
+            if [ "$DNS_CHANGED" = "true" ]; then
+              if ! wait_for_dns_record "$PROXY_DOMAIN" "$PUBLIC_IP" "$MASKED_PROXY_DOMAIN" "$MASKED_IP"; then
+                FAILED_COUNT=$((FAILED_COUNT + 1))
+                kill $TUNNEL_PID 2>/dev/null || true
+                continue
               fi
-            elif [ "$DNS_RECORD" != "$PUBLIC_IP" ]; then
-              echo ">>> 更新 DNS A 记录: ${PROXY_DOMAIN} -> ${MASKED_IP}"
-              RECORD_ID=$(curl -s "https://api.cloudflare.com/client/v4/zones/${CURRENT_ZONE_ID}/dns_records?name=${PROXY_DOMAIN}" -H "X-Auth-Email: ${CURRENT_API_EMAIL}" -H "X-Auth-Key: ${CURRENT_API_KEY}" | jq -r '.result[0].id')
-              curl -s -X PUT "https://api.cloudflare.com/client/v4/zones/${CURRENT_ZONE_ID}/dns_records/${RECORD_ID}" -H "X-Auth-Email: ${CURRENT_API_EMAIL}" -H "X-Auth-Key: ${CURRENT_API_KEY}" -H "Content-Type: application/json" -d "{\"type\":\"A\",\"name\":\"${PROXY_DOMAIN}\",\"content\":\"${PUBLIC_IP}\",\"proxied\":false,\"ttl\":1}" > /dev/null
-              echo "✅ DNS 记录已更新"
-            else
-              echo "✅ DNS 记录已存在且正确"
             fi
             
             # 每次连接都检查并开放 iptables 端口
@@ -310,14 +443,22 @@ jobs:
             if [ "$CERT_EXISTS" = "CERT_FOUND" ]; then
                 echo "✅ SSL 证书已存在"
             else
+              echo ">>> 确认公共 DNS 解析..."
+              if ! wait_for_dns_record "$PROXY_DOMAIN" "$PUBLIC_IP" "$MASKED_PROXY_DOMAIN" "$MASKED_IP"; then
+                FAILED_COUNT=$((FAILED_COUNT + 1))
+                kill $TUNNEL_PID 2>/dev/null || true
+                continue
+              fi
+
               echo ">>> 申请 SSL 证书..."
               sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" "
                 echo '#!/bin/sh' > ~/.askpass.sh; echo 'echo \"$SSH_PASSWORD\"' >> ~/.askpass.sh; chmod +x ~/.askpass.sh; export SUDO_ASKPASS=~/.askpass.sh; sudo() { command sudo -A \"\$@\"; }; export -f sudo;
                 if ! command -v certbot > /dev/null 2>&1; then
+                  sudo systemctl stop unattended-upgrades apt-daily.service apt-daily-upgrade.service apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
                   CERTBOT_READY=no
                   for ATTEMPT in 1 2 3; do
                     LOCK_RELEASED=no
-                    for LOCK_WAIT in $(seq 1 12); do
+                    for LOCK_WAIT in $(seq 1 24); do
                       if sudo fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock /var/cache/apt/archives/lock > /dev/null 2>&1; then
                         echo '>>> 等待 apt 锁释放...'
                         sleep 5
@@ -331,7 +472,7 @@ jobs:
                       sleep 5
                       continue
                     fi
-                    if sudo env DEBIAN_FRONTEND=noninteractive apt-get update -qq && sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq certbot; then
+                    if sudo env DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=60 update -qq && sudo env DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=60 install -y -qq certbot; then
                       CERTBOT_READY=yes
                       break
                     fi
@@ -495,7 +636,7 @@ jobs:
           
           echo ""
           echo "==========================================="
-          echo "完成: 新部署 $DEPLOYED_COUNT, 更新 $UPDATED_COUNT, 跳过 $SKIPPED_COUNT, 失败 $FAILED_COUNT"
+          echo "完成: 候选 $ELIGIBLE_COUNT, 新部署 $DEPLOYED_COUNT, 更新 $UPDATED_COUNT, 跳过 $SKIPPED_COUNT, 失败 $FAILED_COUNT"
           echo "==========================================="
           
           echo -en "$NODES_INFO" > /tmp/nodes_info.txt
