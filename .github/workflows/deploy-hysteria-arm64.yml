@@ -87,6 +87,7 @@ jobs:
           DEPLOYED_COUNT=0
           SKIPPED_COUNT=0
           UPDATED_COUNT=0
+          FAILED_COUNT=0
           
           HOST_COUNT=$(echo "$HOSTS_CONFIG" | jq '. | length')
           echo "Total hosts: $HOST_COUNT"
@@ -133,6 +134,7 @@ jobs:
             
             if ! kill -0 $TUNNEL_PID 2>/dev/null; then
               echo "❌ Tunnel 连接失败"
+              FAILED_COUNT=$((FAILED_COUNT + 1))
               continue
             fi
             
@@ -154,6 +156,7 @@ jobs:
 
             if [ -z "$PUBLIC_IP" ]; then
               echo "❌ 无法获取公网 IP (All services failed)"
+              FAILED_COUNT=$((FAILED_COUNT + 1))
               kill $TUNNEL_PID 2>/dev/null || true
               continue
             fi
@@ -305,12 +308,30 @@ jobs:
             echo ">>> 证书状态: $CERT_EXISTS"
             
             if [ "$CERT_EXISTS" = "CERT_FOUND" ]; then
-              echo "✅ SSL 证书已存在"
+                echo "✅ SSL 证书已存在"
             else
               echo ">>> 申请 SSL 证书..."
               sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" "
                 echo '#!/bin/sh' > ~/.askpass.sh; echo 'echo \"$SSH_PASSWORD\"' >> ~/.askpass.sh; chmod +x ~/.askpass.sh; export SUDO_ASKPASS=~/.askpass.sh; sudo() { command sudo -A \"\$@\"; }; export -f sudo;
-                which certbot > /dev/null 2>&1 || (sudo apt-get update -qq && sudo apt-get install -y -qq certbot)
+                if ! command -v certbot > /dev/null 2>&1; then
+                  CERTBOT_READY=no
+                  for ATTEMPT in 1 2 3; do
+                    while sudo fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock /var/cache/apt/archives/lock > /dev/null 2>&1; do
+                      echo '>>> 等待 apt 锁释放...'
+                      sleep 5
+                    done
+                    if sudo env DEBIAN_FRONTEND=noninteractive apt-get update -qq && sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq certbot; then
+                      CERTBOT_READY=yes
+                      break
+                    fi
+                    echo '>>> certbot 安装失败，等待重试...'
+                    sleep 5
+                  done
+                  if [ \"\$CERTBOT_READY\" != \"yes\" ] && ! command -v certbot > /dev/null 2>&1; then
+                    echo '❌ certbot 安装失败'
+                    exit 1
+                  fi
+                fi
                 # 停止所有占用端口80的服务
                 sudo systemctl stop nginx 2>/dev/null || true
                 sudo docker stop \$(sudo docker ps -q --filter 'publish=80') 2>/dev/null || true
@@ -330,6 +351,7 @@ jobs:
                 echo "✅ SSL 证书就绪"
               else
                 echo "❌ SSL 证书申请失败"
+                FAILED_COUNT=$((FAILED_COUNT + 1))
                 kill $TUNNEL_PID 2>/dev/null || true
                 continue
               fi
@@ -454,6 +476,7 @@ jobs:
               NODES_INFO="${NODES_INFO}hysteria2://${HYSTERIA_PASSWORD}@${PROXY_DOMAIN}:${HYSTERIA_PORT}?insecure=0&sni=${PROXY_DOMAIN}#${HOST_NAME}\n"
             else
               echo "❌ 部署失败: $HOST_NAME (3次重试后仍失败)"
+              FAILED_COUNT=$((FAILED_COUNT + 1))
             fi
             
             kill $TUNNEL_PID 2>/dev/null || true
@@ -461,10 +484,14 @@ jobs:
           
           echo ""
           echo "==========================================="
-          echo "完成: 新部署 $DEPLOYED_COUNT, 更新 $UPDATED_COUNT, 跳过 $SKIPPED_COUNT"
+          echo "完成: 新部署 $DEPLOYED_COUNT, 更新 $UPDATED_COUNT, 跳过 $SKIPPED_COUNT, 失败 $FAILED_COUNT"
           echo "==========================================="
           
           echo -en "$NODES_INFO" > /tmp/nodes_info.txt
+
+          if [ "$FAILED_COUNT" -gt 0 ]; then
+            exit 1
+          fi
 
       - name: Send Telegram notification
         env:
@@ -549,6 +576,7 @@ jobs:
           echo "✅ 已推送到 blog 仓库"
 
       - name: Summary
+        if: always()
         run: |
           echo "## 🚀 Hysteria v2 部署结果" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
