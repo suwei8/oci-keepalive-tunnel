@@ -238,7 +238,7 @@ jobs:
           echo "Total hosts: $HOST_COUNT"
           
           # 定时任务时自动更新镜像
-          if [ "${{ github.event_name }}" = "schedule" ]; then
+          if [ "$GITHUB_EVENT_NAME" = "schedule" ]; then
             UPDATE_IMAGE="true"
           fi
           
