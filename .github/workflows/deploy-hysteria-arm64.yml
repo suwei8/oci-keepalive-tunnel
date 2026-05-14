@@ -458,7 +458,7 @@ jobs:
                   CERTBOT_READY=no
                   for ATTEMPT in 1 2 3; do
                     LOCK_RELEASED=no
-                    for LOCK_WAIT in $(seq 1 24); do
+                    for LOCK_WAIT in \$(seq 1 24); do
                       if sudo fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock /var/cache/apt/archives/lock > /dev/null 2>&1; then
                         echo '>>> 等待 apt 锁释放...'
                         sleep 5
@@ -467,7 +467,7 @@ jobs:
                         break
                       fi
                     done
-                    if [ "$LOCK_RELEASED" != "yes" ]; then
+                    if [ "\$LOCK_RELEASED" != "yes" ]; then
                       echo '>>> apt 锁长时间未释放，停止本次安装尝试'
                       sleep 5
                       continue
