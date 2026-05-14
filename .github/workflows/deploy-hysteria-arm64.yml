@@ -316,10 +316,21 @@ jobs:
                 if ! command -v certbot > /dev/null 2>&1; then
                   CERTBOT_READY=no
                   for ATTEMPT in 1 2 3; do
-                    while sudo fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock /var/cache/apt/archives/lock > /dev/null 2>&1; do
-                      echo '>>> 等待 apt 锁释放...'
-                      sleep 5
+                    LOCK_RELEASED=no
+                    for LOCK_WAIT in $(seq 1 12); do
+                      if sudo fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock /var/cache/apt/archives/lock > /dev/null 2>&1; then
+                        echo '>>> 等待 apt 锁释放...'
+                        sleep 5
+                      else
+                        LOCK_RELEASED=yes
+                        break
+                      fi
                     done
+                    if [ "$LOCK_RELEASED" != "yes" ]; then
+                      echo '>>> apt 锁长时间未释放，停止本次安装尝试'
+                      sleep 5
+                      continue
+                    fi
                     if sudo env DEBIAN_FRONTEND=noninteractive apt-get update -qq && sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq certbot; then
                       CERTBOT_READY=yes
                       break
