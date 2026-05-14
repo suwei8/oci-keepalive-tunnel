@@ -101,28 +101,24 @@ jobs:
             HOST_NAME=$(echo "$host_item" | jq -r '.name')
             SSH_HOST=$(echo "$host_item" | jq -r '.ssh_host')
             PROXY_DOMAIN=$(echo "$host_item" | jq -r '.proxy_domains')
-            VLESS_HOST=$(echo "$host_item" | jq -r '.vless_host')
             CPU_TYPE=$(echo "$host_item" | jq -r '.cpu_type')
-            
-            # 隐藏敏感信息
-            echo "::add-mask::$SSH_HOST"
-            echo "::add-mask::$PROXY_DOMAIN"
-            
+
             if [ "$HOST_NAME" = "null" ] || [ -z "$HOST_NAME" ]; then
               continue
             fi
             
-            # 只处理 arm64 类型的主机
-            if [ "$CPU_TYPE" != "arm64" ]; then
+            # 只处理 arm64 且 proxy_domains 非空的主机
+            if [ "$CPU_TYPE" != "arm64" ] || [ "$PROXY_DOMAIN" = "null" ] || [ -z "$PROXY_DOMAIN" ]; then
               continue
             fi
             
             if [ -n "$TARGET_HOST" ] && [ "$HOST_NAME" != "$TARGET_HOST" ]; then
               continue
             fi
-            
-            # 跳过条件: vless_host 和 proxy_domains 均为空的，提前跳是不对的，我们需要进主机清理。但是原逻辑是：
-            # 如果没有配置 proxy_domain 但配了 vless_host，对 Hysteria 仍然是无效节点，应当清理 Hysteria。
+
+            # 隐藏敏感信息
+            echo "::add-mask::$SSH_HOST"
+            echo "::add-mask::$PROXY_DOMAIN"
             
             echo ""
             echo "==========================================="
@@ -137,20 +133,6 @@ jobs:
             
             if ! kill -0 $TUNNEL_PID 2>/dev/null; then
               echo "❌ Tunnel 连接失败"
-              continue
-            fi
-            
-            # 如果 proxy_domains 为空，则清理 Hysteria 容器服务
-            if [ "$PROXY_DOMAIN" = "null" ] || [ -z "$PROXY_DOMAIN" ]; then
-              echo ">>> proxy_domains 为空，清理 Hysteria Docker 服务并跳过..."
-              sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" "
-                echo '#!/bin/sh' > ~/.askpass.sh; echo 'echo \"$SSH_PASSWORD\"' >> ~/.askpass.sh; chmod +x ~/.askpass.sh; export SUDO_ASKPASS=~/.askpass.sh; sudo() { command sudo -A \"\$@\"; }; export -f sudo;
-                cd /home/sw/docker_root/hy 2>/dev/null && sudo docker compose down 2>/dev/null || true
-                sudo docker rm -f hysteria-server 2>/dev/null || true
-                sudo rm -rf /home/sw/docker_root/hy 2>/dev/null || true
-              " 2>&1 || true
-              echo "✅ 清理完成: $HOST_NAME"
-              kill $TUNNEL_PID 2>/dev/null || true
               continue
             fi
             
