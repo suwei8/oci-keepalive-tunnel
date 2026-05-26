@@ -792,11 +792,12 @@ update_agy_switcher() {
   local recorded_tag=""
   local release_json=""
   local tmp_binary="/tmp/agy-switcher.$$"
+  local install_path="/home/sw/.local/bin/agy-switcher"
 
   RESULT_AGY_SWITCHER_TARGET_VERSION="${AGY_SWITCHER_LATEST_TAG:-unknown}"
   recorded_tag="$(grep '^agy-switcher=' /home/sw/sw_version 2>/dev/null | tail -1 | cut -d= -f2- || true)"
 
-  if [ -x /home/sw/agy-switcher ] && [ -n "$recorded_tag" ] && version_eq "$recorded_tag" "$RESULT_AGY_SWITCHER_TARGET_VERSION"; then
+  if [ -x "$install_path" ] && [ -n "$recorded_tag" ] && version_eq "$recorded_tag" "$RESULT_AGY_SWITCHER_TARGET_VERSION"; then
     RESULT_AGY_SWITCHER_STATUS="already_latest"
     RESULT_AGY_SWITCHER_VERSION="$recorded_tag"
     return
@@ -814,11 +815,12 @@ update_agy_switcher() {
   RESULT_AGY_SWITCHER_TARGET_VERSION="$current_tag"
 
   kill_named_processes "agy-switcher"
-  rm -f /home/sw/agy-switcher
+  mkdir -p /home/sw/.local/bin
+  rm -f "$install_path"
 
   if download_release_asset "$AGY_SWITCHER_REPO" "${BLOG_GITHUB_TOKEN:-}" "$release_json" "agy-switcher" "$tmp_binary"; then
     chmod +x "$tmp_binary"
-    mv -f "$tmp_binary" /home/sw/agy-switcher
+    mv -f "$tmp_binary" "$install_path"
     upsert_sw_version "agy-switcher" "$current_tag"
     RESULT_AGY_SWITCHER_STATUS="success"
     RESULT_AGY_SWITCHER_VERSION="$current_tag"
