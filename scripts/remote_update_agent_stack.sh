@@ -2,7 +2,7 @@
 
 set -uo pipefail
 
-ANTIGRAVITY_REPO="suwei8/antigravity-cli"
+AGY_SWITCHER_REPO="suwei8/agy-cli"
 AGENTBRIDGE_REPO="suwei8/agent-bridge"
 AGENTBRIDGE_ASSET_PRIMARY="agent-bridge"
 AGENTBRIDGE_ASSET_FALLBACK="agent-bridge-linux-aarch64-ubuntu20.04"
@@ -20,9 +20,9 @@ RESULT_ANTIGRAVITY_STATUS="skipped_no_argv"
 RESULT_ANTIGRAVITY_OLD_VERSION="N/A"
 RESULT_ANTIGRAVITY_NEW_VERSION="N/A"
 
-RESULT_ANTIGRAVITY_CLI_STATUS="skipped_no_argv"
-RESULT_ANTIGRAVITY_CLI_VERSION="N/A"
-RESULT_ANTIGRAVITY_CLI_TARGET_VERSION="${ANTIGRAVITY_CLI_LATEST_TAG:-unknown}"
+RESULT_AGY_SWITCHER_STATUS="skipped_no_argv"
+RESULT_AGY_SWITCHER_VERSION="N/A"
+RESULT_AGY_SWITCHER_TARGET_VERSION="${AGY_SWITCHER_LATEST_TAG:-unknown}"
 
 RESULT_BRIDGE_STATUS="skipped_no_install"
 RESULT_BRIDGE_RELEASE_TAG="N/A"
@@ -67,9 +67,9 @@ emit_results() {
   echo "RESULT_ANTIGRAVITY_STATUS=$(sanitize_value "$RESULT_ANTIGRAVITY_STATUS")"
   echo "RESULT_ANTIGRAVITY_OLD_VERSION=$(sanitize_value "$RESULT_ANTIGRAVITY_OLD_VERSION")"
   echo "RESULT_ANTIGRAVITY_NEW_VERSION=$(sanitize_value "$RESULT_ANTIGRAVITY_NEW_VERSION")"
-  echo "RESULT_ANTIGRAVITY_CLI_STATUS=$(sanitize_value "$RESULT_ANTIGRAVITY_CLI_STATUS")"
-  echo "RESULT_ANTIGRAVITY_CLI_VERSION=$(sanitize_value "$RESULT_ANTIGRAVITY_CLI_VERSION")"
-  echo "RESULT_ANTIGRAVITY_CLI_TARGET_VERSION=$(sanitize_value "$RESULT_ANTIGRAVITY_CLI_TARGET_VERSION")"
+  echo "RESULT_AGY_SWITCHER_STATUS=$(sanitize_value "$RESULT_AGY_SWITCHER_STATUS")"
+  echo "RESULT_AGY_SWITCHER_VERSION=$(sanitize_value "$RESULT_AGY_SWITCHER_VERSION")"
+  echo "RESULT_AGY_SWITCHER_TARGET_VERSION=$(sanitize_value "$RESULT_AGY_SWITCHER_TARGET_VERSION")"
   echo "RESULT_BRIDGE_STATUS=$(sanitize_value "$RESULT_BRIDGE_STATUS")"
   echo "RESULT_BRIDGE_RELEASE_TAG=$(sanitize_value "$RESULT_BRIDGE_RELEASE_TAG")"
   echo "RESULT_WINDSURF_STATUS=$(sanitize_value "$RESULT_WINDSURF_STATUS")"
@@ -357,200 +357,13 @@ get_sw_version() {
   grep "^${key}=" /home/sw/sw_version 2>/dev/null | tail -1 | cut -d= -f2- || true
 }
 
-get_mcp_bridge_token() {
-  local config_file="/home/sw/.gemini/antigravity/mcp_config.json"
 
-  [ -f "$config_file" ] || return 0
 
-  python3 - "$config_file" <<'PY'
-import json
-import sys
-from pathlib import Path
-
-path = Path(sys.argv[1])
-try:
-    data = json.loads(path.read_text())
-except Exception:
-    raise SystemExit(2)
-
-servers = data.get("mcpServers", {})
-for server_name in ("agent-bridge", "antigravity-bridge"):
-    server = servers.get(server_name, {})
-    env = server.get("env", {}) if isinstance(server, dict) else {}
-    token = env.get("TELEGRAM_BOT_TOKEN", "")
-    if token:
-        print(token)
-        raise SystemExit
-PY
-}
-
-repair_mcp_bridge_config() {
-  local config_file="/home/sw/.gemini/antigravity/mcp_config.json"
-  local output=""
-  local rc=0
-
-  [ -f "$config_file" ] || return 0
-
-  set +e
-  output="$(python3 - "$config_file" <<'PY'
-import json
-import sys
-from pathlib import Path
-
-path = Path(sys.argv[1])
-try:
-    data = json.loads(path.read_text())
-except Exception:
-    raise SystemExit(2)
-
-servers = data.get("mcpServers", {})
-updated = False
-
-legacy = servers.get("antigravity-bridge")
-if isinstance(legacy, dict):
-    if legacy.get("command") == "/home/sw/antigravity-bridge":
-        legacy["command"] = "/home/sw/agent-bridge"
-        updated = True
-    if "agent-bridge" not in servers:
-        servers["agent-bridge"] = legacy
-        updated = True
-
-current = servers.get("agent-bridge")
-if isinstance(current, dict) and current.get("command") == "/home/sw/antigravity-bridge":
-    current["command"] = "/home/sw/agent-bridge"
-    updated = True
-
-if updated:
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n")
-    print("fixed_command")
-PY
-)"
-  rc=$?
-  set -e
-
-  if [ "$rc" -eq 2 ]; then
-    RESULT_MANUAL_ACTION_REQUIRED="yes"
-    add_note "failed to parse /home/sw/.gemini/antigravity/mcp_config.json"
-    return 0
-  fi
-
-  if [ "$output" = "fixed_command" ]; then
-    add_note "repaired mcp_config bridge command path"
-  fi
-}
-
-repair_env_token_from_mcp_config() {
-  local env_file="/home/sw/.env"
-  local mcp_token=""
-  local output=""
-  local rc=0
-
-  [ -f "$env_file" ] || return 0
-
-  set +e
-  mcp_token="$(get_mcp_bridge_token)"
-  rc=$?
-  set -e
-
-  if [ "$rc" -eq 2 ]; then
-    RESULT_MANUAL_ACTION_REQUIRED="yes"
-    add_note "failed to read TELEGRAM_BOT_TOKEN from mcp_config.json"
-    return 0
-  fi
-
-  [ -n "$mcp_token" ] || return 0
-
-  output="$(python3 - "$env_file" "$mcp_token" <<'PY'
-import sys
-from pathlib import Path
-
-path = Path(sys.argv[1])
-new_token = sys.argv[2]
-lines = path.read_text().splitlines()
-
-found = False
-changed = False
-updated = []
-for line in lines:
-    if line.startswith("TELEGRAM_BOT_TOKEN="):
-        found = True
-        current = line.split("=", 1)[1]
-        if current != new_token:
-            updated.append(f"TELEGRAM_BOT_TOKEN={new_token}")
-            changed = True
-        else:
-            updated.append(line)
-    else:
-        updated.append(line)
-
-if not found:
-    updated.insert(0, f"TELEGRAM_BOT_TOKEN={new_token}")
-    changed = True
-
-if changed:
-    path.write_text("\n".join(updated) + "\n")
-    print("updated")
-PY
-)"
-
-  if [ "$output" = "updated" ]; then
-    add_note "synced TELEGRAM_BOT_TOKEN from mcp_config.json"
-  fi
-}
 
 repair_bridge_runtime_config() {
   rm -rf /home/sw/.gemini/agentbridge
-  repair_mcp_bridge_config
-  repair_env_token_from_mcp_config
 }
 
-sync_gemini_md_template() {
-  local target_file="/home/sw/.gemini/GEMINI.md"
-  local output=""
-  local rc=0
-
-  [ -n "${GEMINI_MD_TEMPLATE_BASE64:-}" ] || return 0
-  [ -f /home/sw/.antigravity/argv.json ] || return 0
-
-  set +e
-  output="$(python3 - "$target_file" "${GEMINI_MD_TEMPLATE_BASE64}" <<'PY'
-import base64
-import sys
-from pathlib import Path
-
-target = Path(sys.argv[1])
-
-try:
-    expected = base64.b64decode(sys.argv[2], validate=True)
-except Exception:
-    raise SystemExit(2)
-
-current = target.read_bytes() if target.exists() else None
-if current != expected:
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_bytes(expected)
-    print("updated")
-PY
-)"
-  rc=$?
-  set -e
-
-  if [ "$rc" -eq 2 ]; then
-    RESULT_MANUAL_ACTION_REQUIRED="yes"
-    add_note "invalid GEMINI.md template payload"
-    return 0
-  fi
-
-  if [ "$rc" -ne 0 ]; then
-    RESULT_MANUAL_ACTION_REQUIRED="yes"
-    add_note "failed to sync /home/sw/.gemini/GEMINI.md"
-    return 0
-  fi
-
-  if [ "$output" = "updated" ]; then
-    add_note "synced /home/sw/.gemini/GEMINI.md"
-  fi
-}
 
 get_env_status() {
   local env_file="/home/sw/.env"
@@ -722,8 +535,8 @@ patterns = {
         re.compile(r'(^|[\s/.])antigravity-bridge([\s]|$)'),
         re.compile(r'(^|[\s/.])agent-bridge([\s]|$)'),
     ],
-    "antigravity-cli": [
-        re.compile(r'(^|[\s/.])antigravity-cli([\s]|$)'),
+    "agy-switcher": [
+        re.compile(r'(^|[\s/.])agy-switcher([\s]|$)'),
     ],
 }
 subs = []
@@ -932,7 +745,7 @@ refresh_manage_script_if_present() {
 update_antigravity() {
   if [ ! -f /home/sw/.antigravity/argv.json ]; then
     RESULT_ANTIGRAVITY_STATUS="skipped_no_argv"
-    RESULT_ANTIGRAVITY_CLI_STATUS="skipped_no_argv"
+    RESULT_AGY_SWITCHER_STATUS="skipped_no_argv"
     return
   fi
 
@@ -974,56 +787,46 @@ update_antigravity() {
   [ -n "$RESULT_ANTIGRAVITY_NEW_VERSION" ] || RESULT_ANTIGRAVITY_NEW_VERSION="N/A"
 }
 
-update_antigravity_cli() {
+update_agy_switcher() {
   local current_tag=""
   local recorded_tag=""
   local release_json=""
-  local tmp_binary="/tmp/antigravity-cli.$$"
+  local tmp_binary="/tmp/agy-switcher.$$"
 
-  if [ "$RESULT_ENV_STATUS" = "missing" ]; then
-    RESULT_ANTIGRAVITY_CLI_STATUS="skipped_missing_env"
+  RESULT_AGY_SWITCHER_TARGET_VERSION="${AGY_SWITCHER_LATEST_TAG:-unknown}"
+  recorded_tag="$(grep '^agy-switcher=' /home/sw/sw_version 2>/dev/null | tail -1 | cut -d= -f2- || true)"
+
+  if [ -x /home/sw/agy-switcher ] && [ -n "$recorded_tag" ] && version_eq "$recorded_tag" "$RESULT_AGY_SWITCHER_TARGET_VERSION"; then
+    RESULT_AGY_SWITCHER_STATUS="already_latest"
+    RESULT_AGY_SWITCHER_VERSION="$recorded_tag"
     return
   fi
 
-  if [ ! -f /home/sw/.antigravity/argv.json ]; then
-    RESULT_ANTIGRAVITY_CLI_STATUS="skipped_no_argv"
-    return
-  fi
-
-  RESULT_ANTIGRAVITY_CLI_TARGET_VERSION="${ANTIGRAVITY_CLI_LATEST_TAG:-unknown}"
-  recorded_tag="$(grep '^antigravity-cli=' /home/sw/sw_version 2>/dev/null | tail -1 | cut -d= -f2- || true)"
-
-  if [ -x /home/sw/antigravity-cli ] && [ -n "$recorded_tag" ] && version_eq "$recorded_tag" "$RESULT_ANTIGRAVITY_CLI_TARGET_VERSION"; then
-    RESULT_ANTIGRAVITY_CLI_STATUS="already_latest"
-    RESULT_ANTIGRAVITY_CLI_VERSION="$recorded_tag"
-    return
-  fi
-
-  release_json="$(github_latest_release_json "$ANTIGRAVITY_REPO" "${BLOG_GITHUB_TOKEN:-}")" || {
-    RESULT_ANTIGRAVITY_CLI_STATUS="antigravity_cli_failed"
-    RESULT_WORKFLOW_STATUS="antigravity_cli_failed"
-    add_note "failed to query antigravity-cli latest release"
+  release_json="$(github_latest_release_json "$AGY_SWITCHER_REPO" "${BLOG_GITHUB_TOKEN:-}")" || {
+    RESULT_AGY_SWITCHER_STATUS="agy_switcher_failed"
+    RESULT_WORKFLOW_STATUS="agy_switcher_failed"
+    add_note "failed to query agy-switcher latest release"
     return
   }
 
   current_tag="$(printf '%s\n' "$release_json" | json_get_tag)"
-  [ -n "$current_tag" ] || current_tag="$RESULT_ANTIGRAVITY_CLI_TARGET_VERSION"
-  RESULT_ANTIGRAVITY_CLI_TARGET_VERSION="$current_tag"
+  [ -n "$current_tag" ] || current_tag="$RESULT_AGY_SWITCHER_TARGET_VERSION"
+  RESULT_AGY_SWITCHER_TARGET_VERSION="$current_tag"
 
-  kill_named_processes "antigravity-cli"
-  rm -f /home/sw/antigravity-cli
+  kill_named_processes "agy-switcher"
+  rm -f /home/sw/agy-switcher
 
-  if download_release_asset "$ANTIGRAVITY_REPO" "${BLOG_GITHUB_TOKEN:-}" "$release_json" "antigravity-cli" "$tmp_binary"; then
+  if download_release_asset "$AGY_SWITCHER_REPO" "${BLOG_GITHUB_TOKEN:-}" "$release_json" "agy-switcher" "$tmp_binary"; then
     chmod +x "$tmp_binary"
-    mv -f "$tmp_binary" /home/sw/antigravity-cli
-    upsert_sw_version "antigravity-cli" "$current_tag"
-    RESULT_ANTIGRAVITY_CLI_STATUS="success"
-    RESULT_ANTIGRAVITY_CLI_VERSION="$current_tag"
+    mv -f "$tmp_binary" /home/sw/agy-switcher
+    upsert_sw_version "agy-switcher" "$current_tag"
+    RESULT_AGY_SWITCHER_STATUS="success"
+    RESULT_AGY_SWITCHER_VERSION="$current_tag"
   else
     rm -f "$tmp_binary"
-    RESULT_ANTIGRAVITY_CLI_STATUS="antigravity_cli_failed"
-    RESULT_WORKFLOW_STATUS="antigravity_cli_failed"
-    add_note "failed to download antigravity-cli asset"
+    RESULT_AGY_SWITCHER_STATUS="agy_switcher_failed"
+    RESULT_WORKFLOW_STATUS="agy_switcher_failed"
+    add_note "failed to download agy-switcher asset"
   fi
 }
 
@@ -1940,8 +1743,7 @@ main() {
   repair_bridge_runtime_config
   get_env_status
   update_antigravity
-  sync_gemini_md_template
-  update_antigravity_cli
+  update_agy_switcher
   update_bridge
   update_codex
   update_windsurf

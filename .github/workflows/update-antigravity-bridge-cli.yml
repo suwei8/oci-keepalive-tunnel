@@ -31,7 +31,7 @@ jobs:
     outputs:
       matrix: ${{ steps.prepare.outputs.matrix }}
       host_count: ${{ steps.prepare.outputs.host_count }}
-      antigravity_cli_tag: ${{ steps.prepare.outputs.antigravity_cli_tag }}
+      agy_switcher_tag: ${{ steps.prepare.outputs.agy_switcher_tag }}
       codex_latest_version: ${{ steps.prepare.outputs.codex_latest_version }}
       kilocode_latest_version: ${{ steps.prepare.outputs.kilocode_latest_version }}
       claude_latest_version: ${{ steps.prepare.outputs.claude_latest_version }}
@@ -117,11 +117,11 @@ jobs:
           export MATRIX_JSON
           HOST_COUNT="$(python3 -c 'import json,os; print(len(json.loads(os.environ["MATRIX_JSON"])["include"]))')"
 
-          ANTIGRAVITY_CLI_TAG="$(curl -fsSL \
+          AGY_SWITCHER_TAG="$(curl -fsSL \
             -H "Authorization: Bearer ${BLOG_GITHUB_TOKEN}" \
             -H "Accept: application/vnd.github+json" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
-            https://api.github.com/repos/suwei8/antigravity-cli/releases/latest \
+            https://api.github.com/repos/suwei8/agy-cli/releases/latest \
             | python3 -c 'import json,sys; print(json.load(sys.stdin)["tag_name"])')"
 
           CODEX_LATEST_VERSION="$(curl -fsSL \
@@ -144,13 +144,13 @@ jobs:
 
           echo "matrix=${MATRIX_JSON}" >> "$GITHUB_OUTPUT"
           echo "host_count=${HOST_COUNT}" >> "$GITHUB_OUTPUT"
-          echo "antigravity_cli_tag=${ANTIGRAVITY_CLI_TAG}" >> "$GITHUB_OUTPUT"
+          echo "agy_switcher_tag=${AGY_SWITCHER_TAG}" >> "$GITHUB_OUTPUT"
           echo "codex_latest_version=${CODEX_LATEST_VERSION}" >> "$GITHUB_OUTPUT"
           echo "kilocode_latest_version=${KILOCODE_LATEST_VERSION}" >> "$GITHUB_OUTPUT"
           echo "claude_latest_version=${CLAUDE_LATEST_VERSION}" >> "$GITHUB_OUTPUT"
 
           echo "Prepared ${HOST_COUNT} arm64 host(s)"
-          echo "Latest antigravity-cli tag: ${ANTIGRAVITY_CLI_TAG}"
+          echo "Latest agy-switcher tag: ${AGY_SWITCHER_TAG}"
           echo "Latest codex version: ${CODEX_LATEST_VERSION}"
           echo "Latest kilocode version: ${KILOCODE_LATEST_VERSION}"
           echo "Latest claude version: ${CLAUDE_LATEST_VERSION}"
@@ -204,7 +204,7 @@ jobs:
           AGENTBRIDGE_GITHUB_TOKEN: ${{ secrets.BLOG_GITHUB_TOKEN }}
           CLIPROXYAPI_OPENAI_API_KEY: ${{ secrets.CLIPROXYAPI_OPENAI_API_KEY }}
           CLIPROXYAPI_BASE_URL: ${{ secrets.CLIPROXYAPI_BASE_URL }}
-          ANTIGRAVITY_CLI_LATEST_TAG: ${{ needs.prepare.outputs.antigravity_cli_tag }}
+          AGY_SWITCHER_LATEST_TAG: ${{ needs.prepare.outputs.agy_switcher_tag }}
           CODEX_LATEST_VERSION: ${{ needs.prepare.outputs.codex_latest_version }}
           KILOCODE_LATEST_VERSION: ${{ needs.prepare.outputs.kilocode_latest_version }}
           CLAUDE_LATEST_VERSION: ${{ needs.prepare.outputs.claude_latest_version }}
@@ -244,8 +244,6 @@ jobs:
             exit 1
           fi
 
-          GEMINI_MD_TEMPLATE_BASE64="$(base64 -w 0 .github/templates/GEMINI.md)"
-
           set +e
           sshpass -p "$SSH_PASSWORD" \
             ssh $SSH_OPTS -p 2222 "${SSH_USERNAME}@127.0.0.1" \
@@ -254,11 +252,10 @@ jobs:
              export AGENTBRIDGE_GITHUB_TOKEN='${AGENTBRIDGE_GITHUB_TOKEN}'
              export CLIPROXYAPI_OPENAI_API_KEY='${CLIPROXYAPI_OPENAI_API_KEY}'
              export CLIPROXYAPI_BASE_URL='${CLIPROXYAPI_BASE_URL}'
-             export ANTIGRAVITY_CLI_LATEST_TAG='${ANTIGRAVITY_CLI_LATEST_TAG}'
+             export AGY_SWITCHER_LATEST_TAG='${AGY_SWITCHER_LATEST_TAG}'
              export CODEX_LATEST_VERSION='${CODEX_LATEST_VERSION}'
              export KILOCODE_LATEST_VERSION='${KILOCODE_LATEST_VERSION}'
              export CLAUDE_LATEST_VERSION='${CLAUDE_LATEST_VERSION}'
-             export GEMINI_MD_TEMPLATE_BASE64='${GEMINI_MD_TEMPLATE_BASE64}'
              bash -s" \
             < scripts/remote_update_agent_stack.sh >"$REMOTE_OUTPUT_FILE" 2>&1
           REMOTE_RC=$?

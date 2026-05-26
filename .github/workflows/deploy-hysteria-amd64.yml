@@ -65,10 +65,7 @@ jobs:
           SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }}
           CF_API_EMAIL: ${{ secrets.CF_API_EMAIL }}
           CF_API_KEY: ${{ secrets.CF_API_KEY }}
-          CF_API_EMAIL_555606: ${{ secrets.CF_API_EMAIL_555606 }}
-          CF_API_KEY_555606: ${{ secrets.CF_API_KEY_555606 }}
           CF_ZONE_ID: ${{ secrets.CF_ZONE_ID }}
-          CF_ZONE_ID_555606: ${{ secrets.CF_ZONE_ID_555606 }}
           HYSTERIA_PASSWORD: ${{ secrets.HYSTERIA_PASSWORD }}
           FORCE_REDEPLOY: ${{ github.event.inputs.force_redeploy }}
           UPDATE_BINARY: ${{ github.event.inputs.update_binary }}
@@ -76,159 +73,80 @@ jobs:
         run: |
           SSH_OPTS="-o ConnectTimeout=30 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ServerAliveInterval=30"
           
-          # 获取配置
-          HOSTS_CONFIG=$(curl -s "${HOSTS_CONFIG_URL}?t=$(date +%s)") || true
-
-          mask_ip() {
-            local ip="$1"
-            if [ -z "$ip" ]; then
-              echo "<empty>"
-            else
-              echo "$ip" | awk -F. '{print $1"."$2".*.*"}'
+          add_mask_if_present() {
+            local value="${1:-}"
+            if [ -n "$value" ] && [ "$value" != "null" ]; then
+              echo "::add-mask::$value"
             fi
           }
 
-          mask_domain() {
+          fetch_dns_record_json() {
+            curl -fsSL "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records?name=${PROXY_DOMAIN}" \
+              -H "X-Auth-Email: ${CF_API_EMAIL}" \
+              -H "X-Auth-Key: ${CF_API_KEY}"
+          }
+
+          wait_for_dns_propagation() {
             local domain="$1"
-            if [ -z "$domain" ] || [ "$domain" = "null" ]; then
-              echo "<empty>"
-              return
-            fi
-
-            local prefix suffix
-            prefix=$(echo "$domain" | cut -d. -f1)
-            suffix=$(echo "$domain" | grep -oE '[^.]+\.[^.]+$')
-
-            if [ -n "$prefix" ] && [ -n "$suffix" ]; then
-              echo "${prefix}.***.${suffix}"
-            else
-              echo "$domain"
-            fi
-          }
-
-          select_cf_account() {
-            local domain="$1"
-            CURRENT_ZONE_ID="$CF_ZONE_ID"
-            CURRENT_API_EMAIL="$CF_API_EMAIL"
-            CURRENT_API_KEY="$CF_API_KEY"
-            CURRENT_CF_LABEL="default"
-
-            if [[ "$domain" == *"555606.xyz" ]]; then
-              CURRENT_ZONE_ID="$CF_ZONE_ID_555606"
-              CURRENT_API_EMAIL="$CF_API_EMAIL_555606"
-              CURRENT_API_KEY="$CF_API_KEY_555606"
-              CURRENT_CF_LABEL="555606.xyz"
-            fi
-          }
-
-          update_dns_record() {
-            local zone_id="$1"
-            local cf_email="$2"
-            local cf_key="$3"
-            local record_name="$4"
-            local record_type="$5"
-            local record_content="$6"
-            local masked_name="$7"
-            local dns_check=""
-            local existing_id=""
-            local existing_content=""
-            local dns_result=""
-
-            DNS_CHANGED="false"
-            dns_check=$(curl -s "https://api.cloudflare.com/client/v4/zones/${zone_id}/dns_records?name=${record_name}&type=${record_type}" \
-              -H "X-Auth-Email: ${cf_email}" \
-              -H "X-Auth-Key: ${cf_key}")
-
-            existing_id=$(echo "$dns_check" | jq -r '.result[0].id // empty')
-            existing_content=$(echo "$dns_check" | jq -r '.result[0].content // empty')
-
-            if [ -z "$existing_id" ]; then
-              echo ">>> 创建 DNS ${record_type}: ${masked_name} -> $(mask_ip "$record_content")"
-              dns_result=$(curl -s -X POST "https://api.cloudflare.com/client/v4/zones/${zone_id}/dns_records" \
-                -H "X-Auth-Email: ${cf_email}" \
-                -H "X-Auth-Key: ${cf_key}" \
-                -H "Content-Type: application/json" \
-                -d "{\"type\":\"${record_type}\",\"name\":\"${record_name}\",\"content\":\"${record_content}\",\"proxied\":false,\"ttl\":1}")
-
-              if echo "$dns_result" | jq -e '.success' > /dev/null; then
-                echo "✅ DNS ${record_type} 记录已创建"
-                DNS_CHANGED="true"
-                return 0
-              fi
-
-              if echo "$dns_result" | jq -e '.errors[]? | select(.code == 81058)' > /dev/null; then
-                echo "⚠️ DNS ${record_type} 记录已存在，重新读取当前记录"
-                DNS_CHANGED="true"
-                dns_check=$(curl -s "https://api.cloudflare.com/client/v4/zones/${zone_id}/dns_records?name=${record_name}&type=${record_type}" \
-                  -H "X-Auth-Email: ${cf_email}" \
-                  -H "X-Auth-Key: ${cf_key}")
-                existing_id=$(echo "$dns_check" | jq -r '.result[0].id // empty')
-                existing_content=$(echo "$dns_check" | jq -r '.result[0].content // empty')
-              else
-                echo "❌ DNS ${record_type} 记录创建失败"
-                echo "$dns_result" | jq '.errors'
-                return 1
-              fi
-            fi
-
-            if [ -z "$existing_id" ]; then
-              echo "❌ DNS ${record_type} 记录不存在，无法继续"
-              return 1
-            fi
-
-            if [ "$existing_content" != "$record_content" ]; then
-              echo ">>> 更新 DNS ${record_type}: ${masked_name} -> $(mask_ip "$record_content")"
-              dns_result=$(curl -s -X PUT "https://api.cloudflare.com/client/v4/zones/${zone_id}/dns_records/${existing_id}" \
-                -H "X-Auth-Email: ${cf_email}" \
-                -H "X-Auth-Key: ${cf_key}" \
-                -H "Content-Type: application/json" \
-                -d "{\"type\":\"${record_type}\",\"name\":\"${record_name}\",\"content\":\"${record_content}\",\"proxied\":false,\"ttl\":1}")
-
-              if echo "$dns_result" | jq -e '.success' > /dev/null; then
-                echo "✅ DNS ${record_type} 记录已更新"
-                DNS_CHANGED="true"
-              else
-                echo "❌ DNS ${record_type} 记录更新失败"
-                echo "$dns_result" | jq '.errors'
-                return 1
-              fi
-            else
-              echo "✅ DNS ${record_type} 记录已存在且正确"
-            fi
-          }
-
-          wait_for_dns_record() {
-            local record_name="$1"
             local expected_ip="$2"
-            local masked_name="$3"
-            local expected_masked_ip="$4"
-            local dns_1=""
-            local dns_2=""
             local attempt=""
+            local resolver=""
+            local resolved_ip=""
 
             for attempt in $(seq 1 24); do
-              dns_1=$(dig +short @1.1.1.1 A "$record_name" | tail -1)
-              dns_2=$(dig +short @8.8.8.8 A "$record_name" | tail -1)
+              for resolver in 1.1.1.1 8.8.8.8; do
+                resolved_ip=$(dig +short A "$domain" @"$resolver" | tail -1 | tr -d '[:space:]')
+                if [ "$resolved_ip" = "$expected_ip" ]; then
+                  echo "✅ DNS 已生效 (${resolver})"
+                  return 0
+                fi
+              done
 
-              if [ "$dns_1" = "$expected_ip" ] && [ "$dns_2" = "$expected_ip" ]; then
-                echo "✅ 公共 DNS 已生效: ${masked_name} -> ${expected_masked_ip}"
-                return 0
+              if [ "$attempt" -eq 1 ] || [ $((attempt % 6)) -eq 0 ]; then
+                echo ">>> 等待 DNS 生效 (${attempt}/24)..."
               fi
-
-              echo ">>> 等待 DNS 生效 (${attempt}/24): ${masked_name} 目标 ${expected_masked_ip}"
               sleep 5
             done
 
-            echo "❌ DNS 生效等待超时: ${masked_name} -> ${expected_masked_ip}"
+            echo "❌ DNS 未在预期时间内生效: ${domain}"
             return 1
+          }
+          
+          # 获取配置
+          HOSTS_CONFIG=$(curl -fsSL "${HOSTS_CONFIG_URL}?t=$(date +%s)") || {
+            echo "❌ 无法获取主机配置"
+            exit 1
+          }
+          echo "$HOSTS_CONFIG" | jq -e '. | arrays' > /dev/null || {
+            echo "❌ 主机配置不是有效 JSON 数组"
+            exit 1
+          }
+
+          HOSTS_CONFIG=$(echo "$HOSTS_CONFIG" | jq -c '
+            [
+              .[]
+              | select(.cpu_type == "amd64")
+              | select((.proxy_domains // "") != "")
+            ]
+          ') || {
+            echo "❌ 过滤 amd64 且 proxy_domains 非空主机失败"
+            exit 1
           }
 
           NODES_INFO=""
           DEPLOYED_COUNT=0
           SKIPPED_COUNT=0
           UPDATED_COUNT=0
-          FAILED_COUNT=0
-          ELIGIBLE_COUNT=0
+          CLEANED_COUNT=0
+          GCP_SKIPPED_COUNT=0
+          TUNNEL_FAILED_COUNT=0
+          IP_FAILED_COUNT=0
+          DNS_FAILED_COUNT=0
+          SSL_FAILED_COUNT=0
+          DEPLOY_FAILED_COUNT=0
+          TARGET_AMD64_COUNT=0
+          DOMAIN_HOST_COUNT=0
+          SUCCESS_NODE_COUNT=0
           
           HOST_COUNT=$(echo "$HOSTS_CONFIG" | jq '. | length')
           echo "Total hosts: $HOST_COUNT"
@@ -244,37 +162,25 @@ jobs:
             SSH_HOST=$(echo "$host_item" | jq -r '.ssh_host')
             PROXY_DOMAIN=$(echo "$host_item" | jq -r '.proxy_domains')
             CPU_TYPE=$(echo "$host_item" | jq -r '.cpu_type')
-
+            
+            add_mask_if_present "$SSH_HOST"
+            add_mask_if_present "$PROXY_DOMAIN"
+            
             if [ "$HOST_NAME" = "null" ] || [ -z "$HOST_NAME" ]; then
-              continue
-            fi
-            
-            # 只处理 amd64 且 proxy_domains 非空的主机
-            if [ "$CPU_TYPE" != "amd64" ] || [ "$PROXY_DOMAIN" = "null" ] || [ -z "$PROXY_DOMAIN" ]; then
-              continue
-            fi
-            
-            # 跳过 GCP 主机 (GCP 对中国流量收费)
-            if echo "$HOST_NAME" | grep -qi "GCP"; then
-              echo ">>> 跳过 GCP 主机: $HOST_NAME"
               continue
             fi
             
             if [ -n "$TARGET_HOST" ] && [ "$HOST_NAME" != "$TARGET_HOST" ]; then
               continue
             fi
-
-            ELIGIBLE_COUNT=$((ELIGIBLE_COUNT + 1))
-            MASKED_PROXY_DOMAIN=$(mask_domain "$PROXY_DOMAIN")
+            
+            TARGET_AMD64_COUNT=$((TARGET_AMD64_COUNT + 1))
             
             echo ""
             echo "==========================================="
             echo "Processing: $HOST_NAME"
             echo "==========================================="
-            echo "::add-mask::$SSH_HOST"
-            echo "::add-mask::$PROXY_DOMAIN"
             
-            # 根据主机名选择 SSH 用户名
             if echo "$HOST_NAME" | grep -Eqi "GCP|trustclaw"; then
               CURRENT_SSH_USER="$GCP_SSH_USERNAME"
               echo ">>> 使用 GCP/trustclaw 用户名: $CURRENT_SSH_USER"
@@ -289,57 +195,95 @@ jobs:
             sleep 5
             
             if ! kill -0 $TUNNEL_PID 2>/dev/null; then
-              echo "❌ Tunnel 连接失败: $HOST_NAME"
-              FAILED_COUNT=$((FAILED_COUNT + 1))
+              echo "❌ Tunnel 连接失败"
+              TUNNEL_FAILED_COUNT=$((TUNNEL_FAILED_COUNT + 1))
               continue
             fi
             
-            # 获取公网 IP (用于 DNS 配置)
+            DOMAIN_HOST_COUNT=$((DOMAIN_HOST_COUNT + 1))
+            
             PUBLIC_IP=$(sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${CURRENT_SSH_USER}@127.0.0.1" 'curl -4 -s ip.sb' 2>&1) || true
             PUBLIC_IP=$(echo "$PUBLIC_IP" | grep -oE "\b([0-9]{1,3}\.){3}[0-9]{1,3}\b" | head -1)
             if [ -z "$PUBLIC_IP" ]; then
-              echo "❌ 无法获取公网 IP: $HOST_NAME"
-              FAILED_COUNT=$((FAILED_COUNT + 1))
+              echo "❌ 无法获取公网 IP"
+              IP_FAILED_COUNT=$((IP_FAILED_COUNT + 1))
               kill $TUNNEL_PID 2>/dev/null || true
               continue
             fi
-            echo "::add-mask::$PUBLIC_IP"
-            MASKED_IP=$(mask_ip "$PUBLIC_IP")
+            add_mask_if_present "$PUBLIC_IP"
+            MASKED_IP=$(echo "$PUBLIC_IP" | awk -F. '{print $1"."$2".*.*"}')
             echo "✅ 公网 IP: $MASKED_IP"
             
-            # 根据域名选择 Cloudflare 凭证
-            select_cf_account "$PROXY_DOMAIN"
-            echo ">>> 使用 Cloudflare 凭证: $CURRENT_CF_LABEL"
-
-            # DNS 配置
             echo ">>> 检查 DNS..."
-
-            if ! update_dns_record "$CURRENT_ZONE_ID" "$CURRENT_API_EMAIL" "$CURRENT_API_KEY" "$PROXY_DOMAIN" "A" "$PUBLIC_IP" "$MASKED_PROXY_DOMAIN"; then
-              FAILED_COUNT=$((FAILED_COUNT + 1))
+            DNS_QUERY_JSON=$(fetch_dns_record_json) || {
+              echo "❌ DNS 查询失败"
+              DNS_FAILED_COUNT=$((DNS_FAILED_COUNT + 1))
               kill $TUNNEL_PID 2>/dev/null || true
               continue
+            }
+            DNS_RECORD=$(echo "$DNS_QUERY_JSON" | jq -r '.result[0].content // empty')
+            RECORD_ID=$(echo "$DNS_QUERY_JSON" | jq -r '.result[0].id // empty')
+            
+            if [ -z "$DNS_RECORD" ]; then
+              echo ">>> 创建 DNS A 记录: ${PROXY_DOMAIN} -> ${MASKED_IP}"
+              DNS_RESULT=$(curl -fsSL -X POST "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records" -H "X-Auth-Email: ${CF_API_EMAIL}" -H "X-Auth-Key: ${CF_API_KEY}" -H "Content-Type: application/json" -d "{\"type\":\"A\",\"name\":\"${PROXY_DOMAIN}\",\"content\":\"${PUBLIC_IP}\",\"proxied\":false,\"ttl\":1}" 2>/dev/null || true)
+              if echo "$DNS_RESULT" | jq -e '.success' > /dev/null; then
+                echo "✅ DNS 记录已创建"
+              else
+                if echo "$DNS_RESULT" | jq -e '.errors[]? | select(.code == 81058)' > /dev/null; then
+                  echo "⚠️ DNS 记录已存在，重新读取后继续"
+                else
+                  echo "❌ DNS 创建失败"
+                  echo "$DNS_RESULT" | jq '.errors'
+                  DNS_FAILED_COUNT=$((DNS_FAILED_COUNT + 1))
+                  kill $TUNNEL_PID 2>/dev/null || true
+                  continue
+                fi
+              fi
+              DNS_QUERY_JSON=$(fetch_dns_record_json) || {
+                echo "❌ DNS 创建后查询失败"
+                DNS_FAILED_COUNT=$((DNS_FAILED_COUNT + 1))
+                kill $TUNNEL_PID 2>/dev/null || true
+                continue
+              }
+              DNS_RECORD=$(echo "$DNS_QUERY_JSON" | jq -r '.result[0].content // empty')
+              RECORD_ID=$(echo "$DNS_QUERY_JSON" | jq -r '.result[0].id // empty')
             fi
 
-            if [ "$DNS_CHANGED" = "true" ]; then
-              if ! wait_for_dns_record "$PROXY_DOMAIN" "$PUBLIC_IP" "$MASKED_PROXY_DOMAIN" "$MASKED_IP"; then
-                FAILED_COUNT=$((FAILED_COUNT + 1))
+            if [ -n "$DNS_RECORD" ] && [ "$DNS_RECORD" != "$PUBLIC_IP" ]; then
+              echo ">>> 更新 DNS A 记录: ${PROXY_DOMAIN} -> ${MASKED_IP}"
+              if [ -z "$RECORD_ID" ]; then
+                echo "❌ DNS 记录缺少 record id，无法更新"
+                DNS_FAILED_COUNT=$((DNS_FAILED_COUNT + 1))
                 kill $TUNNEL_PID 2>/dev/null || true
                 continue
               fi
+              curl -fsSL -X PUT "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records/${RECORD_ID}" -H "X-Auth-Email: ${CF_API_EMAIL}" -H "X-Auth-Key: ${CF_API_KEY}" -H "Content-Type: application/json" -d "{\"type\":\"A\",\"name\":\"${PROXY_DOMAIN}\",\"content\":\"${PUBLIC_IP}\",\"proxied\":false,\"ttl\":1}" > /dev/null || {
+                echo "❌ DNS 更新失败"
+                DNS_FAILED_COUNT=$((DNS_FAILED_COUNT + 1))
+                kill $TUNNEL_PID 2>/dev/null || true
+                continue
+              }
+              echo "✅ DNS 记录已更新"
+            elif [ "$DNS_RECORD" = "$PUBLIC_IP" ]; then
+              echo "✅ DNS 记录已存在且正确"
+            fi
+
+            if ! wait_for_dns_propagation "$PROXY_DOMAIN" "$PUBLIC_IP"; then
+              DNS_FAILED_COUNT=$((DNS_FAILED_COUNT + 1))
+              kill $TUNNEL_PID 2>/dev/null || true
+              continue
             fi
             
-            # 检查 iptables 端口
             echo ">>> 检查 iptables 端口..."
             sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${CURRENT_SSH_USER}@127.0.0.1" "
               echo '#!/bin/sh' > ~/.askpass.sh; echo 'echo \"$SSH_PASSWORD\"' >> ~/.askpass.sh; chmod +x ~/.askpass.sh; export SUDO_ASKPASS=~/.askpass.sh; sudo() { command sudo -A \"\$@\"; }; export -f sudo;
-              # 安装必要的工具
               export DEBIAN_FRONTEND=noninteractive
               sudo apt-get update -qq 2>/dev/null || true
               echo 'iptables-persistent iptables-persistent/autosave_v4 boolean true' | sudo debconf-set-selections 2>/dev/null || true
               echo 'iptables-persistent iptables-persistent/autosave_v6 boolean true' | sudo debconf-set-selections 2>/dev/null || true
               sudo apt-get install -y -qq iptables iptables-persistent netfilter-persistent wget 2>/dev/null || true
 
-              # 开放端口
               if ! sudo iptables -C INPUT -p tcp --dport 80 -j ACCEPT 2>/dev/null; then
                 sudo iptables -I INPUT -p tcp --dport 80 -j ACCEPT
               fi
@@ -353,30 +297,26 @@ jobs:
             " 2>&1 || true
             echo "✅ iptables 端口检查完成"
             
-            # 检查服务状态
             SERVICE_ACTIVE=$(sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${CURRENT_SSH_USER}@127.0.0.1" "echo '#!/bin/sh' > ~/.askpass.sh; echo 'echo \"\$SSH_PASSWORD\"' >> ~/.askpass.sh; chmod +x ~/.askpass.sh; export SUDO_ASKPASS=~/.askpass.sh; sudo() { command sudo -A \"\$@\"; }; export -f sudo; sudo systemctl is-active hysteria-server 2>/dev/null || echo 'inactive'" 2>&1 | tail -1) || true
             
-            # 检查现有配置是否匹配 (通过检查 config.yaml 中证书路径)
             if [ "$SERVICE_ACTIVE" = "active" ]; then
-                CONFIG_DOMAIN=$(sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${CURRENT_SSH_USER}@127.0.0.1" "grep -oP 'cert: /etc/letsencrypt/live/\K[^/]+' /etc/hysteria/config.yaml 2>/dev/null || echo 'UNKNOWN'" 2>&1 | tail -1) || true
-                if [ "$CONFIG_DOMAIN" != "$PROXY_DOMAIN" ]; then
-                    echo "⚠️ 配置域名不匹配: 当前='$CONFIG_DOMAIN', 应为='$PROXY_DOMAIN'"
-                    CONFIG_VALID="no"
-                else
-                    CONFIG_VALID="yes"
-                fi
-            else
+              CONFIG_DOMAIN=$(sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${CURRENT_SSH_USER}@127.0.0.1" "grep -oP 'cert: /etc/letsencrypt/live/\K[^/]+' /etc/hysteria/config.yaml 2>/dev/null || echo 'UNKNOWN'" 2>&1 | tail -1) || true
+              if [ "$CONFIG_DOMAIN" != "$PROXY_DOMAIN" ]; then
+                echo "⚠️ 配置域名不匹配: 当前='$CONFIG_DOMAIN', 应为='$PROXY_DOMAIN'"
                 CONFIG_VALID="no"
+              else
+                CONFIG_VALID="yes"
+              fi
+            else
+              CONFIG_VALID="no"
             fi
 
-            # 决定是否需要更新/部署
             SHOULD_DEPLOY="false"
-            
             if [ "$CONFIG_VALID" = "no" ] || [ "$FORCE_REDEPLOY" = "true" ]; then
-                SHOULD_DEPLOY="true"
+              SHOULD_DEPLOY="true"
             elif [ "$UPDATE_BINARY" = "true" ]; then
-                echo ">>> 请求更新 Hysteria 程序..."
-                SHOULD_DEPLOY="true"
+              echo ">>> 请求更新 Hysteria 程序..."
+              SHOULD_DEPLOY="true"
             fi
             
             if [ "$SHOULD_DEPLOY" = "false" ]; then
@@ -388,8 +328,6 @@ jobs:
             fi
             
             echo ">>> 开始部署..."
-            
-            # --- SSL 证书逻辑 ---
             echo ">>> 检查 SSL..."
             CERT_EXISTS=$(sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${CURRENT_SSH_USER}@127.0.0.1" "echo '#!/bin/sh' > ~/.askpass.sh; echo 'echo \"\$SSH_PASSWORD\"' >> ~/.askpass.sh; chmod +x ~/.askpass.sh; export SUDO_ASKPASS=~/.askpass.sh; sudo() { command sudo -A \"\$@\"; }; export -f sudo; sudo test -f /etc/letsencrypt/live/${PROXY_DOMAIN}/fullchain.pem && echo CERT_FOUND || echo CERT_MISSING" 2>/dev/null | tail -1) || true
             
@@ -398,27 +336,25 @@ jobs:
               sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${CURRENT_SSH_USER}@127.0.0.1" "
                 echo '#!/bin/sh' > ~/.askpass.sh; echo 'echo \"$SSH_PASSWORD\"' >> ~/.askpass.sh; chmod +x ~/.askpass.sh; export SUDO_ASKPASS=~/.askpass.sh; sudo() { command sudo -A \"\$@\"; }; export -f sudo;
                 which certbot > /dev/null 2>&1 || (sudo apt-get update -qq && sudo apt-get install -y -qq certbot)
-                # 停止占用 80 端口的服务
                 sudo systemctl stop nginx 2>/dev/null || true
                 sudo fuser -k 80/tcp 2>/dev/null || true
                 sleep 2
-                sudo certbot certonly --standalone -d ${PROXY_DOMAIN} --non-interactive --agree-tos --email ${CURRENT_API_EMAIL} --http-01-port 80 || true
+                sudo certbot certonly --standalone -d ${PROXY_DOMAIN} --non-interactive --agree-tos --email ${CF_API_EMAIL} --http-01-port 80 || true
                 sudo systemctl start nginx 2>/dev/null || true
               " 2>&1
               
-               if sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${CURRENT_SSH_USER}@127.0.0.1" "echo '#!/bin/sh' > ~/.askpass.sh; echo 'echo \"\$SSH_PASSWORD\"' >> ~/.askpass.sh; chmod +x ~/.askpass.sh; export SUDO_ASKPASS=~/.askpass.sh; sudo() { command sudo -A \"\$@\"; }; export -f sudo; sudo test -f /etc/letsencrypt/live/${PROXY_DOMAIN}/fullchain.pem" 2>/dev/null; then
-                   echo "✅ SSL 证书获取成功"
-               else
-                   echo "❌ SSL 证书获取失败"
-                   FAILED_COUNT=$((FAILED_COUNT + 1))
-                   kill $TUNNEL_PID 2>/dev/null || true
-                   continue
-               fi
+              if sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${CURRENT_SSH_USER}@127.0.0.1" "echo '#!/bin/sh' > ~/.askpass.sh; echo 'echo \"\$SSH_PASSWORD\"' >> ~/.askpass.sh; chmod +x ~/.askpass.sh; export SUDO_ASKPASS=~/.askpass.sh; sudo() { command sudo -A \"\$@\"; }; export -f sudo; sudo test -f /etc/letsencrypt/live/${PROXY_DOMAIN}/fullchain.pem" 2>/dev/null; then
+                echo "✅ SSL 证书获取成功"
+              else
+                echo "❌ SSL 证书获取失败"
+                SSL_FAILED_COUNT=$((SSL_FAILED_COUNT + 1))
+                kill $TUNNEL_PID 2>/dev/null || true
+                continue
+              fi
             else
-                echo "✅ SSL 证书已存在"
+              echo "✅ SSL 证书已存在"
             fi
                         
-            # --- 安装/更新 Hysteria 二进制文件 ---
             echo ">>> 检查/安装 Hysteria..."
             sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${CURRENT_SSH_USER}@127.0.0.1" "
                 echo '#!/bin/sh' > ~/.askpass.sh; echo 'echo \"$SSH_PASSWORD\"' >> ~/.askpass.sh; chmod +x ~/.askpass.sh; export SUDO_ASKPASS=~/.askpass.sh; sudo() { command sudo -A \"\$@\"; }; export -f sudo;
@@ -432,7 +368,6 @@ jobs:
                 if [ \"\$NEED_INSTALL\" = \"true\" ]; then
                     echo '>>> 下载 Hysteria (AMD64)...'
                     cd /tmp
-                    # 获取最新版下载链接 (假设是 hysteria-linux-amd64)
                     wget -q -O hysteria-server https://github.com/apernet/hysteria/releases/latest/download/hysteria-linux-amd64
                     chmod +x hysteria-server
                     sudo mv hysteria-server /usr/local/bin/hysteria-server
@@ -442,11 +377,9 @@ jobs:
                 fi
             " 2>&1 || true
 
-             # --- 配置文件 ---
             echo ">>> 更新配置文件..."
             sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${CURRENT_SSH_USER}@127.0.0.1" "echo '#!/bin/sh' > ~/.askpass.sh; echo 'echo \"\$SSH_PASSWORD\"' >> ~/.askpass.sh; chmod +x ~/.askpass.sh; export SUDO_ASKPASS=~/.askpass.sh; sudo() { command sudo -A \"\$@\"; }; export -f sudo; sudo mkdir -p /etc/hysteria" 2>&1 || true
             
-            # 使用 cat 写入 yaml
             sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${CURRENT_SSH_USER}@127.0.0.1" "cat > /tmp/config.yaml << EOFHY
           listen: :2443
           tls:
@@ -473,7 +406,6 @@ jobs:
           sudo mv /tmp/config.yaml /etc/hysteria/config.yaml
           " 2>&1 || true
             
-            # --- Systemd 服务 ---
             echo ">>> 更新 Systemd 服务..."
             SYSTEMD_UNIT="[Unit]
           Description=Hysteria Server
@@ -481,24 +413,20 @@ jobs:
 
           [Service]
           Type=simple
-          # 增加缓冲区大小以优化性能 (可选)
           ExecStart=/usr/local/bin/hysteria-server server -c /etc/hysteria/config.yaml
           WorkingDirectory=/etc/hysteria
           User=root
           Group=root
           Restart=always
           RestartSec=3
-          # 资源限制 (针对低配机器)
           LimitNOFILE=65535
 
           [Install]
           WantedBy=multi-user.target"
             
-            # 传输 systemd 文件 (base64防止转义)
             UNIT_B64=$(echo "$SYSTEMD_UNIT" | base64 -w 0)
             sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${CURRENT_SSH_USER}@127.0.0.1" "echo '#!/bin/sh' > ~/.askpass.sh; echo 'echo \"\$SSH_PASSWORD\"' >> ~/.askpass.sh; chmod +x ~/.askpass.sh; export SUDO_ASKPASS=~/.askpass.sh; sudo() { command sudo -A \"\$@\"; }; export -f sudo; echo '$UNIT_B64' | base64 -d | sudo tee /etc/systemd/system/hysteria-server.service > /dev/null && sudo systemctl daemon-reload" 2>&1 || true
 
-            # --- 启动/重启服务 ---
             echo ">>> 启动服务..."
             SERVICE_OK="no"
             for RETRY in 1 2 3; do
@@ -524,14 +452,15 @@ jobs:
             
             if [ "$SERVICE_OK" = "yes" ]; then
               echo "✅ 部署成功: $HOST_NAME"
-              # 如果进行了更新或重新部署，增加计数
-              if [ "$UPDATE_BINARY" = "true" ] || [ "$FORCE_REDEPLOY" = "true" ] || [ "$CONFIG_VALID" = "no" ]; then
-                  if [ "$UPDATE_BINARY" = "true" ]; then UPDATED_COUNT=$((UPDATED_COUNT + 1)); else DEPLOYED_COUNT=$((DEPLOYED_COUNT + 1)); fi
+              if [ "$UPDATE_BINARY" = "true" ]; then
+                UPDATED_COUNT=$((UPDATED_COUNT + 1))
+              else
+                DEPLOYED_COUNT=$((DEPLOYED_COUNT + 1))
               fi
               NODES_INFO="${NODES_INFO}hysteria2://${HYSTERIA_PASSWORD}@${PROXY_DOMAIN}:2443?insecure=0&sni=${PROXY_DOMAIN}#${HOST_NAME}\n"
             else
               echo "❌ 部署失败: $HOST_NAME"
-              FAILED_COUNT=$((FAILED_COUNT + 1))
+              DEPLOY_FAILED_COUNT=$((DEPLOY_FAILED_COUNT + 1))
             fi
             
             kill $TUNNEL_PID 2>/dev/null || true
@@ -539,16 +468,35 @@ jobs:
           
           echo ""
           echo "==========================================="
-          echo "完成: 候选 $ELIGIBLE_COUNT, 新部署 $DEPLOYED_COUNT, 更新 $UPDATED_COUNT, 跳过 $SKIPPED_COUNT, 失败 $FAILED_COUNT"
+          echo "完成: 新部署 $DEPLOYED_COUNT, 更新 $UPDATED_COUNT, 跳过 $SKIPPED_COUNT"
           echo "==========================================="
           
           echo -en "$NODES_INFO" > /tmp/nodes_info.txt
+          SUCCESS_NODE_COUNT=$( (grep -v "^$" /tmp/nodes_info.txt || true) | wc -l )
 
-          if [ "$FAILED_COUNT" -gt 0 ]; then
+          {
+            echo "target_amd64_count=${TARGET_AMD64_COUNT}"
+            echo "domain_host_count=${DOMAIN_HOST_COUNT}"
+            echo "success_node_count=${SUCCESS_NODE_COUNT}"
+            echo "deployed_count=${DEPLOYED_COUNT}"
+            echo "updated_count=${UPDATED_COUNT}"
+            echo "skipped_count=${SKIPPED_COUNT}"
+            echo "cleaned_count=${CLEANED_COUNT}"
+            echo "gcp_skipped_count=${GCP_SKIPPED_COUNT}"
+            echo "tunnel_failed_count=${TUNNEL_FAILED_COUNT}"
+            echo "ip_failed_count=${IP_FAILED_COUNT}"
+            echo "dns_failed_count=${DNS_FAILED_COUNT}"
+            echo "ssl_failed_count=${SSL_FAILED_COUNT}"
+            echo "deploy_failed_count=${DEPLOY_FAILED_COUNT}"
+          } >> "$GITHUB_OUTPUT"
+
+          if [ "$SUCCESS_NODE_COUNT" -eq 0 ]; then
+            echo "❌ 本次运行没有生成任何可用节点"
             exit 1
           fi
 
       - name: Send Telegram notification
+        if: ${{ success() }}
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
@@ -585,6 +533,7 @@ jobs:
           echo "✅ Telegram 已发送"
 
       - name: Push to blog repository
+        if: ${{ success() }}
         env:
           BLOG_GITHUB_TOKEN: ${{ secrets.BLOG_GITHUB_TOKEN }}
           BLOG_REPO_URL: ${{ secrets.BLOG_REPO_URL }}
@@ -630,9 +579,23 @@ jobs:
           echo "✅ 已推送到 blog 仓库"
 
       - name: Summary
-        if: always()
+        if: ${{ always() }}
         run: |
           echo "## 🚀 Hysteria v2 部署结果 (AMD64)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- 目标 AMD64 主机: ${{ steps.deploy.outputs.target_amd64_count }}" >> $GITHUB_STEP_SUMMARY
+          echo "- 带域名主机: ${{ steps.deploy.outputs.domain_host_count }}" >> $GITHUB_STEP_SUMMARY
+          echo "- 成功节点: ${{ steps.deploy.outputs.success_node_count }}" >> $GITHUB_STEP_SUMMARY
+          echo "- 新部署: ${{ steps.deploy.outputs.deployed_count }}" >> $GITHUB_STEP_SUMMARY
+          echo "- 更新: ${{ steps.deploy.outputs.updated_count }}" >> $GITHUB_STEP_SUMMARY
+          echo "- 跳过部署: ${{ steps.deploy.outputs.skipped_count }}" >> $GITHUB_STEP_SUMMARY
+          echo "- 清理空域名主机: ${{ steps.deploy.outputs.cleaned_count }}" >> $GITHUB_STEP_SUMMARY
+          echo "- 跳过 GCP 主机: ${{ steps.deploy.outputs.gcp_skipped_count }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Tunnel 失败: ${{ steps.deploy.outputs.tunnel_failed_count }}" >> $GITHUB_STEP_SUMMARY
+          echo "- 公网 IP 获取失败: ${{ steps.deploy.outputs.ip_failed_count }}" >> $GITHUB_STEP_SUMMARY
+          echo "- DNS 失败: ${{ steps.deploy.outputs.dns_failed_count }}" >> $GITHUB_STEP_SUMMARY
+          echo "- SSL 失败: ${{ steps.deploy.outputs.ssl_failed_count }}" >> $GITHUB_STEP_SUMMARY
+          echo "- 服务启动失败: ${{ steps.deploy.outputs.deploy_failed_count }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           if [ -s /tmp/nodes_info.txt ]; then
             echo "### ✅ 节点列表" >> $GITHUB_STEP_SUMMARY
