@@ -24,6 +24,9 @@ RESULT_AGY_SWITCHER_STATUS="skipped_no_argv"
 RESULT_AGY_SWITCHER_VERSION="N/A"
 RESULT_AGY_SWITCHER_TARGET_VERSION="${AGY_SWITCHER_LATEST_TAG:-unknown}"
 
+RESULT_AGY_CLI_STATUS="skipped"
+RESULT_AGY_CLI_VERSION="N/A"
+
 RESULT_BRIDGE_STATUS="skipped_no_install"
 RESULT_BRIDGE_RELEASE_TAG="N/A"
 
@@ -70,6 +73,8 @@ emit_results() {
   echo "RESULT_AGY_SWITCHER_STATUS=$(sanitize_value "$RESULT_AGY_SWITCHER_STATUS")"
   echo "RESULT_AGY_SWITCHER_VERSION=$(sanitize_value "$RESULT_AGY_SWITCHER_VERSION")"
   echo "RESULT_AGY_SWITCHER_TARGET_VERSION=$(sanitize_value "$RESULT_AGY_SWITCHER_TARGET_VERSION")"
+  echo "RESULT_AGY_CLI_STATUS=$(sanitize_value "$RESULT_AGY_CLI_STATUS")"
+  echo "RESULT_AGY_CLI_VERSION=$(sanitize_value "$RESULT_AGY_CLI_VERSION")"
   echo "RESULT_BRIDGE_STATUS=$(sanitize_value "$RESULT_BRIDGE_STATUS")"
   echo "RESULT_BRIDGE_RELEASE_TAG=$(sanitize_value "$RESULT_BRIDGE_RELEASE_TAG")"
   echo "RESULT_WINDSURF_STATUS=$(sanitize_value "$RESULT_WINDSURF_STATUS")"
@@ -830,6 +835,30 @@ update_agy_switcher() {
     RESULT_WORKFLOW_STATUS="agy_switcher_failed"
     add_note "failed to download agy-switcher asset"
   fi
+}
+
+update_agy_cli() {
+  local old_version=""
+  local new_version=""
+
+  old_version="$(/home/sw/.local/bin/agy --version 2>/dev/null || true)"
+  [ -n "$old_version" ] || old_version="N/A"
+
+  if ! curl -fsSL https://antigravity.google/cli/install.sh | bash; then
+    RESULT_AGY_CLI_STATUS="agy_cli_failed"
+    add_note "agy CLI install script failed"
+    return
+  fi
+
+  new_version="$(/home/sw/.local/bin/agy --version 2>/dev/null || true)"
+  [ -n "$new_version" ] || new_version="N/A"
+
+  if [ "$old_version" = "$new_version" ] && [ "$old_version" != "N/A" ]; then
+    RESULT_AGY_CLI_STATUS="already_latest"
+  else
+    RESULT_AGY_CLI_STATUS="success"
+  fi
+  RESULT_AGY_CLI_VERSION="$new_version"
 }
 
 update_bridge() {
@@ -1745,6 +1774,7 @@ main() {
   repair_bridge_runtime_config
   get_env_status
   update_antigravity
+  update_agy_cli
   update_agy_switcher
   update_bridge
   update_codex

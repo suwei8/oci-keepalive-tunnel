@@ -54,6 +54,7 @@ def cmd_enforce_fatal(argv):
         "windsurf_failed",
         "antigravity_failed",
         "agy_switcher_failed",
+        "agy_cli_failed",
         "codex_failed",
         "kilocode_failed",
         "claude_failed",
@@ -88,6 +89,8 @@ def cmd_build_summary(argv):
         parts = []
         if item.get("antigravity_status") == "success":
             parts.append("Antigravity")
+        if item.get("agy_cli_status") == "success":
+            parts.append("agy")
         if item.get("agy_switcher_status") == "success":
             parts.append("agy-switcher")
         if item.get("bridge_status") in {"deployed_started", "files_refreshed_no_env"}:
@@ -106,6 +109,7 @@ def cmd_build_summary(argv):
         return any(
             (
                 item.get("antigravity_status") == "success",
+                item.get("agy_cli_status") == "success",
                 item.get("agy_switcher_status") == "success",
                 item.get("bridge_status") in {"deployed_started", "files_refreshed_no_env"},
                 item.get("windsurf_status") == "success",
@@ -142,6 +146,8 @@ def cmd_build_summary(argv):
             return "KiloCode已是最新"
         if item.get("claude_status") == "already_latest":
             return "Claude已是最新"
+        if item.get("agy_cli_status") == "already_latest":
+            return "agy已是最新"
         if agy_switcher_status == "already_latest":
             return "agy-switcher已是最新"
         if bridge_status.startswith("skipped_"):
@@ -166,6 +172,7 @@ def cmd_build_summary(argv):
             "bridge_failed": "Bridge失败",
             "windsurf_failed": "Windsurf失败",
             "antigravity_failed": "Antigravity失败",
+            "agy_cli_failed": "agy失败",
             "agy_switcher_failed": "agy-switcher失败",
             "codex_failed": "Codex失败",
             "kilocode_failed": "KiloCode失败",
