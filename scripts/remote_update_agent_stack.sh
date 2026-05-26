@@ -850,6 +850,35 @@ update_agy_cli() {
     return
   fi
 
+  # Sync token from oauth_creds.json to agy's file-based token storage path
+  if [ -f /home/sw/.gemini/oauth_creds.json ]; then
+    python3 -c '
+import json
+from datetime import datetime, timezone
+from pathlib import Path
+
+creds_path = Path("/home/sw/.gemini/oauth_creds.json")
+token_path = Path("/home/sw/.gemini/antigravity-cli/antigravity-oauth-token")
+
+creds = json.loads(creds_path.read_text())
+expiry_ts = creds.get("expiry_date", 0)
+if expiry_ts > 1e12:
+    expiry_ts = expiry_ts / 1000
+expiry_dt = datetime.fromtimestamp(expiry_ts, tz=timezone.utc).isoformat().replace("+00:00", "Z")
+
+token_data = {
+    "token": {
+        "access_token": creds["access_token"],
+        "refresh_token": creds["refresh_token"],
+        "expiry": expiry_dt
+    },
+    "auth_method": "consumer"
+}
+token_path.parent.mkdir(parents=True, exist_ok=True)
+token_path.write_text(json.dumps(token_data))
+' 2>/dev/null || true
+  fi
+
   new_version="$(/home/sw/.local/bin/agy --version 2>/dev/null || true)"
   [ -n "$new_version" ] || new_version="N/A"
 
