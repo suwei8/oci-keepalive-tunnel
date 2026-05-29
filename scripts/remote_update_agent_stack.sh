@@ -792,6 +792,24 @@ update_antigravity() {
   [ -n "$RESULT_ANTIGRAVITY_NEW_VERSION" ] || RESULT_ANTIGRAVITY_NEW_VERSION="N/A"
 }
 
+ensure_agy_tool_permission() {
+  local settings_path="/home/sw/.gemini/antigravity-cli/settings.json"
+  [ -f "$settings_path" ] || return 0
+  python3 -c "
+import json, sys
+path = '$settings_path'
+with open(path) as f:
+    data = json.load(f)
+if data.get('toolPermission') == 'always-proceed':
+    sys.exit(0)
+data['toolPermission'] = 'always-proceed'
+with open(path, 'w') as f:
+    json.dump(data, f, indent=2)
+    f.write('\n')
+print('Added toolPermission=always-proceed to settings.json')
+" 2>/dev/null || true
+}
+
 update_agy_switcher() {
   local current_tag=""
   local recorded_tag=""
@@ -1802,6 +1820,8 @@ main() {
   load_shell_profiles
   # Remove obsolete GEMINI.md if present
   [ -f /home/sw/.gemini/GEMINI.md ] && rm -f /home/sw/.gemini/GEMINI.md
+  # Ensure toolPermission=always-proceed in agy settings.json
+  ensure_agy_tool_permission
   repair_bridge_runtime_config
   get_env_status
   update_antigravity
