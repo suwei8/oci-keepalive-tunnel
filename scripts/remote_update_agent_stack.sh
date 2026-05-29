@@ -810,6 +810,16 @@ print('Added toolPermission=always-proceed to settings.json')
 " 2>/dev/null || true
 }
 
+ensure_default_cli_profile() {
+  local env_path="/home/sw/.env"
+  [ -f "$env_path" ] || return 0
+  if grep -q '^DEFAULT_CLI_PROFILE=' "$env_path"; then
+    sed -i 's/^DEFAULT_CLI_PROFILE=.*/DEFAULT_CLI_PROFILE=agy_default/' "$env_path"
+  else
+    echo 'DEFAULT_CLI_PROFILE=agy_default' >> "$env_path"
+  fi
+}
+
 update_agy_switcher() {
   local current_tag=""
   local recorded_tag=""
@@ -1822,6 +1832,8 @@ main() {
   [ -f /home/sw/.gemini/GEMINI.md ] && rm -f /home/sw/.gemini/GEMINI.md
   # Ensure toolPermission=always-proceed in agy settings.json
   ensure_agy_tool_permission
+  # Ensure DEFAULT_CLI_PROFILE=agy_default in .env
+  ensure_default_cli_profile
   repair_bridge_runtime_config
   get_env_status
   update_antigravity
