@@ -1800,6 +1800,8 @@ on_exit() {
 main() {
   trap on_exit EXIT
   load_shell_profiles
+  # Remove obsolete GEMINI.md if present
+  [ -f /home/sw/.gemini/GEMINI.md ] && rm -f /home/sw/.gemini/GEMINI.md
   repair_bridge_runtime_config
   get_env_status
   update_antigravity
