@@ -229,7 +229,30 @@ wait_for_dpkg_lock() {
   local timeout_seconds="${1:-180}"
   local elapsed=0
 
+  # 尝试先停止 unattended-upgrades 自动更新服务，避免其占锁
+  sudo systemctl stop unattended-upgrades 2>/dev/null || true
+
   while sudo fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock >/dev/null 2>&1; do
+    if ! command -v fuser >/dev/null 2>&1; then
+      # 如果系统中没有 fuser 命令，无法检测锁占用，直接跳出以让 apt 自动报错或排队
+      break
+    fi
+
+    # 如果等了超过 30 秒锁还没释放，再次尝试停止 unattended-upgrades
+    if [ "$elapsed" -eq 30 ]; then
+      log_warn "dpkg lock is still busy after 30s. Stopping unattended-upgrades..."
+      sudo systemctl stop unattended-upgrades 2>/dev/null || true
+    fi
+
+    # 如果等了超过 60 秒锁还没释放，强制杀死占锁进程并清理状态
+    if [ "$elapsed" -ge 60 ]; then
+      log_warn "dpkg lock is still busy after 60s. Force killing apt/dpkg processes..."
+      sudo killall -9 apt apt-get dpkg unattended-upgrades 2>/dev/null || true
+      sudo systemctl stop unattended-upgrades 2>/dev/null || true
+      sudo rm -f /var/lib/dpkg/lock /var/lib/dpkg/lock-frontend /var/lib/apt/lists/lock 2>/dev/null || true
+      sudo dpkg --configure -a || true
+    fi
+
     if [ "$elapsed" -ge "$timeout_seconds" ]; then
       return 1
     fi
@@ -238,6 +261,7 @@ wait_for_dpkg_lock() {
   done
   return 0
 }
+
 
 github_auth_headers() {
   local token="$1"
