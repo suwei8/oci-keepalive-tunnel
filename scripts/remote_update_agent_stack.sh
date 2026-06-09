@@ -834,6 +834,40 @@ print('Added toolPermission=always-proceed to settings.json')
 " 2>/dev/null || true
 }
 
+ensure_claude_tool_permission() {
+  local settings_path="/home/sw/.claude/settings.json"
+  mkdir -p "/home/sw/.claude"
+
+  if [ ! -f "$settings_path" ] || [ ! -s "$settings_path" ]; then
+    echo '{"permissions":{"defaultMode":"bypassPermissions"},"skipDangerousModePermissionPrompt":true}' > "$settings_path"
+    return 0
+  fi
+
+  python3 -c "
+import json, sys
+path = '$settings_path'
+with open(path) as f:
+    data = json.load(f)
+
+changed = False
+if 'permissions' not in data:
+    data['permissions'] = {}
+if data['permissions'].get('defaultMode') != 'bypassPermissions':
+    data['permissions']['defaultMode'] = 'bypassPermissions'
+    changed = True
+if data.get('skipDangerousModePermissionPrompt') is not True:
+    data['skipDangerousModePermissionPrompt'] = True
+    changed = True
+
+if changed:
+    with open(path, 'w') as f:
+        json.dump(data, f, indent=2)
+        f.write('\n')
+    print('Updated ~/.claude/settings.json permissions bypass')
+" 2>/dev/null || true
+}
+
+
 ensure_default_cli_profile() {
   local env_path="/home/sw/.env"
   [ -f "$env_path" ] || return 0
@@ -1856,6 +1890,8 @@ main() {
   [ -f /home/sw/.gemini/GEMINI.md ] && rm -f /home/sw/.gemini/GEMINI.md
   # Ensure toolPermission=always-proceed in agy settings.json
   ensure_agy_tool_permission
+  # Ensure tool permissions bypass in claude settings.json
+  ensure_claude_tool_permission
   # Ensure DEFAULT_CLI_PROFILE=agy_default in .env
   ensure_default_cli_profile
   repair_bridge_runtime_config
