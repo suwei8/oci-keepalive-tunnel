@@ -1240,6 +1240,8 @@ marker_end = "# === CLAUDE CONFIG END ==="
 block = f"""\
 {marker_start}
 export PATH="$HOME/.local/bin:$PATH"
+export CLAUDE_BASE_URL="{anthropic_base_url}"
+export CLAUDE_AUTH_TOKEN="{anthropic_auth_token}"
 
 claude() {{
     (
@@ -1264,6 +1266,8 @@ text = re.sub(
 text = re.sub(r'^export PATH="\$HOME/\.local/bin:\$PATH"\n?', "", text, flags=re.M)
 text = re.sub(r'^export ANTHROPIC_BASE_URL=.*\n?', "", text, flags=re.M)
 text = re.sub(r'^export ANTHROPIC_AUTH_TOKEN=.*\n?', "", text, flags=re.M)
+text = re.sub(r'^export CLAUDE_BASE_URL=.*\n?', "", text, flags=re.M)
+text = re.sub(r'^export CLAUDE_AUTH_TOKEN=.*\n?', "", text, flags=re.M)
 
 updated = text
 if updated and not updated.endswith("\n"):
