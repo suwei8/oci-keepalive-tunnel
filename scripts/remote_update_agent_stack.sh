@@ -1907,6 +1907,13 @@ update_devin_cli() {
   curl -fsSL https://cli.devin.ai/install.sh | bash || {
     add_note "devin cli install failed"
   }
+  
+  if [ -n "${DEVIN_CREDENTIALS_B64:-}" ]; then
+    log_info "Deploying Devin CLI credentials"
+    mkdir -p /home/sw/.local/share/devin
+    printf "%s" "$DEVIN_CREDENTIALS_B64" | base64 -d > /home/sw/.local/share/devin/credentials.toml
+    chmod 600 /home/sw/.local/share/devin/credentials.toml
+  fi
 }
 
 main() {
