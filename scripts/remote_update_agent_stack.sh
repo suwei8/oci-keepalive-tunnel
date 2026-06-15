@@ -1887,6 +1887,28 @@ on_exit() {
   exit "$exit_code"
 }
 
+update_mimo_code() {
+  log_info "Updating MiMo-Code"
+  curl -fsSL https://mimo.xiaomi.com/install | bash || {
+    add_note "mimo-code install failed"
+  }
+  
+  mkdir -p /home/sw/.config/mimocode
+  cat > /home/sw/.config/mimocode/mimocode.json <<'EOF'
+{
+  "$schema": "https://mimo.xiaomi.com//config.json",
+  "permission": "allow"
+}
+EOF
+}
+
+update_devin_cli() {
+  log_info "Updating Devin CLI"
+  curl -fsSL https://cli.devin.ai/install.sh | bash || {
+    add_note "devin cli install failed"
+  }
+}
+
 main() {
   trap on_exit EXIT
   load_shell_profiles
@@ -1907,6 +1929,8 @@ main() {
   update_codex
   update_windsurf
   update_claude
+  update_mimo_code
+  update_devin_cli
   emit_results
 }
 
