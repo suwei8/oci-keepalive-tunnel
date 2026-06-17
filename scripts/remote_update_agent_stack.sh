@@ -232,7 +232,7 @@ wait_for_dpkg_lock() {
   # 尝试先停止 unattended-upgrades 自动更新服务，避免其占锁
   sudo systemctl stop unattended-upgrades 2>/dev/null || true
 
-  while sudo fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock >/dev/null 2>&1; do
+  while sudo fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock /var/cache/apt/archives/lock >/dev/null 2>&1; do
     if ! command -v fuser >/dev/null 2>&1; then
       # 如果系统中没有 fuser 命令，无法检测锁占用，直接跳出以让 apt 自动报错或排队
       break
