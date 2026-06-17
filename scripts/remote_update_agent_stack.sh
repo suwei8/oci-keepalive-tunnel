@@ -1756,12 +1756,12 @@ update_kilocode() {
       && version_eq "$current_version" "$target_version"; then
       RESULT_KILOCODE_STATUS="already_latest"
     else
-      if kilo upgrade; then
+      if npm i -g "$install_spec"; then
         hash -r || true
       else
         RESULT_KILOCODE_STATUS="kilocode_failed"
         RESULT_WORKFLOW_STATUS="kilocode_failed"
-        add_note "kilo upgrade failed"
+        add_note "kilo upgrade via npm failed"
         return
       fi
     fi
