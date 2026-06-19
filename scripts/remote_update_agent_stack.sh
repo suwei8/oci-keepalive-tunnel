@@ -1493,12 +1493,10 @@ write_windsurf_mcp_configs() {
   codex_command="$(command -v codex || true)"
   claude_command="$(command -v claude || true)"
   kilo_command="$(command -v kilo || true)"
-  gemini_command="$(command -v gemini || true)"
 
   [ -n "$codex_command" ] || codex_command="/home/sw/.nvm/versions/node/$(node -v 2>/dev/null || echo v22.21.1)/bin/codex"
   [ -n "$claude_command" ] || claude_command="/home/sw/.local/bin/claude"
   [ -n "$kilo_command" ] || kilo_command="/home/sw/.nvm/versions/node/$(node -v 2>/dev/null || echo v22.21.1)/bin/kilo"
-  [ -n "$gemini_command" ] || gemini_command="/home/sw/.nvm/versions/node/$(node -v 2>/dev/null || echo v22.21.1)/bin/gemini"
 
   mkdir -p "$user_config_dir" "$codeium_dir"
 
@@ -1519,7 +1517,6 @@ write_windsurf_mcp_configs() {
         "CODEX_COMMAND": "$codex_command",
         "CLAUDE_COMMAND": "$claude_command",
         "KILO_COMMAND": "$kilo_command",
-        "GEMINI_COMMAND": "$gemini_command",
         "CLAUDE_BASE_URL": "$claude_base_url",
         "CLAUDE_API_KEY": "$claude_api_key",
         "AGENTBRIDGE_CLOUD_ENABLED": "${AGENTBRIDGE_CLOUD_ENABLED:-1}",
@@ -1553,7 +1550,6 @@ EOF
         "CODEX_COMMAND": "$codex_command",
         "CLAUDE_COMMAND": "$claude_command",
         "KILO_COMMAND": "$kilo_command",
-        "GEMINI_COMMAND": "$gemini_command",
         "CLAUDE_BASE_URL": "$claude_base_url",
         "CLAUDE_API_KEY": "$claude_api_key",
         "AGENTBRIDGE_CLOUD_ENABLED": "${AGENTBRIDGE_CLOUD_ENABLED:-1}",
@@ -1916,6 +1912,19 @@ update_devin_cli() {
   fi
 }
 
+update_qoder() {
+  log_info "Updating Qoder CLI"
+  curl -fsSL https://qoder.com/install | bash || {
+    RESULT_QODER_STATUS="qoder_failed"
+    RESULT_WORKFLOW_STATUS="qoder_failed"
+    add_note "qoder cli install failed"
+    return
+  }
+  
+  RESULT_QODER_VERSION="$(/home/sw/.qoder/bin/qodercli/qodercli-* --version 2>/dev/null | awk '{print $NF}' || echo "unknown")"
+  RESULT_QODER_STATUS="success"
+}
+
 main() {
   trap on_exit EXIT
   load_shell_profiles
@@ -1938,6 +1947,7 @@ main() {
   update_claude
   update_mimo_code
   update_devin_cli
+  update_qoder
   emit_results
 }
 
