@@ -51,7 +51,6 @@ def cmd_enforce_fatal(argv):
         "tunnel_failed",
         "whitelist_failed",
         "bridge_failed",
-        "windsurf_failed",
         "antigravity_failed",
         "agy_switcher_failed",
         "agy_cli_failed",
@@ -95,8 +94,6 @@ def cmd_build_summary(argv):
             parts.append("agy-switcher")
         if item.get("bridge_status") in {"deployed_started", "files_refreshed_no_env"}:
             parts.append("Bridge")
-        if item.get("windsurf_status") == "success":
-            parts.append("Windsurf")
         if item.get("codex_status") == "success":
             parts.append("Codex")
         if item.get("kilocode_status") == "success":
@@ -112,7 +109,6 @@ def cmd_build_summary(argv):
                 item.get("agy_cli_status") == "success",
                 item.get("agy_switcher_status") == "success",
                 item.get("bridge_status") in {"deployed_started", "files_refreshed_no_env"},
-                item.get("windsurf_status") == "success",
                 item.get("codex_status") == "success",
                 item.get("kilocode_status") == "success",
                 item.get("claude_status") == "success",
@@ -122,7 +118,6 @@ def cmd_build_summary(argv):
     def skip_reason(item):
         env_status = item.get("env_status", "unknown")
         bridge_status = item.get("bridge_status", "unknown")
-        windsurf_status = item.get("windsurf_status", "unknown")
         codex_status = item.get("codex_status", "unknown")
         kilocode_status = item.get("kilocode_status", "unknown")
         kilocode_target_version = item.get("kilocode_target_version", "unknown")
@@ -136,8 +131,6 @@ def cmd_build_summary(argv):
             return "未安装Bridge"
         if bridge_status in {"skipped_already_latest", "skipped_already_latest_no_env"}:
             return "Bridge已是最新"
-        if windsurf_status == "already_latest":
-            return "Windsurf已是最新"
         if codex_status == "already_latest":
             return "Codex已是最新"
         if kilocode_status == "already_latest":
@@ -152,8 +145,6 @@ def cmd_build_summary(argv):
             return "agy-switcher已是最新"
         if bridge_status.startswith("skipped_"):
             return bridge_status
-        if windsurf_status.startswith("skipped_"):
-            return windsurf_status
         if codex_status.startswith("skipped_"):
             return codex_status
         if kilocode_status.startswith("skipped_"):
@@ -170,7 +161,6 @@ def cmd_build_summary(argv):
             "tunnel_failed": "隧道失败",
             "whitelist_failed": "白名单失败",
             "bridge_failed": "Bridge失败",
-            "windsurf_failed": "Windsurf失败",
             "antigravity_failed": "Antigravity失败",
             "agy_cli_failed": "agy失败",
             "agy_switcher_failed": "agy-switcher失败",

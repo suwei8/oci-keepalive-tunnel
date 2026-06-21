@@ -30,9 +30,6 @@ RESULT_AGY_CLI_VERSION="N/A"
 RESULT_BRIDGE_STATUS="skipped_no_install"
 RESULT_BRIDGE_RELEASE_TAG="N/A"
 
-RESULT_WINDSURF_STATUS="skipped_no_bridge"
-RESULT_WINDSURF_VERSION="N/A"
-
 RESULT_CODEX_STATUS="skipped_no_bridge"
 RESULT_CODEX_VERSION="N/A"
 RESULT_CODEX_TARGET_VERSION="${CODEX_LATEST_VERSION:-unknown}"
@@ -77,8 +74,6 @@ emit_results() {
   echo "RESULT_AGY_CLI_VERSION=$(sanitize_value "$RESULT_AGY_CLI_VERSION")"
   echo "RESULT_BRIDGE_STATUS=$(sanitize_value "$RESULT_BRIDGE_STATUS")"
   echo "RESULT_BRIDGE_RELEASE_TAG=$(sanitize_value "$RESULT_BRIDGE_RELEASE_TAG")"
-  echo "RESULT_WINDSURF_STATUS=$(sanitize_value "$RESULT_WINDSURF_STATUS")"
-  echo "RESULT_WINDSURF_VERSION=$(sanitize_value "$RESULT_WINDSURF_VERSION")"
   echo "RESULT_CODEX_STATUS=$(sanitize_value "$RESULT_CODEX_STATUS")"
   echo "RESULT_CODEX_VERSION=$(sanitize_value "$RESULT_CODEX_VERSION")"
   echo "RESULT_CODEX_TARGET_VERSION=$(sanitize_value "$RESULT_CODEX_TARGET_VERSION")"
@@ -1709,8 +1704,6 @@ update_codex() {
       fi
     fi
   fi
-
-  update_kilocode
 }
 
 update_kilocode() {
@@ -1943,7 +1936,7 @@ main() {
   update_agy_switcher
   update_bridge
   update_codex
-  update_windsurf
+  update_kilocode
   update_claude
   update_mimo_code
   update_devin_cli
