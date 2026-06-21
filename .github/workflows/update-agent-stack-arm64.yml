@@ -34,6 +34,7 @@ jobs:
       agy_switcher_tag: ${{ steps.prepare.outputs.agy_switcher_tag }}
       codex_latest_version: ${{ steps.prepare.outputs.codex_latest_version }}
       kilocode_latest_version: ${{ steps.prepare.outputs.kilocode_latest_version }}
+      opencode_latest_version: ${{ steps.prepare.outputs.opencode_latest_version }}
       claude_latest_version: ${{ steps.prepare.outputs.claude_latest_version }}
     steps:
       - name: Build host matrix and resolve latest versions
@@ -138,6 +139,8 @@ jobs:
             https://api.github.com/repos/Kilo-Org/kilocode/releases/latest \
             | python3 -c 'import json,sys,re; tag=json.load(sys.stdin)["tag_name"]; print(re.sub(r"^[A-Za-z-]*v", "", tag))')"
 
+          OPENCODE_LATEST_VERSION="$(npm view opencode-ai version 2>/dev/null || echo "latest")"
+
           CLAUDE_LATEST_VERSION="$(curl -fsSL \
             https://raw.githubusercontent.com/anthropics/claude-code/main/CHANGELOG.md \
             | python3 -c 'import re,sys; text=sys.stdin.read(); match=re.search(r"^##\s+([0-9]+(?:\.[0-9]+)*)\s*$", text, re.M); print(match.group(1) if match else "unknown")')"
@@ -147,12 +150,14 @@ jobs:
           echo "agy_switcher_tag=${AGY_SWITCHER_TAG}" >> "$GITHUB_OUTPUT"
           echo "codex_latest_version=${CODEX_LATEST_VERSION}" >> "$GITHUB_OUTPUT"
           echo "kilocode_latest_version=${KILOCODE_LATEST_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "opencode_latest_version=${OPENCODE_LATEST_VERSION}" >> "$GITHUB_OUTPUT"
           echo "claude_latest_version=${CLAUDE_LATEST_VERSION}" >> "$GITHUB_OUTPUT"
 
           echo "Prepared ${HOST_COUNT} arm64 host(s)"
           echo "Latest agy-switcher tag: ${AGY_SWITCHER_TAG}"
           echo "Latest codex version: ${CODEX_LATEST_VERSION}"
           echo "Latest kilocode version: ${KILOCODE_LATEST_VERSION}"
+          echo "Latest opencode version: ${OPENCODE_LATEST_VERSION}"
           echo "Latest claude version: ${CLAUDE_LATEST_VERSION}"
 
   update:
@@ -207,6 +212,7 @@ jobs:
           AGY_SWITCHER_LATEST_TAG: ${{ needs.prepare.outputs.agy_switcher_tag }}
           CODEX_LATEST_VERSION: ${{ needs.prepare.outputs.codex_latest_version }}
           KILOCODE_LATEST_VERSION: ${{ needs.prepare.outputs.kilocode_latest_version }}
+          OPENCODE_LATEST_VERSION: ${{ needs.prepare.outputs.opencode_latest_version }}
           CLAUDE_LATEST_VERSION: ${{ needs.prepare.outputs.claude_latest_version }}
           DEVIN_CREDENTIALS_B64: ${{ secrets.DEVIN_CREDENTIALS_B64 }}
         run: |
@@ -256,6 +262,7 @@ jobs:
              export AGY_SWITCHER_LATEST_TAG='${AGY_SWITCHER_LATEST_TAG}'
              export CODEX_LATEST_VERSION='${CODEX_LATEST_VERSION}'
              export KILOCODE_LATEST_VERSION='${KILOCODE_LATEST_VERSION}'
+             export OPENCODE_LATEST_VERSION='${OPENCODE_LATEST_VERSION}'
              export CLAUDE_LATEST_VERSION='${CLAUDE_LATEST_VERSION}'
              export DEVIN_CREDENTIALS_B64='${DEVIN_CREDENTIALS_B64}'
              bash -s" \

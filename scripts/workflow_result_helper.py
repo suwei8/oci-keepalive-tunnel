@@ -56,6 +56,7 @@ def cmd_enforce_fatal(argv):
         "agy_cli_failed",
         "codex_failed",
         "kilocode_failed",
+        "opencode_failed",
         "claude_failed",
     }
     if result.get("workflow_status", "unknown") in fatal_statuses:
@@ -98,6 +99,8 @@ def cmd_build_summary(argv):
             parts.append("Codex")
         if item.get("kilocode_status") == "success":
             parts.append("KiloCode")
+        if item.get("opencode_status") == "success":
+            parts.append("OpenCode")
         if item.get("claude_status") == "success":
             parts.append("Claude")
         return "、".join(parts) if parts else "已更新"
@@ -111,6 +114,7 @@ def cmd_build_summary(argv):
                 item.get("bridge_status") in {"deployed_started", "files_refreshed_no_env"},
                 item.get("codex_status") == "success",
                 item.get("kilocode_status") == "success",
+                item.get("opencode_status") == "success",
                 item.get("claude_status") == "success",
             )
         )
@@ -166,6 +170,7 @@ def cmd_build_summary(argv):
             "agy_switcher_failed": "agy-switcher失败",
             "codex_failed": "Codex失败",
             "kilocode_failed": "KiloCode失败",
+            "opencode_failed": "OpenCode失败",
             "claude_failed": "Claude失败",
         }
         reason = labels.get(workflow_status, workflow_status)

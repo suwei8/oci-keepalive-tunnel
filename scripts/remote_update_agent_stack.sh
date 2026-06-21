@@ -38,6 +38,10 @@ RESULT_KILOCODE_STATUS="skipped_no_bridge"
 RESULT_KILOCODE_VERSION="N/A"
 RESULT_KILOCODE_TARGET_VERSION="${KILOCODE_LATEST_VERSION:-unknown}"
 
+RESULT_OPENCODE_STATUS="skipped_no_bridge"
+RESULT_OPENCODE_VERSION="N/A"
+RESULT_OPENCODE_TARGET_VERSION="${OPENCODE_LATEST_VERSION:-latest}"
+
 RESULT_CLAUDE_STATUS="skipped_missing_env"
 RESULT_CLAUDE_VERSION="N/A"
 RESULT_CLAUDE_TARGET_VERSION="${CLAUDE_LATEST_VERSION:-unknown}"
@@ -80,6 +84,9 @@ emit_results() {
   echo "RESULT_KILOCODE_STATUS=$(sanitize_value "$RESULT_KILOCODE_STATUS")"
   echo "RESULT_KILOCODE_VERSION=$(sanitize_value "$RESULT_KILOCODE_VERSION")"
   echo "RESULT_KILOCODE_TARGET_VERSION=$(sanitize_value "$RESULT_KILOCODE_TARGET_VERSION")"
+  echo "RESULT_OPENCODE_STATUS=$(sanitize_value "$RESULT_OPENCODE_STATUS")"
+  echo "RESULT_OPENCODE_VERSION=$(sanitize_value "$RESULT_OPENCODE_VERSION")"
+  echo "RESULT_OPENCODE_TARGET_VERSION=$(sanitize_value "$RESULT_OPENCODE_TARGET_VERSION")"
   echo "RESULT_CLAUDE_STATUS=$(sanitize_value "$RESULT_CLAUDE_STATUS")"
   echo "RESULT_CLAUDE_VERSION=$(sanitize_value "$RESULT_CLAUDE_VERSION")"
   echo "RESULT_CLAUDE_TARGET_VERSION=$(sanitize_value "$RESULT_CLAUDE_TARGET_VERSION")"
@@ -1784,6 +1791,55 @@ update_kilocode() {
   fi
 }
 
+update_opencode() {
+  local current_version=""
+  local install_dir=""
+  local bin_path=""
+
+  if [ "$RESULT_ENV_STATUS" = "missing" ]; then
+    RESULT_OPENCODE_STATUS="skipped_missing_env"
+    return
+  fi
+
+  if [ ! -x /home/sw/agent-bridge ]; then
+    RESULT_OPENCODE_STATUS="skipped_no_bridge"
+    return
+  fi
+
+  load_shell_profiles
+
+  if ! command -v npm >/dev/null 2>&1; then
+    RESULT_OPENCODE_STATUS="opencode_failed"
+    RESULT_WORKFLOW_STATUS="opencode_failed"
+    add_note "npm not found for opencode install"
+    return
+  fi
+
+  ensure_latest_npm
+
+  current_version="$(/home/sw/.opencode/bin/opencode --version 2>/dev/null | head -1 | awk '{print $NF}' || true)"
+
+  if npm i -g opencode-ai@latest; then
+    hash -r || true
+    RESULT_OPENCODE_STATUS="success"
+  else
+    RESULT_OPENCODE_STATUS="opencode_failed"
+    RESULT_WORKFLOW_STATUS="opencode_failed"
+    add_note "npm install opencode-ai@latest failed"
+    return
+  fi
+
+  install_dir="${OPENCODE_INSTALL_DIR:-$HOME/.opencode}"
+  bin_path="${install_dir}/bin/opencode"
+  if [ -x "$bin_path" ]; then
+    current_version="$("$bin_path" --version 2>/dev/null | head -1 | awk '{print $NF}' || true)"
+  fi
+  if [ -z "$current_version" ] && command -v opencode >/dev/null 2>&1; then
+    current_version="$(opencode --version 2>/dev/null | head -1 | awk '{print $NF}' || true)"
+  fi
+  RESULT_OPENCODE_VERSION="${current_version:-unknown}"
+}
+
 update_claude() {
   local current_version=""
   local should_update="no"
@@ -1937,6 +1993,7 @@ main() {
   update_bridge
   update_codex
   update_kilocode
+  update_opencode
   update_claude
   update_mimo_code
   update_devin_cli
