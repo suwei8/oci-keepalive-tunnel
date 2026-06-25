@@ -68,6 +68,8 @@ jobs:
           tmp_list="$(mktemp)"
           trap 'rm -f "$tmp_key" "$tmp_list"' EXIT
 
+          run_root apt-get update -qq
+          run_root apt-get install -y -qq curl ca-certificates
           run_root mkdir -p --mode=0755 /usr/share/keyrings
           curl -fsSL https://pkg.cloudflare.com/cloudflare-public-v2.gpg -o "$tmp_key"
           run_root install -D -m 644 "$tmp_key" /usr/share/keyrings/cloudflare-public-v2.gpg
