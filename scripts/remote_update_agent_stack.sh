@@ -16,10 +16,6 @@ RESULT_NOTES=""
 RESULT_ENV_STATUS="unknown"
 RESULT_MANUAL_ACTION_REQUIRED="no"
 
-RESULT_ANTIGRAVITY_STATUS="skipped_no_argv"
-RESULT_ANTIGRAVITY_OLD_VERSION="N/A"
-RESULT_ANTIGRAVITY_NEW_VERSION="N/A"
-
 RESULT_AGY_SWITCHER_STATUS="skipped_no_argv"
 RESULT_AGY_SWITCHER_VERSION="N/A"
 RESULT_AGY_SWITCHER_TARGET_VERSION="${AGY_SWITCHER_LATEST_TAG:-unknown}"
@@ -68,9 +64,6 @@ emit_results() {
   echo "RESULT_WORKFLOW_STATUS=$(sanitize_value "$RESULT_WORKFLOW_STATUS")"
   echo "RESULT_ENV_STATUS=$(sanitize_value "$RESULT_ENV_STATUS")"
   echo "RESULT_MANUAL_ACTION_REQUIRED=$(sanitize_value "$RESULT_MANUAL_ACTION_REQUIRED")"
-  echo "RESULT_ANTIGRAVITY_STATUS=$(sanitize_value "$RESULT_ANTIGRAVITY_STATUS")"
-  echo "RESULT_ANTIGRAVITY_OLD_VERSION=$(sanitize_value "$RESULT_ANTIGRAVITY_OLD_VERSION")"
-  echo "RESULT_ANTIGRAVITY_NEW_VERSION=$(sanitize_value "$RESULT_ANTIGRAVITY_NEW_VERSION")"
   echo "RESULT_AGY_SWITCHER_STATUS=$(sanitize_value "$RESULT_AGY_SWITCHER_STATUS")"
   echo "RESULT_AGY_SWITCHER_VERSION=$(sanitize_value "$RESULT_AGY_SWITCHER_VERSION")"
   echo "RESULT_AGY_SWITCHER_TARGET_VERSION=$(sanitize_value "$RESULT_AGY_SWITCHER_TARGET_VERSION")"
@@ -771,51 +764,6 @@ refresh_manage_script_if_present() {
   chmod +x "$tmp_manage"
   mv -f "$tmp_manage" /home/sw/manage.sh
   return 0
-}
-
-update_antigravity() {
-  if [ ! -f /home/sw/.antigravity/argv.json ]; then
-    RESULT_ANTIGRAVITY_STATUS="skipped_no_argv"
-    RESULT_AGY_SWITCHER_STATUS="skipped_no_argv"
-    return
-  fi
-
-  RESULT_ANTIGRAVITY_OLD_VERSION="$(dpkg -s antigravity 2>/dev/null | awk '/^Version:/{print $2}' || true)"
-  [ -n "$RESULT_ANTIGRAVITY_OLD_VERSION" ] || RESULT_ANTIGRAVITY_OLD_VERSION="N/A"
-
-  if ! sudo apt-get -o DPkg::Lock::Timeout=60 update -qq; then
-    if sudo grep -R -n -E '^[[:space:]]*deb .*apt\\.postgresql\\.org/pub/repos/apt.*focal-pgdg' \
-      /etc/apt/sources.list /etc/apt/sources.list.d 2>/dev/null >/tmp/agentbridge-bad-apt-sources.txt; then
-      while IFS=: read -r file line_no _; do
-        [ -n "$file" ] || continue
-        sudo sed -i "${line_no}s/^[[:space:]]*deb /# disabled by AgentBridge rollout: deb /" "$file"
-      done < /tmp/agentbridge-bad-apt-sources.txt
-      rm -f /tmp/agentbridge-bad-apt-sources.txt
-      add_note "disabled stale focal-pgdg apt source and retried antigravity update"
-    fi
-    if ! sudo apt-get -o DPkg::Lock::Timeout=60 update -qq; then
-      RESULT_ANTIGRAVITY_STATUS="antigravity_failed"
-      RESULT_WORKFLOW_STATUS="antigravity_failed"
-      add_note "antigravity apt update/install failed"
-      RESULT_ANTIGRAVITY_NEW_VERSION="$(dpkg -s antigravity 2>/dev/null | awk '/^Version:/{print $2}' || true)"
-      [ -n "$RESULT_ANTIGRAVITY_NEW_VERSION" ] || RESULT_ANTIGRAVITY_NEW_VERSION="N/A"
-      return
-    fi
-  fi
-
-  if wait_for_dpkg_lock 180 && sudo apt-get -o DPkg::Lock::Timeout=60 install -y -qq --allow-change-held-packages antigravity; then
-    RESULT_ANTIGRAVITY_STATUS="success"
-  else
-    RESULT_ANTIGRAVITY_STATUS="antigravity_failed"
-    RESULT_WORKFLOW_STATUS="antigravity_failed"
-    if ! wait_for_dpkg_lock 1; then
-      add_note "dpkg lock busy during antigravity install"
-    fi
-    add_note "antigravity apt update/install failed"
-  fi
-
-  RESULT_ANTIGRAVITY_NEW_VERSION="$(dpkg -s antigravity 2>/dev/null | awk '/^Version:/{print $2}' || true)"
-  [ -n "$RESULT_ANTIGRAVITY_NEW_VERSION" ] || RESULT_ANTIGRAVITY_NEW_VERSION="N/A"
 }
 
 ensure_agy_tool_permission() {
@@ -1987,7 +1935,6 @@ main() {
   ensure_default_cli_profile
   repair_bridge_runtime_config
   get_env_status
-  update_antigravity
   update_agy_cli
   update_agy_switcher
   update_bridge

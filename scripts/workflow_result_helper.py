@@ -51,7 +51,6 @@ def cmd_enforce_fatal(argv):
         "tunnel_failed",
         "whitelist_failed",
         "bridge_failed",
-        "antigravity_failed",
         "agy_switcher_failed",
         "agy_cli_failed",
         "codex_failed",
@@ -87,8 +86,6 @@ def cmd_build_summary(argv):
 
     def updated_reason(item):
         parts = []
-        if item.get("antigravity_status") == "success":
-            parts.append("Antigravity")
         if item.get("agy_cli_status") == "success":
             parts.append("agy")
         if item.get("agy_switcher_status") == "success":
@@ -108,7 +105,6 @@ def cmd_build_summary(argv):
     def is_updated(item):
         return any(
             (
-                item.get("antigravity_status") == "success",
                 item.get("agy_cli_status") == "success",
                 item.get("agy_switcher_status") == "success",
                 item.get("bridge_status") in {"deployed_started", "files_refreshed_no_env"},
@@ -165,7 +161,6 @@ def cmd_build_summary(argv):
             "tunnel_failed": "隧道失败",
             "whitelist_failed": "白名单失败",
             "bridge_failed": "Bridge失败",
-            "antigravity_failed": "Antigravity失败",
             "agy_cli_failed": "agy失败",
             "agy_switcher_failed": "agy-switcher失败",
             "codex_failed": "Codex失败",
