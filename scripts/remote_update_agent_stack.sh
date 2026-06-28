@@ -1111,7 +1111,7 @@ parse_codex_version() {
 parse_kilocode_version() {
   kilo --version 2>/dev/null \
     | tr -d '\r' \
-    | sed -nE 's/.*([0-9]+(\.[0-9]+)+([-.][0-9A-Za-z.]+)?).*/\1/p' \
+    | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' \
     | head -n 1
 }
 
