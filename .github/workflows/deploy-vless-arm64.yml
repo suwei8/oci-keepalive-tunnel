@@ -847,7 +847,7 @@ jobs:
           if [ -s /tmp/nodes_info.txt ]; then
             echo "### ✅ 节点列表" >> $GITHUB_STEP_SUMMARY
             echo '```' >> $GITHUB_STEP_SUMMARY
-            cat /tmp/nodes_info.txt | grep -v "^$" || true >> $GITHUB_STEP_SUMMARY
+            grep -v "^$" /tmp/nodes_info.txt >> $GITHUB_STEP_SUMMARY || true
             echo '```' >> $GITHUB_STEP_SUMMARY
           else
             echo "无节点信息" >> $GITHUB_STEP_SUMMARY
