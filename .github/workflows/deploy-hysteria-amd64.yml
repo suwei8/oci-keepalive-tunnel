@@ -66,6 +66,9 @@ jobs:
           CF_API_EMAIL: ${{ secrets.CF_API_EMAIL }}
           CF_API_KEY: ${{ secrets.CF_API_KEY }}
           CF_ZONE_ID: ${{ secrets.CF_ZONE_ID }}
+          CF_API_EMAIL_555606: ${{ secrets.CF_API_EMAIL_555606 }}
+          CF_API_KEY_555606: ${{ secrets.CF_API_KEY_555606 }}
+          CF_ZONE_ID_555606: ${{ secrets.CF_ZONE_ID_555606 }}
           HYSTERIA_PASSWORD: ${{ secrets.HYSTERIA_PASSWORD }}
           FORCE_REDEPLOY: ${{ github.event.inputs.force_redeploy }}
           UPDATE_BINARY: ${{ github.event.inputs.update_binary }}
@@ -80,10 +83,26 @@ jobs:
             fi
           }
 
+          # 根据域名后缀动态选择 Cloudflare 账户凭证 (多 zone 支持)
+          select_cf_account() {
+            local domain="$1"
+            CURRENT_ZONE_ID="$CF_ZONE_ID"
+            CURRENT_API_EMAIL="$CF_API_EMAIL"
+            CURRENT_API_KEY="$CF_API_KEY"
+            CURRENT_CF_LABEL="default(hhwpxh.com)"
+
+            if [[ "$domain" == *"555606.xyz" ]]; then
+              CURRENT_ZONE_ID="$CF_ZONE_ID_555606"
+              CURRENT_API_EMAIL="$CF_API_EMAIL_555606"
+              CURRENT_API_KEY="$CF_API_KEY_555606"
+              CURRENT_CF_LABEL="555606.xyz"
+            fi
+          }
+
           fetch_dns_record_json() {
-            curl -fsSL "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records?name=${PROXY_DOMAIN}" \
-              -H "X-Auth-Email: ${CF_API_EMAIL}" \
-              -H "X-Auth-Key: ${CF_API_KEY}"
+            curl -fsSL "https://api.cloudflare.com/client/v4/zones/${CURRENT_ZONE_ID}/dns_records?name=${PROXY_DOMAIN}" \
+              -H "X-Auth-Email: ${CURRENT_API_EMAIL}" \
+              -H "X-Auth-Key: ${CURRENT_API_KEY}"
           }
 
           wait_for_dns_propagation() {
@@ -213,7 +232,11 @@ jobs:
             add_mask_if_present "$PUBLIC_IP"
             MASKED_IP=$(echo "$PUBLIC_IP" | awk -F. '{print $1"."$2".*.*"}')
             echo "✅ 公网 IP: $MASKED_IP"
-            
+
+            # 动态选择 Zone ID 和凭证 (支持 hhwpxh.com / 555606.xyz 多 zone)
+            select_cf_account "$PROXY_DOMAIN"
+            echo ">>> 使用 Cloudflare 凭证: $CURRENT_CF_LABEL"
+
             echo ">>> 检查 DNS..."
             DNS_QUERY_JSON=$(fetch_dns_record_json) || {
               echo "❌ DNS 查询失败"
@@ -226,7 +249,7 @@ jobs:
             
             if [ -z "$DNS_RECORD" ]; then
               echo ">>> 创建 DNS A 记录: ${PROXY_DOMAIN} -> ${MASKED_IP}"
-              DNS_RESULT=$(curl -fsSL -X POST "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records" -H "X-Auth-Email: ${CF_API_EMAIL}" -H "X-Auth-Key: ${CF_API_KEY}" -H "Content-Type: application/json" -d "{\"type\":\"A\",\"name\":\"${PROXY_DOMAIN}\",\"content\":\"${PUBLIC_IP}\",\"proxied\":false,\"ttl\":1}" 2>/dev/null || true)
+              DNS_RESULT=$(curl -fsSL -X POST "https://api.cloudflare.com/client/v4/zones/${CURRENT_ZONE_ID}/dns_records" -H "X-Auth-Email: ${CURRENT_API_EMAIL}" -H "X-Auth-Key: ${CURRENT_API_KEY}" -H "Content-Type: application/json" -d "{\"type\":\"A\",\"name\":\"${PROXY_DOMAIN}\",\"content\":\"${PUBLIC_IP}\",\"proxied\":false,\"ttl\":1}" 2>/dev/null || true)
               if echo "$DNS_RESULT" | jq -e '.success' > /dev/null; then
                 echo "✅ DNS 记录已创建"
               else
@@ -258,7 +281,7 @@ jobs:
                 kill $TUNNEL_PID 2>/dev/null || true
                 continue
               fi
-              curl -fsSL -X PUT "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records/${RECORD_ID}" -H "X-Auth-Email: ${CF_API_EMAIL}" -H "X-Auth-Key: ${CF_API_KEY}" -H "Content-Type: application/json" -d "{\"type\":\"A\",\"name\":\"${PROXY_DOMAIN}\",\"content\":\"${PUBLIC_IP}\",\"proxied\":false,\"ttl\":1}" > /dev/null || {
+              curl -fsSL -X PUT "https://api.cloudflare.com/client/v4/zones/${CURRENT_ZONE_ID}/dns_records/${RECORD_ID}" -H "X-Auth-Email: ${CURRENT_API_EMAIL}" -H "X-Auth-Key: ${CURRENT_API_KEY}" -H "Content-Type: application/json" -d "{\"type\":\"A\",\"name\":\"${PROXY_DOMAIN}\",\"content\":\"${PUBLIC_IP}\",\"proxied\":false,\"ttl\":1}" > /dev/null || {
                 echo "❌ DNS 更新失败"
                 DNS_FAILED_COUNT=$((DNS_FAILED_COUNT + 1))
                 kill $TUNNEL_PID 2>/dev/null || true
