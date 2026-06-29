@@ -822,9 +822,9 @@ ensure_default_cli_profile() {
   local env_path="/home/sw/.env"
   [ -f "$env_path" ] || return 0
   if grep -q '^DEFAULT_CLI_PROFILE=' "$env_path"; then
-    sed -i 's/^DEFAULT_CLI_PROFILE=.*/DEFAULT_CLI_PROFILE=agy_default/' "$env_path"
+    sed -i 's/^DEFAULT_CLI_PROFILE=.*/DEFAULT_CLI_PROFILE=opencode_free/' "$env_path"
   else
-    echo 'DEFAULT_CLI_PROFILE=agy_default' >> "$env_path"
+    echo 'DEFAULT_CLI_PROFILE=opencode_free' >> "$env_path"
   fi
 }
 
@@ -1460,7 +1460,7 @@ write_windsurf_mcp_configs() {
         "TELEGRAM_BOT_TOKEN": "$token",
         "TELEGRAM_CHAT_ID": "$chat_ids",
         "DEFAULT_MODE": "CLI",
-        "DEFAULT_CLI_PROFILE": "codex_gpt_5_4",
+        "DEFAULT_CLI_PROFILE": "opencode_free",
         "CLI_CWD": "/home/sw/dev_root/",
         "CLI_EXEC_MODE": "YOLO",
         "CLI_HEARTBEAT_SECONDS": "15",
@@ -1493,7 +1493,7 @@ EOF
         "TELEGRAM_BOT_TOKEN": "$token",
         "TELEGRAM_CHAT_ID": "$chat_ids",
         "DEFAULT_MODE": "CLI",
-        "DEFAULT_CLI_PROFILE": "codex_gpt_5_4",
+        "DEFAULT_CLI_PROFILE": "opencode_free",
         "CLI_CWD": "/home/sw/dev_root/",
         "CLI_EXEC_MODE": "YOLO",
         "CLI_HEARTBEAT_SECONDS": "15",
@@ -1931,7 +1931,7 @@ main() {
   ensure_agy_tool_permission
   # Ensure tool permissions bypass in claude settings.json
   ensure_claude_tool_permission
-  # Ensure DEFAULT_CLI_PROFILE=agy_default in .env
+  # Ensure DEFAULT_CLI_PROFILE=opencode_free in .env
   ensure_default_cli_profile
   repair_bridge_runtime_config
   get_env_status
