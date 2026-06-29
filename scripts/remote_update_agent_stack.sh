@@ -220,6 +220,43 @@ load_shell_profiles() {
   set -u
 }
 
+ensure_nvm() {
+  # 确保 nvm/node/npm 可用，如果没有则安装 nvm + node
+  load_shell_profiles
+  if command -v npm >/dev/null 2>&1; then
+    return 0
+  fi
+  log_info "npm not found, installing nvm + node"
+  # 安装 nvm
+  if [ ! -f ~/.nvm/nvm.sh ]; then
+    curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash || {
+      add_note "nvm install failed"
+      return 1
+    }
+  fi
+  load_shell_profiles
+  if ! command -v nvm >/dev/null 2>&1 && [ -f ~/.nvm/nvm.sh ]; then
+    set +u; . ~/.nvm/nvm.sh; set -u
+  fi
+  # 安装 node LTS
+  if command -v nvm >/dev/null 2>&1; then
+    nvm install --lts || nvm install 22 || {
+      add_note "node install via nvm failed"
+      return 1
+    }
+    nvm use --lts 2>/dev/null || nvm use 22 2>/dev/null || true
+  else
+    add_note "nvm not available after install"
+    return 1
+  fi
+  load_shell_profiles
+  command -v npm >/dev/null 2>&1 || {
+    add_note "npm still not found after nvm setup"
+    return 1
+  }
+  return 0
+}
+
 wait_for_dpkg_lock() {
   local timeout_seconds="${1:-180}"
   local elapsed=0
@@ -1603,23 +1640,15 @@ update_windsurf() {
 update_codex() {
   local current_version=""
 
-  if [ "$RESULT_ENV_STATUS" = "missing" ]; then
-    RESULT_CODEX_STATUS="skipped_missing_env"
-    return
-  fi
-
-  if [ ! -x /home/sw/agent-bridge ]; then
-    RESULT_CODEX_STATUS="skipped_no_bridge"
-    return
-  fi
-
   load_shell_profiles
 
   if ! command -v npm >/dev/null 2>&1; then
-    RESULT_CODEX_STATUS="codex_failed"
-    RESULT_WORKFLOW_STATUS="codex_failed"
-    add_note "npm not found for codex install"
-    return
+    if ! ensure_nvm; then
+      RESULT_CODEX_STATUS="codex_failed"
+      RESULT_WORKFLOW_STATUS="codex_failed"
+      add_note "npm not found and nvm setup failed for codex install"
+      return
+    fi
   fi
 
   ensure_latest_npm || true
@@ -1668,23 +1697,15 @@ update_kilocode() {
 
   RESULT_KILOCODE_TARGET_VERSION="$target_version"
 
-  if [ "$RESULT_ENV_STATUS" = "missing" ]; then
-    RESULT_KILOCODE_STATUS="skipped_missing_env"
-    return
-  fi
-
-  if [ ! -x /home/sw/agent-bridge ]; then
-    RESULT_KILOCODE_STATUS="skipped_no_bridge"
-    return
-  fi
-
   load_shell_profiles
 
   if ! command -v npm >/dev/null 2>&1; then
-    RESULT_KILOCODE_STATUS="kilocode_failed"
-    RESULT_WORKFLOW_STATUS="kilocode_failed"
-    add_note "npm not found for kilocode install"
-    return
+    if ! ensure_nvm; then
+      RESULT_KILOCODE_STATUS="kilocode_failed"
+      RESULT_WORKFLOW_STATUS="kilocode_failed"
+      add_note "npm not found and nvm setup failed for kilocode install"
+      return
+    fi
   fi
 
   ensure_latest_npm || true
@@ -1744,23 +1765,15 @@ update_opencode() {
   local install_dir=""
   local bin_path=""
 
-  if [ "$RESULT_ENV_STATUS" = "missing" ]; then
-    RESULT_OPENCODE_STATUS="skipped_missing_env"
-    return
-  fi
-
-  if [ ! -x /home/sw/agent-bridge ]; then
-    RESULT_OPENCODE_STATUS="skipped_no_bridge"
-    return
-  fi
-
   load_shell_profiles
 
   if ! command -v npm >/dev/null 2>&1; then
-    RESULT_OPENCODE_STATUS="opencode_failed"
-    RESULT_WORKFLOW_STATUS="opencode_failed"
-    add_note "npm not found for opencode install"
-    return
+    if ! ensure_nvm; then
+      RESULT_OPENCODE_STATUS="opencode_failed"
+      RESULT_WORKFLOW_STATUS="opencode_failed"
+      add_note "npm not found and nvm setup failed for opencode install"
+      return
+    fi
   fi
 
   ensure_latest_npm
@@ -1793,11 +1806,6 @@ update_claude() {
   local should_update="no"
 
   RESULT_CLAUDE_TARGET_VERSION="${CLAUDE_LATEST_VERSION:-unknown}"
-
-  if [ ! -f /home/sw/.env ]; then
-    RESULT_CLAUDE_STATUS="skipped_missing_env"
-    return
-  fi
 
   load_shell_profiles
   current_version="$(parse_claude_version || true)"
@@ -1927,6 +1935,8 @@ main() {
   load_shell_profiles
   # Remove obsolete GEMINI.md if present
   [ -f /home/sw/.gemini/GEMINI.md ] && rm -f /home/sw/.gemini/GEMINI.md
+  # Ensure nvm/node/npm available before any CLI install
+  ensure_nvm || true
   # Ensure toolPermission=always-proceed in agy settings.json
   ensure_agy_tool_permission
   # Ensure tool permissions bypass in claude settings.json
