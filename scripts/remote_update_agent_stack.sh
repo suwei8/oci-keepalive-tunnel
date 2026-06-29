@@ -234,22 +234,30 @@ ensure_nvm() {
       return 1
     }
   fi
-  load_shell_profiles
-  if ! command -v nvm >/dev/null 2>&1 && [ -f ~/.nvm/nvm.sh ]; then
-    set +u; . ~/.nvm/nvm.sh; set -u
-  fi
-  # 安装 node LTS
+  # nvm 是 bash 函数，需要在 set +u 下 source 和调用
+  set +u
+  [ -f ~/.nvm/nvm.sh ] && . ~/.nvm/nvm.sh
+  # 安装 node LTS（nvm 内部可能引用未定义变量，必须 set +u）
   if command -v nvm >/dev/null 2>&1; then
-    nvm install --lts || nvm install 22 || {
+    nvm install --lts 2>/dev/null || nvm install 22 || {
+      set -u
       add_note "node install via nvm failed"
       return 1
     }
     nvm use --lts 2>/dev/null || nvm use 22 2>/dev/null || true
   else
+    set -u
     add_note "nvm not available after install"
     return 1
   fi
-  load_shell_profiles
+  set -u
+  # 重新加载 shell profiles（nvm.sh 在 set +u 下 source 更安全）
+  set +u
+  [ -f /etc/profile ] && . /etc/profile || true
+  [ -f ~/.profile ] && . ~/.profile || true
+  [ -f ~/.bashrc ] && . ~/.bashrc || true
+  [ -f ~/.nvm/nvm.sh ] && . ~/.nvm/nvm.sh || true
+  set -u
   command -v npm >/dev/null 2>&1 || {
     add_note "npm still not found after nvm setup"
     return 1
