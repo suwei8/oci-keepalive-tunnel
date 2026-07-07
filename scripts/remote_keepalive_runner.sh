@@ -55,25 +55,90 @@ fi
 
 rm -f /tmp/prediction_result.json
 
+# git 网络配置: 防止低速连接无限挂起 (30s 内速度低于 1000B/s 则中止)
+GIT_NET_OPTS="-c http.lowSpeedLimit=1000 -c http.lowSpeedTime=30 -c http.postBuffer=524288"
+# 从带 token 的 URL 中提取无 token 的回退 URL (public 仓库不需要认证)
+KEEPALIVE_REPO_URL_PUBLIC="$(printf '%s' "${KEEPALIVE_REPO_URL}" | sed -E 's#https://[^@]+@#https://#')"
+# git 操作错误日志临时文件
+GIT_ERR_FILE="$(mktemp)"
+trap 'rm -f "${GIT_ERR_FILE}"' EXIT
+
+# git_sync_retry: 带重试的 git 同步，最多尝试 2 次 (不同 URL)
+# 用法: git_sync_retry <description> <command...>
+git_sync_retry() {
+  local desc="$1"; shift
+  local attempt=0
+  local urls=("${KEEPALIVE_REPO_URL}" "${KEEPALIVE_REPO_URL_PUBLIC}")
+  for url in "${urls[@]}"; do
+    attempt=$((attempt + 1))
+    echo ">>> ${desc} (attempt ${attempt}/${#urls[@]})..." >&2
+    if "$@" "${url}" 2>"${GIT_ERR_FILE}"; then
+      rm -f "${GIT_ERR_FILE}"
+      return 0
+    fi
+    local err_tail
+    err_tail="$(tail -3 "${GIT_ERR_FILE}" 2>/dev/null | tr '\n' ' ' | head -c 200)"
+    echo ">>> ${desc} attempt ${attempt} failed: ${err_tail}" >&2
+    sleep 3
+  done
+  # 保留最后一次错误信息供调用方读取
+  return 1
+}
+
+git_err_note() {
+  local err_tail
+  err_tail="$(tail -3 "${GIT_ERR_FILE}" 2>/dev/null | tr '\n' ' ' | head -c 200)"
+  if [ -n "$err_tail" ]; then
+    printf '%s' "$err_tail"
+  else
+    printf 'no error output'
+  fi
+}
+
 if [ -d "${KEEPALIVE_REPO_DIR}/.git" ]; then
-  if git -C "${KEEPALIVE_REPO_DIR}" fetch --depth 1 origin "${KEEPALIVE_GIT_BRANCH}" >/dev/null 2>&1 \
-    && git -C "${KEEPALIVE_REPO_DIR}" checkout -q "${KEEPALIVE_GIT_BRANCH}" >/dev/null 2>&1 \
-    && git -C "${KEEPALIVE_REPO_DIR}" reset --hard "origin/${KEEPALIVE_GIT_BRANCH}" >/dev/null 2>&1; then
+  # 已有仓库: 尝试 fetch + reset，失败则删除后重新 clone
+  do_fetch_update() {
+    local _url="$1"
+    # 更新 origin remote URL 以支持 token/public URL 切换重试
+    git -C "${KEEPALIVE_REPO_DIR}" remote set-url origin "${_url}" 2>&1 \
+      && git ${GIT_NET_OPTS} -C "${KEEPALIVE_REPO_DIR}" fetch --depth 1 origin "${KEEPALIVE_GIT_BRANCH}" 2>&1 \
+      && git -C "${KEEPALIVE_REPO_DIR}" checkout -q "${KEEPALIVE_GIT_BRANCH}" 2>&1 \
+      && git -C "${KEEPALIVE_REPO_DIR}" reset --hard "origin/${KEEPALIVE_GIT_BRANCH}" 2>&1
+  }
+
+  if git_sync_retry "git fetch+reset" do_fetch_update; then
     repo_status="updated"
   else
-    workflow_status="repo_sync_failed"
-    repo_status="update_failed"
-    add_note "failed to update keepalive repo"
-    print_results
-    exit 1
+    # fetch 失败: 尝试删除目录后重新 clone (可能 .git 损坏)
+    echo ">>> fetch failed, attempting fresh clone..." >&2
+    rm -rf "${KEEPALIVE_REPO_DIR}"
+    do_fresh_clone() {
+      local _url="$1"
+      git ${GIT_NET_OPTS} clone --depth 1 --branch "${KEEPALIVE_GIT_BRANCH}" "${_url}" "${KEEPALIVE_REPO_DIR}" 2>&1
+    }
+    if git_sync_retry "git clone (after fetch fail)" do_fresh_clone; then
+      repo_status="cloned_after_fetch_fail"
+    else
+      workflow_status="repo_sync_failed"
+      repo_status="update_failed"
+      add_note "failed to update keepalive repo: $(git_err_note)"
+      rm -f "${GIT_ERR_FILE}"
+      print_results
+      exit 1
+    fi
   fi
 elif [ ! -e "${KEEPALIVE_REPO_DIR}" ]; then
-  if git clone --depth 1 --branch "${KEEPALIVE_GIT_BRANCH}" "${KEEPALIVE_REPO_URL}" "${KEEPALIVE_REPO_DIR}" >/dev/null 2>&1; then
+  do_fresh_clone() {
+    local _url="$1"
+    git ${GIT_NET_OPTS} clone --depth 1 --branch "${KEEPALIVE_GIT_BRANCH}" "${_url}" "${KEEPALIVE_REPO_DIR}" 2>&1
+  }
+  if git_sync_retry "git clone" do_fresh_clone; then
     repo_status="cloned"
   else
     workflow_status="repo_sync_failed"
     repo_status="clone_failed"
-    add_note "failed to clone keepalive repo"
+    add_note "failed to clone keepalive repo: $(git_err_note)"
+    rm -f "${GIT_ERR_FILE}"
     print_results
     exit 1
   fi
@@ -84,6 +149,7 @@ else
   print_results
   exit 1
 fi
+rm -f "${GIT_ERR_FILE}"
 
 if [ ! -f "${KEEPALIVE_REPO_DIR}/scripts/remote_keepalive.py" ]; then
   workflow_status="repo_sync_failed"
