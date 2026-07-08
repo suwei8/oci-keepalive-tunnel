@@ -1919,9 +1919,16 @@ update_devin_cli() {
   
   if [ -n "${DEVIN_CREDENTIALS_B64:-}" ]; then
     log_info "Deploying Devin CLI credentials"
-    mkdir -p /home/sw/.local/share/devin
-    printf "%s" "$DEVIN_CREDENTIALS_B64" | base64 -d > /home/sw/.local/share/devin/credentials.toml
-    chmod 600 /home/sw/.local/share/devin/credentials.toml
+    mkdir -p /tmp/devin_creds
+    printf "%s" "$DEVIN_CREDENTIALS_B64" | base64 -d > /tmp/devin_creds/creds.data
+    if gzip -t /tmp/devin_creds/creds.data 2>/dev/null; then
+      tar -xzf /tmp/devin_creds/creds.data -C /home/sw/
+    else
+      mkdir -p /home/sw/.local/share/devin
+      cp /tmp/devin_creds/creds.data /home/sw/.local/share/devin/credentials.toml
+      chmod 600 /home/sw/.local/share/devin/credentials.toml
+    fi
+    rm -rf /tmp/devin_creds
   fi
 }
 
