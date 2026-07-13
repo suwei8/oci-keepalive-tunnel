@@ -60,6 +60,7 @@ jobs:
               "US-GCP俄勒冈2",
               "AWS",
               "AWS2",
+              "aws",
               "US-bestvm-232-amd",
               "US-bestvm-235-amd",
               "US-凤凰城3-amd2",
