@@ -58,9 +58,14 @@ jobs:
           excluded = {
               "DU-迪拜",
               "JP-东京1-arm2-Mini",
+              "SG1-新加坡",
               "SG1-新加坡3-arm2",
               "SG2-新加坡西2",
+              "SG2-新加坡西6",
               "US-凤凰城0权-arm",
+              "US-凤凰城2-arm1",
+              "KR-春川2-arm",
+              "JBP-马来西亚",
           }
 
           matrix = []

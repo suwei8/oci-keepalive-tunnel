@@ -62,6 +62,8 @@ jobs:
               "AWS2",
               "US-bestvm-232-amd",
               "US-bestvm-235-amd",
+              "US-凤凰城3-amd2",
+              "US-凤凰城3-amd1",
           }
           excluded_prefixes = (
               "fr-free-v6-",
