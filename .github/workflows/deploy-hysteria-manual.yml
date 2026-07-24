@@ -217,6 +217,12 @@ jobs:
               sudo systemctl stop nginx 2>/dev/null || true
               sudo fuser -k 80/tcp 2>/dev/null || true
               sleep 2
+              # 清理可能损坏的旧证书数据 (renewal 配置存在但 live/archive 文件缺失时，
+              # certbot 会误判"未到期"而拒绝重新签发)
+              if sudo test -f /etc/letsencrypt/renewal/${PROXY_DOMAIN}.conf && ! sudo test -e /etc/letsencrypt/live/${PROXY_DOMAIN}/fullchain.pem; then
+                echo '>>> 检测到损坏的证书数据，清理后重新签发...'
+                sudo certbot delete --cert-name ${PROXY_DOMAIN} --non-interactive 2>/dev/null || true
+              fi
               sudo certbot certonly --standalone -d ${PROXY_DOMAIN} --non-interactive --agree-tos --email ${CF_API_EMAIL} --http-01-port 80 || true
               sudo systemctl start nginx 2>/dev/null || true
             " 2>&1
