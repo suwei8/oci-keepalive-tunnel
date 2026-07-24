@@ -180,6 +180,8 @@ jobs:
             HOST_NAME=$(echo "$host_item" | jq -r '.name')
             SSH_HOST=$(echo "$host_item" | jq -r '.ssh_host')
             PROXY_DOMAIN=$(echo "$host_item" | jq -r '.proxy_domains')
+            # certbot 将域名转为小写存储，需用小写版本匹配文件系统路径
+            PROXY_DOMAIN_LC=$(echo "$PROXY_DOMAIN" | tr 'A-Z' 'a-z')
             CPU_TYPE=$(echo "$host_item" | jq -r '.cpu_type')
             
             add_mask_if_present "$SSH_HOST"
@@ -324,8 +326,8 @@ jobs:
             
             if [ "$SERVICE_ACTIVE" = "active" ]; then
               CONFIG_DOMAIN=$(sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${CURRENT_SSH_USER}@127.0.0.1" "grep -oP 'cert: /etc/letsencrypt/live/\K[^/]+' /etc/hysteria/config.yaml 2>/dev/null || echo 'UNKNOWN'" 2>&1 | tail -1) || true
-              if [ "$CONFIG_DOMAIN" != "$PROXY_DOMAIN" ]; then
-                echo "⚠️ 配置域名不匹配: 当前='$CONFIG_DOMAIN', 应为='$PROXY_DOMAIN'"
+              if [ "$CONFIG_DOMAIN" != "$PROXY_DOMAIN_LC" ]; then
+                echo "⚠️ 配置域名不匹配: 当前='$CONFIG_DOMAIN', 应为='$PROXY_DOMAIN_LC'"
                 CONFIG_VALID="no"
               else
                 CONFIG_VALID="yes"
@@ -352,7 +354,7 @@ jobs:
             
             echo ">>> 开始部署..."
             echo ">>> 检查 SSL..."
-            CERT_EXISTS=$(sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${CURRENT_SSH_USER}@127.0.0.1" "echo '#!/bin/sh' > ~/.askpass.sh; echo 'echo \"\$SSH_PASSWORD\"' >> ~/.askpass.sh; chmod +x ~/.askpass.sh; export SUDO_ASKPASS=~/.askpass.sh; sudo() { command sudo -A \"\$@\"; }; export -f sudo; sudo test -f /etc/letsencrypt/live/${PROXY_DOMAIN}/fullchain.pem && echo CERT_FOUND || echo CERT_MISSING" 2>/dev/null | tail -1) || true
+            CERT_EXISTS=$(sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${CURRENT_SSH_USER}@127.0.0.1" "echo '#!/bin/sh' > ~/.askpass.sh; echo 'echo \"\$SSH_PASSWORD\"' >> ~/.askpass.sh; chmod +x ~/.askpass.sh; export SUDO_ASKPASS=~/.askpass.sh; sudo() { command sudo -A \"\$@\"; }; export -f sudo; sudo test -f /etc/letsencrypt/live/${PROXY_DOMAIN_LC}/fullchain.pem && echo CERT_FOUND || echo CERT_MISSING" 2>/dev/null | tail -1) || true
             
             if [ "$CERT_EXISTS" != "CERT_FOUND" ]; then
               echo ">>> 申请 SSL 证书..."
@@ -365,13 +367,13 @@ jobs:
                 # 证书文件缺失时，强制清理所有旧 certbot 数据后重新签发
                 # (certbot 可能因残留的 renewal/live/archive 数据不一致而误判"未到期"拒绝签发)
                 echo '>>> 清理旧证书数据...'
-                sudo certbot delete --cert-name ${PROXY_DOMAIN} --non-interactive 2>/dev/null || true
-                sudo rm -rf /etc/letsencrypt/live/${PROXY_DOMAIN} /etc/letsencrypt/archive/${PROXY_DOMAIN} /etc/letsencrypt/renewal/${PROXY_DOMAIN}.conf 2>/dev/null || true
+                sudo certbot delete --cert-name ${PROXY_DOMAIN_LC} --non-interactive 2>/dev/null || true
+                sudo rm -rf /etc/letsencrypt/live/${PROXY_DOMAIN_LC} /etc/letsencrypt/archive/${PROXY_DOMAIN_LC} /etc/letsencrypt/renewal/${PROXY_DOMAIN_LC}.conf 2>/dev/null || true
                 sudo certbot certonly --standalone -d ${PROXY_DOMAIN} --non-interactive --agree-tos --email ${CF_API_EMAIL} --http-01-port 80 || true
                 sudo systemctl start nginx 2>/dev/null || true
               " 2>&1
               
-              if sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${CURRENT_SSH_USER}@127.0.0.1" "echo '#!/bin/sh' > ~/.askpass.sh; echo 'echo \"\$SSH_PASSWORD\"' >> ~/.askpass.sh; chmod +x ~/.askpass.sh; export SUDO_ASKPASS=~/.askpass.sh; sudo() { command sudo -A \"\$@\"; }; export -f sudo; sudo test -f /etc/letsencrypt/live/${PROXY_DOMAIN}/fullchain.pem" 2>/dev/null; then
+              if sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${CURRENT_SSH_USER}@127.0.0.1" "echo '#!/bin/sh' > ~/.askpass.sh; echo 'echo \"\$SSH_PASSWORD\"' >> ~/.askpass.sh; chmod +x ~/.askpass.sh; export SUDO_ASKPASS=~/.askpass.sh; sudo() { command sudo -A \"\$@\"; }; export -f sudo; sudo test -f /etc/letsencrypt/live/${PROXY_DOMAIN_LC}/fullchain.pem" 2>/dev/null; then
                 echo "✅ SSL 证书获取成功"
               else
                 echo "❌ SSL 证书获取失败"
@@ -411,8 +413,8 @@ jobs:
             sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${CURRENT_SSH_USER}@127.0.0.1" "cat > /tmp/config.yaml << EOFHY
           listen: :2443
           tls:
-            cert: /etc/letsencrypt/live/${PROXY_DOMAIN}/fullchain.pem
-            key: /etc/letsencrypt/live/${PROXY_DOMAIN}/privkey.pem
+            cert: /etc/letsencrypt/live/${PROXY_DOMAIN_LC}/fullchain.pem
+            key: /etc/letsencrypt/live/${PROXY_DOMAIN_LC}/privkey.pem
           auth:
             type: password
             password: ${HYSTERIA_PASSWORD}

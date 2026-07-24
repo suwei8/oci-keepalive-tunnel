@@ -89,6 +89,8 @@ jobs:
           echo "==========================================="
           echo "Processing Host: $SSH_HOST ($PROXY_DOMAIN)"
           echo "==========================================="
+          # certbot 将域名转为小写存储，需用小写版本匹配文件系统路径
+          PROXY_DOMAIN_LC=$(echo "$PROXY_DOMAIN" | tr 'A-Z' 'a-z')
           
           # Since we are not using a tunnel for the initial connection in manual mode? 
           # WAIT, the original workflow uses cloudflared tunnel to connect to localhost:2222 mapped to remote.
@@ -208,7 +210,7 @@ jobs:
           
           # --- SSL 证书逻辑 ---
           echo ">>> 检查 SSL..."
-          CERT_EXISTS=$(run_remote "sudo test -f /etc/letsencrypt/live/${PROXY_DOMAIN}/fullchain.pem && echo CERT_FOUND || echo CERT_MISSING" 2>/dev/null | tail -1) || true
+          CERT_EXISTS=$(run_remote "sudo test -f /etc/letsencrypt/live/${PROXY_DOMAIN_LC}/fullchain.pem && echo CERT_FOUND || echo CERT_MISSING" 2>/dev/null | tail -1) || true
           
           if [ "$CERT_EXISTS" != "CERT_FOUND" ]; then
             echo ">>> 申请 SSL 证书..."
@@ -220,13 +222,13 @@ jobs:
               # 证书文件缺失时，强制清理所有旧 certbot 数据后重新签发
               # (certbot 可能因残留的 renewal/live/archive 数据不一致而误判"未到期"拒绝签发)
               echo '>>> 清理旧证书数据...'
-              sudo certbot delete --cert-name ${PROXY_DOMAIN} --non-interactive 2>/dev/null || true
-              sudo rm -rf /etc/letsencrypt/live/${PROXY_DOMAIN} /etc/letsencrypt/archive/${PROXY_DOMAIN} /etc/letsencrypt/renewal/${PROXY_DOMAIN}.conf 2>/dev/null || true
+              sudo certbot delete --cert-name ${PROXY_DOMAIN_LC} --non-interactive 2>/dev/null || true
+              sudo rm -rf /etc/letsencrypt/live/${PROXY_DOMAIN_LC} /etc/letsencrypt/archive/${PROXY_DOMAIN_LC} /etc/letsencrypt/renewal/${PROXY_DOMAIN_LC}.conf 2>/dev/null || true
               sudo certbot certonly --standalone -d ${PROXY_DOMAIN} --non-interactive --agree-tos --email ${CF_API_EMAIL} --http-01-port 80 || true
               sudo systemctl start nginx 2>/dev/null || true
             " 2>&1
             
-             if run_remote "sudo test -f /etc/letsencrypt/live/${PROXY_DOMAIN}/fullchain.pem" 2>/dev/null; then
+             if run_remote "sudo test -f /etc/letsencrypt/live/${PROXY_DOMAIN_LC}/fullchain.pem" 2>/dev/null; then
                  echo "✅ SSL 证书获取成功"
              else
                  echo "❌ SSL 证书获取失败"
@@ -265,8 +267,8 @@ jobs:
           run_remote "cat > /tmp/config.yaml << EOFHY
           listen: :2443
           tls:
-            cert: /etc/letsencrypt/live/${PROXY_DOMAIN}/fullchain.pem
-            key: /etc/letsencrypt/live/${PROXY_DOMAIN}/privkey.pem
+            cert: /etc/letsencrypt/live/${PROXY_DOMAIN_LC}/fullchain.pem
+            key: /etc/letsencrypt/live/${PROXY_DOMAIN_LC}/privkey.pem
           auth:
             type: password
             password: ${HYSTERIA_PASSWORD}
