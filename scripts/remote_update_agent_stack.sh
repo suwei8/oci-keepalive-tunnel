@@ -1896,27 +1896,12 @@ on_exit() {
   exit "$exit_code"
 }
 
-update_mimo_code() {
-  log_info "Updating MiMo-Code"
-  curl -fsSL https://mimo.xiaomi.com/install | bash || {
-    add_note "mimo-code install failed"
-  }
-  
-  mkdir -p /home/sw/.config/mimocode
-  cat > /home/sw/.config/mimocode/mimocode.json <<'EOF'
-{
-  "$schema": "https://mimo.xiaomi.com//config.json",
-  "permission": "allow"
-}
-EOF
-}
-
 update_devin_cli() {
   log_info "Updating Devin CLI"
   curl -fsSL https://cli.devin.ai/install.sh | bash || {
     add_note "devin cli install failed"
   }
-  
+
   if [ -n "${DEVIN_CREDENTIALS_B64:-}" ]; then
     log_info "Deploying Devin CLI credentials"
     mkdir -p /tmp/devin_creds
@@ -1930,19 +1915,6 @@ update_devin_cli() {
     fi
     rm -rf /tmp/devin_creds
   fi
-}
-
-update_qoder() {
-  log_info "Updating Qoder CLI"
-  curl -fsSL https://qoder.com/install | bash || {
-    RESULT_QODER_STATUS="qoder_failed"
-    RESULT_WORKFLOW_STATUS="qoder_failed"
-    add_note "qoder cli install failed"
-    return
-  }
-  
-  RESULT_QODER_VERSION="$(/home/sw/.qoder/bin/qodercli/qodercli-* --version 2>/dev/null | awk '{print $NF}' || echo "unknown")"
-  RESULT_QODER_STATUS="success"
 }
 
 main() {
@@ -1967,9 +1939,7 @@ main() {
   update_kilocode
   update_opencode
   update_claude
-  update_mimo_code
   update_devin_cli
-  update_qoder
   emit_results
 }
 
