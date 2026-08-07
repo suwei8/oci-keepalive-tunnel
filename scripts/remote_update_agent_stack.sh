@@ -121,11 +121,16 @@ ensure_latest_npm() {
   NPM_REFRESH_DONE="yes"
   log_info "updating npm to latest"
 
-  if npm i -g npm@latest; then
+  # npm@12 requires node ^22.22.2; hosts on v22.21.x need npm@11 instead.
+  # Try npm@latest first, fall back to npm@11 for older node versions.
+  if npm i -g npm@latest 2>/dev/null; then
+    hash -r || true
+    log_info "npm version: $(npm --version 2>/dev/null || echo unknown)"
+  elif npm i -g npm@11; then
     hash -r || true
     log_info "npm version: $(npm --version 2>/dev/null || echo unknown)"
   else
-    log_warn "npm install -g npm@latest failed"
+    log_warn "npm install -g npm@latest and npm@11 both failed"
     add_note "npm install -g npm@latest failed"
   fi
 
