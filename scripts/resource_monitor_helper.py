@@ -48,15 +48,23 @@ def cmd_merge_sample_metrics(argv):
     if sample_path.exists():
         for line in sample_path.read_text().splitlines():
             parts = line.strip().split("|")
-            if len(parts) != 3:
-                continue
-            try:
-                cpu = int(parts[0])
-                mem = int(parts[1])
-                load1 = float(parts[2])
-            except ValueError:
-                continue
-            samples.append((cpu, mem, load1))
+            if len(parts) == 3:
+                # SPECS|cpu_count|mem_total_gb
+                if parts[0] == "SPECS":
+                    try:
+                        data["cpu_count"] = int(parts[1])
+                        data["mem_total_gb"] = int(parts[2])
+                    except ValueError:
+                        pass
+                    continue
+                # CPU|MEM|LOAD1 sample
+                try:
+                    cpu = int(parts[0])
+                    mem = int(parts[1])
+                    load1 = float(parts[2])
+                except ValueError:
+                    continue
+                samples.append((cpu, mem, load1))
 
     if not samples:
         data["sample_count"] = 0
@@ -173,11 +181,14 @@ def cmd_build_summary(argv):
         lines.append("<b>5分钟平均低活跃排名</b>")
         for idx, item in enumerate(ranked, start=1):
             host = html.escape(str(item.get("host", "unknown")))
+            cpu_count = item.get("cpu_count", "?")
+            mem_total_gb = item.get("mem_total_gb", "?")
+            specs = f"（{cpu_count}+{mem_total_gb}）" if cpu_count != "?" else ""
             lines.append(
                 (
                     f"{idx}. <b>{host}</b>#{item.get('index', '?')} | "
                     f"CPU {item.get('cpu_avg', 'N/A')}% | "
-                    f"MEM {item.get('mem_avg', 'N/A')}%"
+                    f"MEM {item.get('mem_avg', 'N/A')}%{specs}"
                 )
             )
     else:
