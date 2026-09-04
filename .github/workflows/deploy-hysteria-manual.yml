@@ -224,7 +224,7 @@ jobs:
               echo '>>> 清理旧证书数据...'
               sudo certbot delete --cert-name ${PROXY_DOMAIN_LC} --non-interactive 2>/dev/null || true
               sudo rm -rf /etc/letsencrypt/live/${PROXY_DOMAIN_LC} /etc/letsencrypt/archive/${PROXY_DOMAIN_LC} /etc/letsencrypt/renewal/${PROXY_DOMAIN_LC}.conf 2>/dev/null || true
-              sudo certbot certonly --standalone -d ${PROXY_DOMAIN} --non-interactive --agree-tos --email ${CF_API_EMAIL} --http-01-port 80 || true
+              sudo certbot certonly --standalone -d ${PROXY_DOMAIN} --non-interactive --agree-tos --email ${CF_API_EMAIL} --http-01-port 80 --pre-hook "systemctl stop nginx" --post-hook "systemctl start nginx" || true
               sudo systemctl start nginx 2>/dev/null || true
             " 2>&1
             

@@ -372,6 +372,19 @@ jobs:
               else
                 echo "✅ 配置域名正确"
               fi
+              # 检查证书是否已过期或即将过期 (30天内)
+              CERT_EXPIRY=$(sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" "echo '#!/bin/sh' > ~/.askpass.sh; echo 'echo \"\$SSH_PASSWORD\"' >> ~/.askpass.sh; chmod +x ~/.askpass.sh; export SUDO_ASKPASS=~/.askpass.sh; sudo() { command sudo -A \"\$@\"; }; export -f sudo; sudo openssl x509 -in /etc/letsencrypt/live/${PROXY_DOMAIN_LC}/fullchain.pem -noout -enddate 2>/dev/null | cut -d= -f2" 2>&1 | tail -1) || true
+              if [ -n "$CERT_EXPIRY" ]; then
+                EXPIRY_EPOCH=$(date -d "$CERT_EXPIRY" +%s 2>/dev/null || echo 0)
+                NOW_EPOCH=$(date +%s)
+                DAYS_LEFT=$(( (EXPIRY_EPOCH - NOW_EPOCH) / 86400 ))
+                if [ "$DAYS_LEFT" -lt 30 ]; then
+                  echo "⚠️ 证书即将过期或已过期: 剩余 ${DAYS_LEFT} 天 (到期: ${CERT_EXPIRY})"
+                  CONFIG_VALID="no"
+                else
+                  echo "✅ 证书有效期正常: 剩余 ${DAYS_LEFT} 天"
+                fi
+              fi
             fi
             
             # 如果是更新模式且容器存在，执行更新（同时修复配置）
@@ -498,7 +511,7 @@ jobs:
                 echo '>>> 清理旧证书数据...'
                 sudo certbot delete --cert-name ${PROXY_DOMAIN_LC} --non-interactive 2>/dev/null || true
                 sudo rm -rf /etc/letsencrypt/live/${PROXY_DOMAIN_LC} /etc/letsencrypt/archive/${PROXY_DOMAIN_LC} /etc/letsencrypt/renewal/${PROXY_DOMAIN_LC}.conf 2>/dev/null || true
-                sudo certbot certonly --standalone -d ${PROXY_DOMAIN} --non-interactive --agree-tos --email ${CURRENT_API_EMAIL} --http-01-port 80 || true
+                sudo certbot certonly --standalone -d ${PROXY_DOMAIN} --non-interactive --agree-tos --email ${CURRENT_API_EMAIL} --http-01-port 80 --pre-hook "systemctl stop nginx" --post-hook "systemctl start nginx" || true
                 sudo systemctl start nginx 2>/dev/null || true
               " 2>&1
               
