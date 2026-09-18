@@ -243,24 +243,27 @@ jobs:
         run: |
           set -euo pipefail
           CSV_FILE="csv/ping_results.csv"
+          RUN_FILE="run_ping_results.csv"
           mkdir -p csv
+          : > "$RUN_FILE"
 
           if [ ! -f "$CSV_FILE" ]; then
             echo "name,ping-ip,time,timestamp" > "$CSV_FILE"
           fi
 
           if [ -d artifacts ]; then
-            find artifacts -name "*.txt" -type f | while read -r result_file; do
+            find artifacts -name "*.txt" -type f | sort | while read -r result_file; do
               if [ -f "$result_file" ]; then
                 cat "$result_file" >> "$CSV_FILE"
+                cat "$result_file" >> "$RUN_FILE"
                 echo "Added: $(cat "$result_file")"
               fi
             done
           fi
 
           echo ""
-          echo "=== 最新结果 ==="
-          tail -10 "$CSV_FILE"
+          echo "=== 本次运行结果 ==="
+          cat "$RUN_FILE"
 
       - name: Commit results
         run: |
@@ -285,22 +288,29 @@ jobs:
           echo "- CPU 类型: ${CPU_TYPE_FILTER}" >> "$GITHUB_STEP_SUMMARY"
           echo "- 目标主机数: ${HOST_COUNT}" >> "$GITHUB_STEP_SUMMARY"
 
-          if [ -f csv/ping_results.csv ]; then
+          RUN_FILE="run_ping_results.csv"
+          RESULT_COUNT=0
+          if [ -f "$RUN_FILE" ]; then
+            RESULT_COUNT=$(wc -l < "$RUN_FILE" | tr -d ' ')
+          fi
+          echo "- 本次收到结果数: ${RESULT_COUNT}" >> "$GITHUB_STEP_SUMMARY"
+
+          if [ -s "$RUN_FILE" ]; then
             echo "" >> "$GITHUB_STEP_SUMMARY"
-            echo "### 🏆 Top 10 Lowest Latency" >> "$GITHUB_STEP_SUMMARY"
+            echo "### 🏆 Top 10 Lowest Latency (本次运行)" >> "$GITHUB_STEP_SUMMARY"
             echo "| Host | IP | Latency | Timestamp |" >> "$GITHUB_STEP_SUMMARY"
             echo "|------|----|---------|-----------|" >> "$GITHUB_STEP_SUMMARY"
 
-            grep ",$PING_IP," csv/ping_results.csv | grep -v "N/A" | grep -v "timeout" | \
+            grep -F ",$PING_IP," "$RUN_FILE" | grep -v "N/A" | grep -v "timeout" | \
             sed 's/ms//g' | \
             sort -t',' -k3 -n | head -10 | \
-            awk -F',' '{printf "| %s | %s | %sms | %s |\n", $1, $2, $3, $4}' >> "$GITHUB_STEP_SUMMARY"
+            awk -F',' '{printf "| %s | %s | %sms | %s |\n", $1, $2, $3, $4}' >> "$GITHUB_STEP_SUMMARY" || true
 
             echo "" >> "$GITHUB_STEP_SUMMARY"
-            echo "### 📝 Latest 30 Entries" >> "$GITHUB_STEP_SUMMARY"
+            echo "### 📝 Results (本次运行)" >> "$GITHUB_STEP_SUMMARY"
             echo '```csv' >> "$GITHUB_STEP_SUMMARY"
             echo "name,ping-ip,time,timestamp" >> "$GITHUB_STEP_SUMMARY"
-            tail -30 csv/ping_results.csv | grep "$PING_IP" >> "$GITHUB_STEP_SUMMARY" || true
+            sort -t',' -k1 "$RUN_FILE" >> "$GITHUB_STEP_SUMMARY" || true
             echo '```' >> "$GITHUB_STEP_SUMMARY"
           else
             echo "" >> "$GITHUB_STEP_SUMMARY"
