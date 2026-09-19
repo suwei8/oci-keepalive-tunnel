@@ -896,6 +896,8 @@ if changed:
 ensure_default_cli_profile() {
   local env_path="/home/sw/.env"
   [ -f "$env_path" ] || return 0
+  # 移除已下线档位的残留配置项
+  sed -i '/^MIMO_COMMAND=/d;/^QODER_COMMAND=/d' "$env_path"
   if grep -q '^DEFAULT_CLI_PROFILE=' "$env_path"; then
     sed -i 's/^DEFAULT_CLI_PROFILE=.*/DEFAULT_CLI_PROFILE=devin_cli/' "$env_path"
   else
