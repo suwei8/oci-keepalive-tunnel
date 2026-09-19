@@ -57,6 +57,7 @@ def cmd_enforce_fatal(argv):
         "kilocode_failed",
         "opencode_failed",
         "claude_failed",
+        "cline_failed",
     }
     if result.get("workflow_status", "unknown") in fatal_statuses:
         raise SystemExit(1)
@@ -100,6 +101,8 @@ def cmd_build_summary(argv):
             parts.append("OpenCode")
         if item.get("claude_status") == "success":
             parts.append("Claude")
+        if item.get("cline_status") == "success":
+            parts.append("Cline")
         return "、".join(parts) if parts else "已更新"
 
     def is_updated(item):
@@ -112,6 +115,7 @@ def cmd_build_summary(argv):
                 item.get("kilocode_status") == "success",
                 item.get("opencode_status") == "success",
                 item.get("claude_status") == "success",
+                item.get("cline_status") == "success",
             )
         )
 
@@ -139,6 +143,8 @@ def cmd_build_summary(argv):
             return "KiloCode已是最新"
         if item.get("claude_status") == "already_latest":
             return "Claude已是最新"
+        if item.get("cline_status") == "already_latest":
+            return "Cline已是最新"
         if item.get("agy_cli_status") == "already_latest":
             return "agy已是最新"
         if agy_switcher_status == "already_latest":
@@ -167,6 +173,7 @@ def cmd_build_summary(argv):
             "kilocode_failed": "KiloCode失败",
             "opencode_failed": "OpenCode失败",
             "claude_failed": "Claude失败",
+            "cline_failed": "Cline失败",
         }
         reason = labels.get(workflow_status, workflow_status)
         if notes:

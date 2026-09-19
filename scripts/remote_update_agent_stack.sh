@@ -42,6 +42,10 @@ RESULT_CLAUDE_STATUS="skipped_missing_env"
 RESULT_CLAUDE_VERSION="N/A"
 RESULT_CLAUDE_TARGET_VERSION="${CLAUDE_LATEST_VERSION:-unknown}"
 
+RESULT_CLINE_STATUS="skipped_no_bridge"
+RESULT_CLINE_VERSION="N/A"
+RESULT_CLINE_TARGET_VERSION="${CLINE_LATEST_VERSION:-latest}"
+
 BRIDGE_RELEASE_JSON_CACHE=""
 NPM_REFRESH_DONE="no"
 RESULTS_EMITTED="no"
@@ -83,6 +87,9 @@ emit_results() {
   echo "RESULT_CLAUDE_STATUS=$(sanitize_value "$RESULT_CLAUDE_STATUS")"
   echo "RESULT_CLAUDE_VERSION=$(sanitize_value "$RESULT_CLAUDE_VERSION")"
   echo "RESULT_CLAUDE_TARGET_VERSION=$(sanitize_value "$RESULT_CLAUDE_TARGET_VERSION")"
+  echo "RESULT_CLINE_STATUS=$(sanitize_value "$RESULT_CLINE_STATUS")"
+  echo "RESULT_CLINE_VERSION=$(sanitize_value "$RESULT_CLINE_VERSION")"
+  echo "RESULT_CLINE_TARGET_VERSION=$(sanitize_value "$RESULT_CLINE_TARGET_VERSION")"
   echo "RESULT_NOTES=$(sanitize_value "$RESULT_NOTES")"
 }
 
@@ -347,8 +354,6 @@ for asset in assets:
     if asset.get("name") == preferred:
         print(asset.get("id", ""))
         raise SystemExit
-if assets:
-    print(assets[0].get("id", ""))
 ' "$preferred_name"
 }
 
@@ -754,32 +759,52 @@ refresh_agentbridge_files_only() {
   local release_json=""
   local tmp_manage="/home/sw/manage.sh.tmp"
   local tmp_binary="/home/sw/agent-bridge.tmp"
+  local tmp_sha256="/home/sw/agent-bridge.tmp.sha256"
+  local expected_sha=""
+  local actual_sha=""
+  local downloaded_asset=""
 
   ensure_bridge_disk_space || return 1
   resolve_bridge_release || return 1
   release_json="$BRIDGE_RELEASE_JSON_CACHE"
 
   download_repo_file "$AGENTBRIDGE_REPO" "${AGENTBRIDGE_GITHUB_TOKEN:-}" "manage.sh" "$tmp_manage" || return 1
-  if ! download_release_asset "$AGENTBRIDGE_REPO" "${AGENTBRIDGE_GITHUB_TOKEN:-}" "$release_json" "$AGENTBRIDGE_ASSET_PRIMARY" "$tmp_binary"; then
+  if download_release_asset "$AGENTBRIDGE_REPO" "${AGENTBRIDGE_GITHUB_TOKEN:-}" "$release_json" "$AGENTBRIDGE_ASSET_PRIMARY" "$tmp_binary"; then
+    downloaded_asset="$AGENTBRIDGE_ASSET_PRIMARY"
+  else
     download_release_asset "$AGENTBRIDGE_REPO" "${AGENTBRIDGE_GITHUB_TOKEN:-}" "$release_json" "$AGENTBRIDGE_ASSET_FALLBACK" "$tmp_binary" || return 1
+    downloaded_asset="$AGENTBRIDGE_ASSET_FALLBACK"
   fi
 
   if [ ! -s "$tmp_manage" ]; then
-    rm -f "$tmp_manage" "$tmp_binary"
+    rm -f "$tmp_manage" "$tmp_binary" "$tmp_sha256"
     add_note "empty AgentBridge manage.sh download"
     return 1
   fi
 
   if ! bash -n "$tmp_manage"; then
-    rm -f "$tmp_manage" "$tmp_binary"
+    rm -f "$tmp_manage" "$tmp_binary" "$tmp_sha256"
     add_note "invalid AgentBridge manage.sh download"
     return 1
   fi
 
   if [ ! -s "$tmp_binary" ]; then
-    rm -f "$tmp_manage" "$tmp_binary"
+    rm -f "$tmp_manage" "$tmp_binary" "$tmp_sha256"
     add_note "empty AgentBridge binary download"
     return 1
+  fi
+
+  if download_release_asset "$AGENTBRIDGE_REPO" "${AGENTBRIDGE_GITHUB_TOKEN:-}" "$release_json" "${downloaded_asset}.sha256" "$tmp_sha256"; then
+    expected_sha="$(awk '{print $1}' "$tmp_sha256" 2>/dev/null | head -n 1 || true)"
+    actual_sha="$(sha256sum "$tmp_binary" 2>/dev/null | awk '{print $1}' || true)"
+    rm -f "$tmp_sha256"
+    if [ -n "$expected_sha" ] && [ "$expected_sha" != "$actual_sha" ]; then
+      rm -f "$tmp_manage" "$tmp_binary"
+      add_note "AgentBridge binary sha256 mismatch"
+      return 1
+    fi
+  else
+    add_note "sha256 asset unavailable; skipped binary verification"
   fi
 
   if ! chmod +x "$tmp_manage" "$tmp_binary"; then
@@ -872,9 +897,9 @@ ensure_default_cli_profile() {
   local env_path="/home/sw/.env"
   [ -f "$env_path" ] || return 0
   if grep -q '^DEFAULT_CLI_PROFILE=' "$env_path"; then
-    sed -i 's/^DEFAULT_CLI_PROFILE=.*/DEFAULT_CLI_PROFILE=opencode_free/' "$env_path"
+    sed -i 's/^DEFAULT_CLI_PROFILE=.*/DEFAULT_CLI_PROFILE=devin_cli/' "$env_path"
   else
-    echo 'DEFAULT_CLI_PROFILE=opencode_free' >> "$env_path"
+    echo 'DEFAULT_CLI_PROFILE=devin_cli' >> "$env_path"
   fi
 }
 
@@ -1493,10 +1518,16 @@ write_windsurf_mcp_configs() {
   codex_command="$(command -v codex || true)"
   claude_command="$(command -v claude || true)"
   kilo_command="$(command -v kilo || true)"
+  opencode_command="$(command -v opencode || true)"
+  devin_command="$(command -v devin || true)"
+  cline_command="$(command -v cline || true)"
 
   [ -n "$codex_command" ] || codex_command="/home/sw/.nvm/versions/node/$(node -v 2>/dev/null || echo v22.21.1)/bin/codex"
   [ -n "$claude_command" ] || claude_command="/home/sw/.local/bin/claude"
   [ -n "$kilo_command" ] || kilo_command="/home/sw/.nvm/versions/node/$(node -v 2>/dev/null || echo v22.21.1)/bin/kilo"
+  [ -n "$opencode_command" ] || opencode_command="/home/sw/.nvm/versions/node/$(node -v 2>/dev/null || echo v22.21.1)/bin/opencode"
+  [ -n "$devin_command" ] || devin_command="/home/sw/.local/bin/devin"
+  [ -n "$cline_command" ] || cline_command="/home/sw/.nvm/versions/node/$(node -v 2>/dev/null || echo v22.21.1)/bin/cline"
 
   mkdir -p "$user_config_dir" "$codeium_dir"
 
@@ -1510,13 +1541,16 @@ write_windsurf_mcp_configs() {
         "TELEGRAM_BOT_TOKEN": "$token",
         "TELEGRAM_CHAT_ID": "$chat_ids",
         "DEFAULT_MODE": "CLI",
-        "DEFAULT_CLI_PROFILE": "opencode_free",
+        "DEFAULT_CLI_PROFILE": "devin_cli",
         "CLI_CWD": "/home/sw/dev_root/",
         "CLI_EXEC_MODE": "YOLO",
         "CLI_HEARTBEAT_SECONDS": "15",
         "CODEX_COMMAND": "$codex_command",
         "CLAUDE_COMMAND": "$claude_command",
         "KILO_COMMAND": "$kilo_command",
+        "OPENCODE_COMMAND": "$opencode_command",
+        "DEVIN_COMMAND": "$devin_command",
+        "CLINE_COMMAND": "$cline_command",
         "CLAUDE_BASE_URL": "$claude_base_url",
         "CLAUDE_API_KEY": "$claude_api_key",
         "AGENTBRIDGE_CLOUD_ENABLED": "${AGENTBRIDGE_CLOUD_ENABLED:-1}",
@@ -1543,13 +1577,16 @@ EOF
         "TELEGRAM_BOT_TOKEN": "$token",
         "TELEGRAM_CHAT_ID": "$chat_ids",
         "DEFAULT_MODE": "CLI",
-        "DEFAULT_CLI_PROFILE": "opencode_free",
+        "DEFAULT_CLI_PROFILE": "devin_cli",
         "CLI_CWD": "/home/sw/dev_root/",
         "CLI_EXEC_MODE": "YOLO",
         "CLI_HEARTBEAT_SECONDS": "15",
         "CODEX_COMMAND": "$codex_command",
         "CLAUDE_COMMAND": "$claude_command",
         "KILO_COMMAND": "$kilo_command",
+        "OPENCODE_COMMAND": "$opencode_command",
+        "DEVIN_COMMAND": "$devin_command",
+        "CLINE_COMMAND": "$cline_command",
         "CLAUDE_BASE_URL": "$claude_base_url",
         "CLAUDE_API_KEY": "$claude_api_key",
         "AGENTBRIDGE_CLOUD_ENABLED": "${AGENTBRIDGE_CLOUD_ENABLED:-1}",
@@ -1922,6 +1959,81 @@ update_devin_cli() {
   fi
 }
 
+parse_cline_version() {
+  cline --version 2>/dev/null \
+    | tr -d '\r' \
+    | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' \
+    | head -n 1
+}
+
+update_cline_cli() {
+  local current_version=""
+  local target_version="${CLINE_LATEST_VERSION:-unknown}"
+  local install_spec="cline@latest"
+  local cline_cmd=""
+
+  RESULT_CLINE_TARGET_VERSION="$target_version"
+
+  load_shell_profiles
+
+  if ! command -v npm >/dev/null 2>&1; then
+    if ! ensure_nvm; then
+      RESULT_CLINE_STATUS="cline_failed"
+      RESULT_WORKFLOW_STATUS="cline_failed"
+      add_note "npm not found and nvm setup failed for cline install"
+      return
+    fi
+  fi
+
+  ensure_latest_npm || true
+
+  if [ -n "$target_version" ] && [ "$target_version" != "unknown" ]; then
+    install_spec="cline@${target_version}"
+  fi
+
+  current_version="$(parse_cline_version || true)"
+  if [ -n "$current_version" ] && [ -n "$target_version" ] \
+    && [ "$target_version" != "unknown" ] \
+    && version_eq "$current_version" "$target_version"; then
+    RESULT_CLINE_STATUS="already_latest"
+  else
+    if npm i -g "$install_spec"; then
+      hash -r || true
+      RESULT_CLINE_STATUS="success"
+    else
+      RESULT_CLINE_STATUS="cline_failed"
+      RESULT_WORKFLOW_STATUS="cline_failed"
+      add_note "npm install ${install_spec} failed"
+      return
+    fi
+  fi
+
+  RESULT_CLINE_VERSION="$(parse_cline_version || true)"
+  [ -n "$RESULT_CLINE_VERSION" ] || RESULT_CLINE_VERSION="unknown"
+
+  if [ -n "${CLINE_CREDENTIALS_B64:-}" ]; then
+    log_info "Deploying Cline CLI credentials"
+    mkdir -p /tmp/cline_creds
+    printf "%s" "$CLINE_CREDENTIALS_B64" | base64 -d > /tmp/cline_creds/creds.data
+    if gzip -t /tmp/cline_creds/creds.data 2>/dev/null; then
+      # gzip 打包的凭证：tar -czf - -C ~ .cline | base64
+      tar -xzf /tmp/cline_creds/creds.data -C /home/sw/
+    else
+      # 单文件凭证：~/.cline/data/settings/providers.json
+      mkdir -p /home/sw/.cline/data/settings
+      cp /tmp/cline_creds/creds.data /home/sw/.cline/data/settings/providers.json
+      chmod 600 /home/sw/.cline/data/settings/providers.json
+    fi
+    rm -rf /tmp/cline_creds
+    add_note "deployed cline credentials"
+  fi
+
+  cline_cmd="$(command -v cline || true)"
+  if [ -n "$cline_cmd" ]; then
+    upsert_env_file_value "CLINE_COMMAND" "$cline_cmd" >/dev/null || true
+  fi
+}
+
 main() {
   trap on_exit EXIT
   load_shell_profiles
@@ -1933,7 +2045,7 @@ main() {
   ensure_agy_tool_permission
   # Ensure tool permissions bypass in claude settings.json
   ensure_claude_tool_permission
-  # Ensure DEFAULT_CLI_PROFILE=opencode_free in .env
+  # Ensure DEFAULT_CLI_PROFILE=devin_cli in .env
   ensure_default_cli_profile
   repair_bridge_runtime_config
   get_env_status
@@ -1945,6 +2057,7 @@ main() {
   update_opencode
   update_claude
   update_devin_cli
+  update_cline_cli
   emit_results
 }
 
