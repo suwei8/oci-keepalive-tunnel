@@ -1796,6 +1796,11 @@ update_kilocode() {
   RESULT_KILOCODE_VERSION="$(parse_kilocode_version || true)"
   [ -n "$RESULT_KILOCODE_VERSION" ] || RESULT_KILOCODE_VERSION="unknown"
 
+  kilo_cmd="$(command -v kilo || true)"
+  if [ -n "$kilo_cmd" ]; then
+    upsert_env_file_value "KILO_COMMAND" "$kilo_cmd" >/dev/null || true
+  fi
+
   if [ "$RESULT_KILOCODE_STATUS" = "already_latest" ]; then
     return
   fi
