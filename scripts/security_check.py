@@ -91,9 +91,60 @@ SYSTEMD_EXEC_ALLOWLIST = load_csv_env(
 )
 
 # 可疑 crontab 模式
+# 只标记"临时目录中的可执行内容被执行"和"下载/解码后管道执行"，
+# 避免把 /tmp 下的锁文件(flock)、日志重定向等正常引用误判为恶意。
+_CRON_TMP_ROOT = r"(?:/tmp|/dev/shm|/var/tmp|/run/user/\d+)"
+_CRON_TMP_DIR = _CRON_TMP_ROOT + r"/"
+_CRON_TMP_PATH = _CRON_TMP_DIR + r"\S+"
+# 允许带引号的临时路径，如 sh -c "/tmp/x"
+_CRON_TMP_TOKEN = r"[\"']?" + _CRON_TMP_PATH
+_CRON_TMP_EXEC = _CRON_TMP_DIR + r"\S*\.(?:sh|py|pl|exe|bin|elf)\b"
+# crontab 调度字段：@macro 或 5 段时间字段，其后是命令位
+_CRON_SCHEDULE = r"(?:@[a-z]+|(?:\S+\s+){5})"
+# 可选的 sudo 前缀（只允许 -flag / K=V 形态参数，不吞普通参数，
+# 避免越过 flock 等命令误匹配）
+_CRON_SUDO = r"(?:sudo(?:\s+(?:-\S+|\w+=\S+)){0,3}\s+)?"
+# 能执行其他程序的命令：shell/解释器/启动器/find -exec/xargs 等；
+# 名字必须占据整个 token（可带路径前缀），避免误中 run.sh、snap.py 等文件名
+_CRON_RUNNER = (
+    r"(?:[^\s|&;'\"]*/)?"
+    r"(?:bash|sh|dash|zsh|ksh|csh|tcsh|fish|python\d*(?:\.\d+)?|perl|php|ruby|node|"
+    r"exec|source|xargs|nohup|setsid|env|-exec(?:dir)?|\.)"
+    r"(?=\s|$)"
+)
+# 选项或 KEY=VALUE 形式的中间参数
+_CRON_OPT = r"(?:-\S+|\w+=\S+)"
+# 命令分隔符（含管道、子 shell、命令替换）
+_CRON_SEP = r"(?:&&|\|\||[;&|(`])"
+# 仅 shell 类解释器（用于任意管道执行检测，python 等留给下载器规则）
+_CRON_SHELL = (
+    r"(?:[^\s|&;'\"]*/)?"
+    r"(?:bash|sh|dash|zsh|ksh|csh|tcsh|fish)"
+    r"(?=\s|$)"
+)
+
 SUSPICIOUS_CRON_PATTERNS = [
-    r"/tmp/", r"/dev/shm/", r"/var/tmp/.*\.(sh|py|pl|exe)",
-    r"curl.*\|.*sh", r"wget.*\|.*sh", r"base64"
+    # 调度字段后直接执行临时目录路径: "*/5 * * * * /tmp/x"、"@reboot /tmp/x"
+    r"^\s*" + _CRON_SCHEDULE + r"\s*(?:" + _CRON_OPT + r"\s+){0,3}\s*" + _CRON_SUDO + _CRON_TMP_TOKEN,
+    # 解释器/启动器执行临时目录路径: "bash /tmp/x.sh"、"python3 -u /dev/shm/a.py"
+    r"(?:^|[\s;|&(\"'`])" + _CRON_RUNNER + r"(?:\s+" + _CRON_OPT + r"){0,3}\s+" + _CRON_TMP_TOKEN,
+    # 命令分隔符后接临时目录路径: "...; /tmp/x"、"x | /tmp/p"、"x && /tmp/x"、"$(/tmp/x)"
+    _CRON_SEP + r"\s*" + _CRON_SUDO + _CRON_TMP_TOKEN,
+    # cd 到临时目录后执行相对路径: "cd /tmp; ...; ./x"
+    r"\bcd\s+" + _CRON_TMP_ROOT + r"\b[^\n]*" + _CRON_SEP + r"[^\n]*\./\S+",
+    # flock 的"锁文件之后"才是被执行的命令: flock [opts] lockfile <cmd>
+    # 选项只允许 -flag / -w 数字 形态，锁文件不允许以 - 开头，
+    # 使 lockfile 恰好在 /tmp 时不误报（flock -n /tmp/x.lock /home/run.sh）
+    r"\bflock\b(?:\s+-\S+(?:\s+\d+)?)*\s+(?!-)\S+\s+" + _CRON_SUDO + _CRON_TMP_TOKEN,
+    # 引用临时目录中的脚本/可执行文件（兜底: /tmp/x.sh、/var/tmp/a.elf 等）
+    r"(?<![\w/.=-])" + _CRON_TMP_EXEC,
+    # 任意命令管道给 shell 解释器: "... | sh"、"echo xxx | bash"、"x | xargs sh"
+    r"\|\s*" + _CRON_SUDO + r"(?:xargs\s+|env(?:\s+\w+=\S+)*\s+)?" + _CRON_SHELL,
+    # 下载器输出管道给任意解释器: "curl ... | python3"、"wget -qO- ... | perl"
+    r"\b(?:curl|wget|fetch)\b[^\n]*\|\s*" + _CRON_SUDO + _CRON_RUNNER,
+    # base64 解码执行或解码落盘
+    r"\bbase64\b[^\n]*\|\s*" + _CRON_SUDO + _CRON_RUNNER,
+    r"\bbase64\s+(?:-d\b|-D\b|--decode)",
 ]
 
 # 挖矿矿池常用端口
@@ -224,11 +275,13 @@ class SecurityChecker:
                 capture_output=True, text=True, timeout=10
             )
             if result.returncode == 0:
-                crontab_content = result.stdout
-                for pattern in SUSPICIOUS_CRON_PATTERNS:
-                    matches = re.findall(f".*{pattern}.*", crontab_content, re.IGNORECASE)
-                    for match in matches:
-                        self.add_issue("CRITICAL", "恶意 Crontab 条目", match.strip())
+                for line in result.stdout.splitlines():
+                    stripped = line.strip()
+                    if not stripped or stripped.startswith("#"):
+                        continue
+                    if any(re.search(pattern, line, re.IGNORECASE)
+                           for pattern in SUSPICIOUS_CRON_PATTERNS):
+                        self.add_issue("CRITICAL", "恶意 Crontab 条目", stripped)
             else:
                 print("[安全] ✅ 用户 crontab 为空或无法读取")
         except Exception as e:
