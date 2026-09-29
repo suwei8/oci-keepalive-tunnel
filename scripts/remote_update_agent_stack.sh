@@ -1964,6 +1964,29 @@ update_devin_cli() {
     fi
     rm -rf /tmp/devin_creds
   fi
+
+  # devin >=3000.11 新增 workspace trust 校验；非交互 -p 模式无法应答信任提示。
+  # 预置 trusted_workspaces.json，信任 /home/sw（含 dev_root），
+  # 避免 "Refusing to run in an untrusted workspace" 报错。
+  mkdir -p /home/sw/.local/share/devin/cli
+  python3 - <<'PY' 2>/dev/null || true
+import json
+from pathlib import Path
+
+path = Path("/home/sw/.local/share/devin/cli/trusted_workspaces.json")
+try:
+    data = json.loads(path.read_text()) if path.exists() else {}
+except Exception:
+    data = {}
+paths = data.get("trusted_paths")
+if not isinstance(paths, list):
+    paths = []
+for p in ("/home/sw", "/home/sw/dev_root"):
+    if p not in paths:
+        paths.append(p)
+data["trusted_paths"] = paths
+path.write_text(json.dumps(data, indent=2))
+PY
 }
 
 parse_cline_version() {
