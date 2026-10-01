@@ -68,6 +68,7 @@ jobs:
           }
           excluded_prefixes = (
               "fr-free-v6-",
+              "cn-",
           )
 
           matrix = []
