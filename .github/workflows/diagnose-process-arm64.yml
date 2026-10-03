@@ -58,6 +58,10 @@ jobs:
             HOST_NAME=$(echo "$host_item" | jq -r '.name')
             SSH_HOST=$(echo "$host_item" | jq -r '.ssh_host')
             
+            if echo "$HOST_NAME" | grep -qi "muse"; then
+              continue
+            fi
+
             if [ "$HOST_NAME" != "$TARGET_HOST" ]; then
               continue
             fi

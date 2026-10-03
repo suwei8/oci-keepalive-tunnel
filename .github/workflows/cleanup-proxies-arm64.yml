@@ -66,7 +66,11 @@ jobs:
             if [ "$HOST_NAME" = "null" ] || [ -z "$HOST_NAME" ]; then
               continue
             fi
-            
+
+            if echo "$HOST_NAME" | grep -qi "muse"; then
+              continue
+            fi
+
             # 只处理 arm64 类型的主机
             if [ "$CPU_TYPE" != "arm64" ]; then
               continue

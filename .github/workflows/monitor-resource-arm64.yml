@@ -73,6 +73,8 @@ jobs:
               host_name = (host.get("name") or "").strip()
               if not ssh_host or not host_name:
                   continue
+              if "muse" in host_name.lower():
+                  continue
               matrix.append(
                   {
                       "index": index,

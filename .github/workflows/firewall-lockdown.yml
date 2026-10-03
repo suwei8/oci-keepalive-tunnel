@@ -52,7 +52,13 @@ jobs:
             echo "skip=true" >> $GITHUB_OUTPUT
             exit 0
           fi
-          
+
+          if echo "$HOST_NAME" | grep -qi "muse"; then
+            echo "skip=true" >> $GITHUB_OUTPUT
+            echo "Skipping muse host: $HOST_NAME"
+            exit 0
+          fi
+
           # 1. 只处理 amd64 和 arm64 的主机
           if [ "$CPU_TYPE" != "amd64" ] && [ "$CPU_TYPE" != "arm64" ]; then
             echo "skip=true" >> $GITHUB_OUTPUT

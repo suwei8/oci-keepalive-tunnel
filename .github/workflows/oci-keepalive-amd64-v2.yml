@@ -82,6 +82,8 @@ jobs:
               host_name = (host.get("name") or "").lower()
               if "gcp" in host_name:
                   continue
+              if "muse" in host_name:
+                  continue
               if host_name.startswith(excluded_prefixes):
                   continue
               if "ampere" in host_name or "trustclaw" in host_name:

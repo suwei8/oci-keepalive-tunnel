@@ -80,6 +80,7 @@ jobs:
             CPU_TYPE=$(echo "$host_item" | jq -r '.cpu_type')
             
             if [ "$HOST_NAME" = "null" ] || [ -z "$HOST_NAME" ]; then continue; fi
+            if echo "$HOST_NAME" | grep -qi "muse"; then continue; fi
             if [ "$CPU_TYPE" != "arm64" ]; then continue; fi
             
             if [ -n "$TARGET_HOST_INPUT" ] && [ "$HOST_NAME" != "$TARGET_HOST_INPUT" ]; then

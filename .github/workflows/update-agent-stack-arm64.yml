@@ -101,6 +101,8 @@ jobs:
                   continue
               if host_name in excluded:
                   continue
+              if "muse" in host_name.lower():
+                  continue
               ssh_host = host.get("ssh_host", "").strip()
               if not ssh_host:
                   continue

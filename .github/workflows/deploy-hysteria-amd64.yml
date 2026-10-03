@@ -146,6 +146,7 @@ jobs:
               .[]
               | select(.cpu_type == "amd64")
               | select((.proxy_domains // "") != "")
+              | select(((.name // "") | ascii_downcase | contains("muse")) | not)
             ]
           ') || {
             echo "❌ 过滤 amd64 且 proxy_domains 非空主机失败"
