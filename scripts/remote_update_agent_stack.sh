@@ -1222,10 +1222,30 @@ parse_kilocode_version() {
 write_codex_config() {
   local codex_base_url="${CLIPROXYAPI_BASE_URL:-}"
 
-  codex_base_url="$(printf '%s' "$codex_base_url" | sed -E 's#/v1/?$##')/v1"
-
   mkdir -p /home/sw/.codex
   umask 077
+
+  # 优先使用本机已登录 ChatGPT 账户的凭证包：
+  #   tar -czf - -C ~ .codex/auth.json .codex/config.toml | base64 -w0
+  # 未提供时回退到旧的 cliproxyapi API-key 写法。
+  if [ -n "${CODEX_CREDENTIALS_B64:-}" ]; then
+    log_info "Deploying Codex credentials from CODEX_CREDENTIALS_B64"
+    mkdir -p /tmp/codex_creds
+    printf "%s" "$CODEX_CREDENTIALS_B64" | base64 -d > /tmp/codex_creds/creds.data
+    if gzip -t /tmp/codex_creds/creds.data 2>/dev/null; then
+      tar -xzf /tmp/codex_creds/creds.data -C /home/sw/
+      chmod 700 /home/sw/.codex
+      chmod 600 /home/sw/.codex/auth.json /home/sw/.codex/config.toml 2>/dev/null || true
+      rm -rf /tmp/codex_creds
+      add_note "deployed codex credentials"
+      return 0
+    fi
+    rm -rf /tmp/codex_creds
+    add_note "CODEX_CREDENTIALS_B64 decode failed, falling back to api config"
+  fi
+
+  codex_base_url="$(printf '%s' "$codex_base_url" | sed -E 's#/v1/?$##')/v1"
+
   cat > /home/sw/.codex/auth.json <<EOF
 {
   "OPENAI_API_KEY": "${CLIPROXYAPI_OPENAI_API_KEY}"
