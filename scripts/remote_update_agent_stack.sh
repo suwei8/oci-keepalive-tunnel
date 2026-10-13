@@ -1800,7 +1800,7 @@ update_kilocode() {
       && version_eq "$current_version" "$target_version"; then
       RESULT_KILOCODE_STATUS="already_latest"
     else
-      if npm i -g "$install_spec"; then
+      if npm i -g --allow-scripts=@kilocode/cli "$install_spec"; then
         hash -r || true
       else
         RESULT_KILOCODE_STATUS="kilocode_failed"
@@ -1810,7 +1810,7 @@ update_kilocode() {
       fi
     fi
   else
-    if npm i -g "$install_spec"; then
+    if npm i -g --allow-scripts=@kilocode/cli "$install_spec"; then
       hash -r || true
     else
       RESULT_KILOCODE_STATUS="kilocode_failed"
@@ -1864,7 +1864,7 @@ update_opencode() {
 
   current_version="$(/home/sw/.opencode/bin/opencode --version 2>/dev/null | head -1 | awk '{print $NF}' || true)"
 
-  if npm i -g opencode-ai@latest; then
+  if npm i -g --allow-scripts=opencode-ai opencode-ai@latest; then
     hash -r || true
     RESULT_OPENCODE_STATUS="success"
   else
