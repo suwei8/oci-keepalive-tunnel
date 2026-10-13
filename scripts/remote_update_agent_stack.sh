@@ -241,7 +241,7 @@ ensure_nvm() {
   log_info "npm not found, installing nvm + node"
   # 安装 nvm
   if [ ! -f ~/.nvm/nvm.sh ]; then
-    curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash || {
+    curl -fsSL --compressed https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash || {
       add_note "nvm install failed"
       return 1
     }
@@ -1260,7 +1260,7 @@ parse_claude_version() {
 
 run_claude_installer() {
   local timeout_seconds="${CLAUDE_INSTALL_TIMEOUT_SECONDS:-600}"
-  local install_cmd='curl -fsSL https://claude.ai/install.sh | bash'
+  local install_cmd='curl -fsSL --compressed https://claude.ai/install.sh | bash'
 
   if command -v timeout >/dev/null 2>&1; then
     timeout "$timeout_seconds" bash -lc "$install_cmd"
@@ -1974,7 +1974,7 @@ on_exit() {
 
 update_devin_cli() {
   log_info "Updating Devin CLI"
-  curl -fsSL https://cli.devin.ai/install.sh | bash || {
+  curl -fsSL --compressed https://cli.devin.ai/install.sh | bash || {
     add_note "devin cli install failed"
   }
 
