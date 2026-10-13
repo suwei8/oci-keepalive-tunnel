@@ -96,7 +96,7 @@ def cmd_merge_sample_metrics(argv):
 
     samples = []
     if sample_path.exists():
-        for line in sample_path.read_text().splitlines():
+        for line in sample_path.read_text(errors="replace").splitlines():
             parts = line.strip().split("|")
             if len(parts) != 3:
                 continue

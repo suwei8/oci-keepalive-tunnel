@@ -957,11 +957,38 @@ update_agy_cli() {
   old_version="$(/home/sw/.local/bin/agy --version 2>/dev/null || true)"
   [ -n "$old_version" ] || old_version="N/A"
 
-  if ! curl -fsSL https://antigravity.google/cli/install.sh | bash; then
+  local install_script
+  install_script="$(mktemp)"
+  if ! curl -fsSL --compressed https://antigravity.google/cli/install.sh -o "$install_script"; then
+    rm -f "$install_script"
+    RESULT_AGY_CLI_STATUS="agy_cli_failed"
+    add_note "agy CLI install script download failed"
+    return
+  fi
+  # 服务端/CDN 偶尔返回 gzip 压缩内容且未标 Content-Encoding，先解压再执行
+  if [ "$(od -An -tx1 -N2 "$install_script" | tr -d ' \n')" = "1f8b" ]; then
+    if gunzip -c "$install_script" > "${install_script}.sh" 2>/dev/null; then
+      mv "${install_script}.sh" "$install_script"
+    else
+      rm -f "$install_script" "${install_script}.sh"
+      RESULT_AGY_CLI_STATUS="agy_cli_failed"
+      add_note "agy CLI install script is compressed but undecodable"
+      return
+    fi
+  fi
+  if ! head -n1 "$install_script" | grep -q '^#!'; then
+    rm -f "$install_script"
+    RESULT_AGY_CLI_STATUS="agy_cli_failed"
+    add_note "agy CLI install script is not a shell script"
+    return
+  fi
+  if ! bash "$install_script"; then
+    rm -f "$install_script"
     RESULT_AGY_CLI_STATUS="agy_cli_failed"
     add_note "agy CLI install script failed"
     return
   fi
+  rm -f "$install_script"
 
   # Sync token from oauth_creds.json to agy's file-based token storage path
   if [ -f /home/sw/.gemini/oauth_creds.json ]; then

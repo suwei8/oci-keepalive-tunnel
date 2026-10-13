@@ -33,7 +33,7 @@ def cmd_merge_remote_log(argv):
         "workflow_status": "success" if remote_rc == "0" else "remote_failed",
         "notes": "",
     }
-    for line in Path(remote_log).read_text().splitlines():
+    for line in Path(remote_log).read_text(errors="replace").splitlines():
         if not line.startswith("RESULT_") or "=" not in line:
             continue
         key, value = line.split("=", 1)
