@@ -90,6 +90,10 @@ SYSTEMD_EXEC_ALLOWLIST = load_csv_env(
     lowercase=True,
 )
 
+# SSH 防火墙允许的外部来源 IP/CIDR（逗号分隔）
+# 留空则仅验证 SSH 未对全网开放
+SSH_ALLOWED_SOURCES = load_csv_env("SECURITY_SSH_ALLOWED_SOURCES", "")
+
 # 可疑 crontab 模式
 # 只标记"临时目录中的可执行内容被执行"和"下载/解码后管道执行"，
 # 避免把 /tmp 下的锁文件(flock)、日志重定向等正常引用误判为恶意。
@@ -385,27 +389,203 @@ class SecurityChecker:
         except Exception as e:
             print(f"[安全] 检查 /tmp 出错: {e}")
     
-    def check_ssh_localhost_only(self):
-        """检查 SSH 是否仅监听本地"""
+    def check_ssh_listen_config(self):
+        """检查 SSH 监听配置
+
+        预期配置：SSH 监听一个外部 IP + 本地回环（或等效的通配绑定），
+        且防火墙仅放行可信来源 IP。以下情况才告警：
+        - 绑定到非本机地址
+        - 未覆盖回环（Tunnel 保活无法连接）
+        - 外网访问未受防火墙限制，或放行来源不在白名单内
+        """
         print("\n[安全] 检查 SSH 监听配置...")
         try:
             result = subprocess.run(
-                ["ss", "-tlnp"],
+                ["ss", "-tln"],
                 capture_output=True, text=True, timeout=10
             )
-            ssh_lines = [l for l in result.stdout.split('\n') if ':22 ' in l or ':22\t' in l]
-            
-            for line in ssh_lines:
-                if '0.0.0.0:22' in line or '*:22' in line or ':::22' in line:
-                    self.add_issue("INFO", "SSH 监听所有接口", "建议配置为仅监听 127.0.0.1")
-                    return
-            
-            if ssh_lines:
-                print("[安全] ✅ SSH 仅监听本地接口")
-            else:
+            listen_addrs = []
+            for line in result.stdout.splitlines():
+                cols = line.split()
+                if len(cols) < 4:
+                    continue
+                local = cols[3]
+                addr, _, port = local.rpartition(":")
+                if port == "22":
+                    listen_addrs.append(addr.strip("[]"))
+
+            if not listen_addrs:
                 print("[安全] ⚠️  未检测到 SSH 服务")
+                return
+
+            # 本机网卡 IP（回环与通配之外的合法绑定地址）
+            host_ips = set()
+            try:
+                ips = subprocess.run(
+                    ["hostname", "-I"],
+                    capture_output=True, text=True, timeout=5
+                )
+                host_ips.update(ips.stdout.split())
+            except Exception:
+                pass
+
+            loopback = {"127.0.0.1", "::1"}
+            wildcard_v4 = {"0.0.0.0", "*"}
+            wildcard_v6 = {"::", "0:0:0:0:0:0:0:0"}
+            wildcard = wildcard_v4 | wildcard_v6
+
+            unexpected = sorted(
+                a for a in set(listen_addrs)
+                if a not in loopback and a not in wildcard and a not in host_ips
+            )
+            if unexpected:
+                self.add_issue(
+                    "WARNING", "SSH 监听异常地址",
+                    f"绑定了非本机地址: {', '.join(unexpected)}"
+                )
+                return
+
+            if not any(a in loopback or a in wildcard for a in listen_addrs):
+                self.add_issue(
+                    "INFO", "SSH 未监听本地回环",
+                    "仅绑定外部地址，Tunnel 保活可能无法连接"
+                )
+
+            external_v4 = any(
+                a in wildcard_v4 or a in host_ips
+                for a in listen_addrs if ":" not in a
+            )
+            external_v6 = any(
+                a in wildcard_v6 or (":" in a and a not in loopback)
+                for a in listen_addrs
+            )
+            if external_v4:
+                self._check_ssh_firewall(ipv6=False)
+            if external_v6:
+                self._check_ssh_firewall(ipv6=True)
+            if not external_v4 and not external_v6:
+                print("[安全] ✅ SSH 仅监听本地回环")
         except Exception as e:
             print(f"[安全] 检查 SSH 出错: {e}")
+
+    @staticmethod
+    def _iptables_input_rules(ipv6=False):
+        """读取 iptables INPUT 链规则；无权限或不可用时返回 None"""
+        tool = "ip6tables" if ipv6 else "iptables"
+        for cmd in ([tool, "-S", "INPUT"], ["sudo", "-n", tool, "-S", "INPUT"]):
+            try:
+                r = subprocess.run(
+                    cmd, capture_output=True, text=True, timeout=10
+                )
+                if r.returncode == 0 and r.stdout.strip():
+                    return r.stdout.splitlines()
+            except Exception:
+                continue
+        return None
+
+    @staticmethod
+    def _port22_match(spec):
+        """判断 --dport/--dports 规格是否覆盖端口 22（支持单端口与 lo:hi 范围）"""
+        for item in spec.split(","):
+            if ":" in item:
+                lo, _, hi = item.partition(":")
+                try:
+                    if int(lo or 0) <= 22 <= int(hi or 65535):
+                        return True
+                except ValueError:
+                    continue
+            elif item == "22":
+                return True
+        return False
+
+    @classmethod
+    def _ssh_probe_verdict(cls, rules):
+        """模拟外部任意来源 -> tcp/22 NEW 探测包逐条匹配 INPUT 规则。
+
+        返回 (verdict, allowed_sources)：
+        - verdict: "open" 表示任意外部来源可连通，"restricted" 表示会被丢弃/拒绝
+        - allowed_sources: 终止判定前遇到的、放行 tcp/22 的指定来源地址
+        """
+        policy = "ACCEPT"
+        chain_rules = []
+        for line in rules:
+            if line.startswith("-P INPUT"):
+                policy = line.split()[2]
+            elif line.startswith("-A INPUT"):
+                chain_rules.append(line.split())
+
+        allowed = set()
+        for tokens in chain_rules:
+            if "-j" not in tokens or "!" in tokens:
+                continue
+            target = tokens[tokens.index("-j") + 1]
+
+            def opt(name, _tokens=tokens):
+                return _tokens[_tokens.index(name) + 1] if name in _tokens else None
+
+            proto = opt("-p")
+            if proto and proto != "tcp":
+                continue
+            if opt("-i") == "lo":
+                continue
+            states = opt("--state") or opt("--ctstate")
+            if states and "NEW" not in states.upper():
+                continue
+            dport = opt("--dport") or opt("--dports")
+            if dport and not cls._port22_match(dport):
+                continue
+
+            src = (opt("-s") or "0.0.0.0/0").lstrip("!")
+            if src in ("0.0.0.0/0", "0/0", "0.0.0.0", "::/0"):
+                # 探测包命中：首个匹配规则决定放行与否
+                if target == "ACCEPT":
+                    return "open", allowed
+                if target in ("DROP", "REJECT"):
+                    return "restricted", allowed
+                # 跳转自定义链等无法判定，保守忽略该规则
+                continue
+            if target == "ACCEPT":
+                allowed.add(src)
+
+        return ("open" if policy == "ACCEPT" else "restricted"), allowed
+
+    def _check_ssh_firewall(self, ipv6=False):
+        """检查防火墙是否限制 SSH 仅允许可信来源访问"""
+        label = "IPv6" if ipv6 else "IPv4"
+        rules = self._iptables_input_rules(ipv6=ipv6)
+        if rules is None:
+            self.add_issue(
+                "INFO", f"SSH {label} 防火墙状态未知",
+                "无权限读取 iptables，无法确认外网访问限制"
+            )
+            return
+
+        verdict, allowed = self._ssh_probe_verdict(rules)
+        if verdict == "open":
+            self.add_issue(
+                "WARNING", f"SSH {label} 对外无限制开放",
+                "防火墙未限制来源（若由安全组/NSG 限制可忽略）"
+            )
+            return
+
+        # 归一化主机掩码（/32、/128）后再比对白名单
+        def norm(src):
+            for suffix in ("/32", "/128"):
+                if src.endswith(suffix):
+                    return src[: -len(suffix)]
+            return src
+
+        expected = {norm(s) for s in SSH_ALLOWED_SOURCES}
+        extra = {norm(s) for s in allowed} - expected if expected else set()
+        if extra:
+            self.add_issue(
+                "WARNING", f"SSH {label} 放行来源异常",
+                f"非预期来源: {', '.join(sorted(extra))}"
+            )
+            return
+
+        print(f"[安全] ✅ SSH {label} 外部访问受限"
+              f"（放行: {', '.join(sorted(allowed)) or '无'}）")
     
     def check_cpu_anomaly(self):
         """检查 CPU 使用异常"""
@@ -725,7 +905,7 @@ class SecurityChecker:
         self.check_malicious_crontab()
         self.check_mining_processes()
         self.check_suspicious_tmp_files()
-        self.check_ssh_localhost_only()
+        self.check_ssh_listen_config()
         self.check_cpu_anomaly()
         self.check_zombie_processes()
         self.check_root_users()
