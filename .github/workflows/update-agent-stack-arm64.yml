@@ -256,25 +256,42 @@ jobs:
           fi
 
           set +e
-          sshpass -p "$SSH_PASSWORD" \
-            ssh $SSH_OPTS -p 2222 "${SSH_USERNAME}@127.0.0.1" \
-            "set -euo pipefail
-             export BLOG_GITHUB_TOKEN='${BLOG_GITHUB_TOKEN}'
-             export AGENTBRIDGE_GITHUB_TOKEN='${AGENTBRIDGE_GITHUB_TOKEN}'
-             export CLIPROXYAPI_OPENAI_API_KEY='${CLIPROXYAPI_OPENAI_API_KEY}'
-             export CLIPROXYAPI_BASE_URL='${CLIPROXYAPI_BASE_URL}'
-             export AGY_SWITCHER_LATEST_TAG='${AGY_SWITCHER_LATEST_TAG}'
-             export CODEX_LATEST_VERSION='${CODEX_LATEST_VERSION}'
-             export KILOCODE_LATEST_VERSION='${KILOCODE_LATEST_VERSION}'
-             export OPENCODE_LATEST_VERSION='${OPENCODE_LATEST_VERSION}'
-             export CLAUDE_LATEST_VERSION='${CLAUDE_LATEST_VERSION}'
-             export CLINE_LATEST_VERSION='${CLINE_LATEST_VERSION}'
-             export DEVIN_CREDENTIALS_B64='${DEVIN_CREDENTIALS_B64}'
-             export CLINE_CREDENTIALS_B64='${CLINE_CREDENTIALS_B64}'
-             bash -s" \
-            < scripts/remote_update_agent_stack.sh >"$REMOTE_OUTPUT_FILE" 2>&1
-          REMOTE_RC=$?
+          REMOTE_RC=255
+          SSH_ATTEMPT=0
+          while [ "$REMOTE_RC" -eq 255 ] && [ "$SSH_ATTEMPT" -lt 3 ]; do
+            SSH_ATTEMPT=$((SSH_ATTEMPT + 1))
+            if [ "$SSH_ATTEMPT" -gt 1 ]; then
+              echo "[WARN] ssh session failed (rc=255), retrying attempt ${SSH_ATTEMPT}/3" >>"$REMOTE_OUTPUT_FILE"
+              sleep 10
+            fi
+            sshpass -p "$SSH_PASSWORD" \
+              ssh $SSH_OPTS -p 2222 "${SSH_USERNAME}@127.0.0.1" \
+              "set -euo pipefail
+               export BLOG_GITHUB_TOKEN='${BLOG_GITHUB_TOKEN}'
+               export AGENTBRIDGE_GITHUB_TOKEN='${AGENTBRIDGE_GITHUB_TOKEN}'
+               export CLIPROXYAPI_OPENAI_API_KEY='${CLIPROXYAPI_OPENAI_API_KEY}'
+               export CLIPROXYAPI_BASE_URL='${CLIPROXYAPI_BASE_URL}'
+               export AGY_SWITCHER_LATEST_TAG='${AGY_SWITCHER_LATEST_TAG}'
+               export CODEX_LATEST_VERSION='${CODEX_LATEST_VERSION}'
+               export KILOCODE_LATEST_VERSION='${KILOCODE_LATEST_VERSION}'
+               export OPENCODE_LATEST_VERSION='${OPENCODE_LATEST_VERSION}'
+               export CLAUDE_LATEST_VERSION='${CLAUDE_LATEST_VERSION}'
+               export CLINE_LATEST_VERSION='${CLINE_LATEST_VERSION}'
+               export DEVIN_CREDENTIALS_B64='${DEVIN_CREDENTIALS_B64}'
+               export CLINE_CREDENTIALS_B64='${CLINE_CREDENTIALS_B64}'
+               bash -s" \
+              < scripts/remote_update_agent_stack.sh >>"$REMOTE_OUTPUT_FILE" 2>&1
+            REMOTE_RC=$?
+          done
           set -e
+
+          # Redact email addresses (remote CLI installers may print the account,
+          # e.g. "Logged in as user@example.com" from devin setup) before the
+          # remote log reaches the Actions log UI or the uploaded artifact.
+          while IFS= read -r _email; do
+            echo "::add-mask::${_email}"
+          done < <(grep -oE '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}' "$REMOTE_OUTPUT_FILE" | sort -u)
+          sed -i -E 's/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/<redacted>/g' "$REMOTE_OUTPUT_FILE"
 
           cat "$REMOTE_OUTPUT_FILE"
 
