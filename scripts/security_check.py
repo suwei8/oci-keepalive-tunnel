@@ -5,6 +5,7 @@ OCI 实例安全检测模块
 - 发送 Telegram 告警通知
 """
 
+import ipaddress
 import os
 import subprocess
 import re
@@ -484,6 +485,19 @@ class SecurityChecker:
         return None
 
     @staticmethod
+    def _is_external_source(src):
+        """来源地址是否公网可路由。
+
+        RFC1918 / CGNAT / 链路本地 / 回环 / IPv6 ULA 等非全局路由源段
+        无法从公网到达，视为天然可信，不参与白名单比对。
+        """
+        try:
+            return ipaddress.ip_network(src, strict=False).is_global
+        except ValueError:
+            # 无法解析的源按外部处理，保守告警
+            return True
+
+    @staticmethod
     def _port22_match(spec):
         """判断 --dport/--dports 规格是否覆盖端口 22（支持单端口与 lo:hi 范围）"""
         for item in spec.split(","):
@@ -602,7 +616,8 @@ class SecurityChecker:
             return src
 
         expected = {norm(s) for s in SSH_ALLOWED_SOURCES}
-        extra = {norm(s) for s in allowed} - expected if expected else set()
+        external = {norm(s) for s in allowed if self._is_external_source(norm(s))}
+        extra = external - expected if expected else set()
         if extra:
             self.add_issue(
                 "WARNING", f"SSH {label} 放行来源异常",
