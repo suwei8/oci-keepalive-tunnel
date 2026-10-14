@@ -469,10 +469,10 @@ class SecurityChecker:
             print(f"[安全] 检查 SSH 出错: {e}")
 
     @staticmethod
-    def _iptables_input_rules(ipv6=False):
-        """读取 iptables INPUT 链规则；无权限或不可用时返回 None"""
+    def _iptables_rules(ipv6=False):
+        """读取 iptables filter 表全部链规则；无权限或不可用时返回 None"""
         tool = "ip6tables" if ipv6 else "iptables"
-        for cmd in ([tool, "-S", "INPUT"], ["sudo", "-n", tool, "-S", "INPUT"]):
+        for cmd in ([tool, "-S"], ["sudo", "-n", tool, "-S"]):
             try:
                 r = subprocess.run(
                     cmd, capture_output=True, text=True, timeout=10
@@ -502,57 +502,83 @@ class SecurityChecker:
     def _ssh_probe_verdict(cls, rules):
         """模拟外部任意来源 -> tcp/22 NEW 探测包逐条匹配 INPUT 规则。
 
+        跟随 -j 跳转进入自定义链（如 SSH_RULES / DOCKER-USER / ufw-*），
+        自定义链遍历到底相当于 RETURN 回到上级链继续匹配。
+
         返回 (verdict, allowed_sources)：
         - verdict: "open" 表示任意外部来源可连通，"restricted" 表示会被丢弃/拒绝
         - allowed_sources: 终止判定前遇到的、放行 tcp/22 的指定来源地址
         """
-        policy = "ACCEPT"
-        chain_rules = []
+        chains = {}
+        policies = {}
         for line in rules:
-            if line.startswith("-P INPUT"):
-                policy = line.split()[2]
-            elif line.startswith("-A INPUT"):
-                chain_rules.append(line.split())
+            parts = line.split()
+            if len(parts) < 2:
+                continue
+            if parts[0] == "-P":
+                policies[parts[1]] = parts[2] if len(parts) > 2 else "ACCEPT"
+                chains.setdefault(parts[1], [])
+            elif parts[0] == "-N":
+                chains.setdefault(parts[1], [])
+            elif parts[0] == "-A" and len(parts) > 2:
+                chains.setdefault(parts[1], []).append(parts[2:])
 
         allowed = set()
-        for tokens in chain_rules:
-            if "-j" not in tokens or "!" in tokens:
-                continue
-            target = tokens[tokens.index("-j") + 1]
 
-            def opt(name, _tokens=tokens):
-                return _tokens[_tokens.index(name) + 1] if name in _tokens else None
+        def probe(chain_name, stack):
+            """返回 accept/drop/return；return 表示回到上级链继续匹配"""
+            if chain_name in stack:
+                return "return"
+            stack = stack | {chain_name}
+            for tokens in chains.get(chain_name, []):
+                if "-j" not in tokens or "!" in tokens:
+                    continue
+                target = tokens[tokens.index("-j") + 1]
 
-            proto = opt("-p")
-            if proto and proto != "tcp":
-                continue
-            if opt("-i") == "lo":
-                continue
-            states = opt("--state") or opt("--ctstate")
-            if states and "NEW" not in states.upper():
-                continue
-            dport = opt("--dport") or opt("--dports")
-            if dport and not cls._port22_match(dport):
-                continue
+                def opt(name, _tokens=tokens):
+                    return _tokens[_tokens.index(name) + 1] if name in _tokens else None
 
-            src = (opt("-s") or "0.0.0.0/0").lstrip("!")
-            if src in ("0.0.0.0/0", "0/0", "0.0.0.0", "::/0"):
-                # 探测包命中：首个匹配规则决定放行与否
+                proto = opt("-p")
+                if proto and proto != "tcp":
+                    continue
+                if opt("-i") == "lo":
+                    continue
+                states = opt("--state") or opt("--ctstate")
+                if states and "NEW" not in states.upper():
+                    continue
+                dport = opt("--dport") or opt("--dports")
+                if dport and not cls._port22_match(dport):
+                    continue
+
+                src = (opt("-s") or "0.0.0.0/0").lstrip("!")
+                if src in ("0.0.0.0/0", "0/0", "0.0.0.0", "::/0"):
+                    # 探测包命中：首个匹配规则决定放行与否
+                    if target == "ACCEPT":
+                        return "accept"
+                    if target in ("DROP", "REJECT"):
+                        return "drop"
+                    if target == "RETURN":
+                        return "return"
+                    if target in chains:
+                        verdict = probe(target, stack)
+                        if verdict != "return":
+                            return verdict
+                    # LOG 等非终止目标或未知链：继续匹配下一条
+                    continue
                 if target == "ACCEPT":
-                    return "open", allowed
-                if target in ("DROP", "REJECT"):
-                    return "restricted", allowed
-                # 跳转自定义链等无法判定，保守忽略该规则
-                continue
-            if target == "ACCEPT":
-                allowed.add(src)
+                    allowed.add(src)
 
-        return ("open" if policy == "ACCEPT" else "restricted"), allowed
+            if chain_name in policies:
+                return "accept" if policies[chain_name] == "ACCEPT" else "drop"
+            # 自定义链遍历到底 = 隐式 RETURN，回到上级链
+            return "return"
+
+        return ("open" if probe("INPUT", frozenset()) == "accept" else "restricted"), allowed
 
     def _check_ssh_firewall(self, ipv6=False):
         """检查防火墙是否限制 SSH 仅允许可信来源访问"""
         label = "IPv6" if ipv6 else "IPv4"
-        rules = self._iptables_input_rules(ipv6=ipv6)
+        rules = self._iptables_rules(ipv6=ipv6)
         if rules is None:
             self.add_issue(
                 "INFO", f"SSH {label} 防火墙状态未知",
