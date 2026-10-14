@@ -161,6 +161,7 @@ jobs:
           SECURITY_SYSTEMD_SERVICE_ALLOWLIST: ${{ secrets.SECURITY_SYSTEMD_SERVICE_ALLOWLIST }}
           SECURITY_SYSTEMD_EXEC_ALLOWLIST: ${{ secrets.SECURITY_SYSTEMD_EXEC_ALLOWLIST }}
           SECURITY_SSH_ALLOWED_SOURCES: ${{ secrets.SECURITY_SSH_ALLOWED_SOURCES }}
+          SECURITY_SSH_EXEMPT_HOSTS: ${{ secrets.SECURITY_SSH_EXEMPT_HOSTS || 'JBP-马来西亚3' }}
           REPO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY_NAME: ${{ github.repository }}
         run: |
@@ -317,6 +318,7 @@ jobs:
                  export SECURITY_SYSTEMD_SERVICE_ALLOWLIST='\"'\"'${SECURITY_SYSTEMD_SERVICE_ALLOWLIST}'\"'\"';
                  export SECURITY_SYSTEMD_EXEC_ALLOWLIST='\"'\"'${SECURITY_SYSTEMD_EXEC_ALLOWLIST}'\"'\"';
                  export SECURITY_SSH_ALLOWED_SOURCES='\"'\"'${SECURITY_SSH_ALLOWED_SOURCES}'\"'\"';
+                 export SECURITY_SSH_EXEMPT_HOSTS='\"'\"'${SECURITY_SSH_EXEMPT_HOSTS}'\"'\"';
                  bash '${REMOTE_RUNNER_SCRIPT}' > '${REMOTE_RUNNER_LOG}' 2>&1;
                  status=\$?;
                  printf '%s' \"\$status\" > '${REMOTE_RUNNER_EXIT}'

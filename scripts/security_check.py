@@ -95,6 +95,11 @@ SYSTEMD_EXEC_ALLOWLIST = load_csv_env(
 # 留空则仅验证 SSH 未对全网开放
 SSH_ALLOWED_SOURCES = load_csv_env("SECURITY_SSH_ALLOWED_SOURCES", "")
 
+# SSH 检查豁免主机名（逗号分隔）：这些主机的 SSH 对外开放是预期业务配置
+SSH_CHECK_EXEMPT_HOSTS = set(
+    load_csv_env("SECURITY_SSH_EXEMPT_HOSTS", "", lowercase=True)
+)
+
 # 可疑 crontab 模式
 # 只标记"临时目录中的可执行内容被执行"和"下载/解码后管道执行"，
 # 避免把 /tmp 下的锁文件(flock)、日志重定向等正常引用误判为恶意。
@@ -400,6 +405,10 @@ class SecurityChecker:
         - 外网访问未受防火墙限制，或放行来源不在白名单内
         """
         print("\n[安全] 检查 SSH 监听配置...")
+        if self.hostname.lower() in SSH_CHECK_EXEMPT_HOSTS:
+            print(f"[安全] ⏭️  {self.hostname} 在 SSH 检查豁免名单内"
+                  "（业务要求对外开放），跳过")
+            return
         try:
             result = subprocess.run(
                 ["ss", "-tln"],
