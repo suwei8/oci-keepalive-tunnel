@@ -1,0 +1,357 @@
+name: Kilo Model Probe
+
+# Latency probe for a Kilo / OpenAI-compatible gateway, run from every managed
+# host (over the same cloudflared SSH tunnel as ping-test.yml) so you can pick
+# the region with the best real round-trip to the models.
+#
+# Metrics per host (see scripts/model_probe.sh):
+#   tcp_ms  - TCP connect RTT to the Kilo edge (network only, min of RUNS)
+#   tls_ms  - TLS handshake RTT to the Kilo edge (network only, min of RUNS)
+#   ttfb_ms - first byte through your gateway (stream + max_tokens=1):
+#             network + queue + first token, i.e. "how fast it starts"
+#   total_ms- full response of that same request
+#
+# Required repo secrets:
+#   HOSTS_CONFIG_URL   - JSON host list (same as ping-test.yml)
+#   SSH_USERNAME / AMD_SSH_USERNAME / SSH_PASSWORD - same as ping-test.yml
+#   OC2A_API_KEY       - opencode2api server key (Bearer) for the gateway
+
+on:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: "要探测的模型 ID"
+        required: true
+        default: "beam-free"
+      base_url:
+        description: "opencode2api 网关地址（留空则只测到 Kilo 边缘的网络 RTT）"
+        required: false
+        default: "https://singapore-west4-ocapi.555606.xyz"
+      target_host:
+        description: "Kilo 边缘主机名（anycast，勿用固定 IP）"
+        required: true
+        default: "ai-gateway.kilo.ai"
+      cpu_type:
+        description: "选择要测试的主机类型"
+        required: true
+        type: choice
+        default: all
+        options:
+          - all
+          - arm64
+          - amd64
+      target_indexes:
+        description: "可选：指定主机索引，逗号分隔；留空表示全部"
+        required: false
+        default: ""
+
+jobs:
+  prepare:
+    name: Prepare Host Matrix
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.prepare.outputs.matrix }}
+      host_count: ${{ steps.prepare.outputs.host_count }}
+    steps:
+      - name: Build host matrix
+        id: prepare
+        env:
+          HOSTS_CONFIG_URL: ${{ secrets.HOSTS_CONFIG_URL }}
+          CPU_TYPE_FILTER: ${{ github.event.inputs.cpu_type }}
+          TARGET_INDEXES: ${{ github.event.inputs.target_indexes }}
+        run: |
+          set -euo pipefail
+
+          HOSTS_JSON="$(curl -fsSL "$HOSTS_CONFIG_URL")"
+          export HOSTS_JSON
+
+          MATRIX_JSON="$(python3 - <<'PY'
+          import json
+          import os
+
+          hosts = json.loads(os.environ["HOSTS_JSON"])
+          cpu_type_filter = (os.environ.get("CPU_TYPE_FILTER") or "all").strip().lower()
+          target_indexes_raw = (os.environ.get("TARGET_INDEXES") or "").strip()
+
+          selected_indexes = set()
+          if target_indexes_raw:
+              for item in target_indexes_raw.split(","):
+                  item = item.strip()
+                  if item:
+                      selected_indexes.add(item)
+
+          matrix = []
+          for index, host in enumerate(hosts):
+              host_cpu_type = (host.get("cpu_type") or "").strip().lower()
+              if host_cpu_type not in {"arm64", "amd64"}:
+                  continue
+              if cpu_type_filter != "all" and host_cpu_type != cpu_type_filter:
+                  continue
+              if selected_indexes and str(index) not in selected_indexes:
+                  continue
+
+              host_name = (host.get("name") or "").strip()
+              ssh_host = (host.get("ssh_host") or "").strip()
+              if not host_name or not ssh_host:
+                  continue
+              if "muse" in host_name.lower():
+                  continue
+
+              matrix.append(
+                  {
+                      "index": index,
+                      "name": host_name,
+                      "ssh_host": ssh_host,
+                      "cpu_type": host_cpu_type,
+                  }
+              )
+
+          print(json.dumps({"include": matrix}, ensure_ascii=False))
+          PY
+          )"
+
+          export MATRIX_JSON
+          HOST_COUNT="$(python3 -c 'import json,os; print(len(json.loads(os.environ["MATRIX_JSON"])["include"]))')"
+
+          echo "matrix=${MATRIX_JSON}" >> "$GITHUB_OUTPUT"
+          echo "host_count=${HOST_COUNT}" >> "$GITHUB_OUTPUT"
+          echo "Prepared ${HOST_COUNT} host(s) for cpu_type=${CPU_TYPE_FILTER:-all}"
+
+  probe:
+    name: ${{ matrix.name }} (${{ matrix.cpu_type }})
+    needs: prepare
+    if: needs.prepare.outputs.host_count != '0'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      max-parallel: 10
+      matrix: ${{ fromJson(needs.prepare.outputs.matrix) }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Install cloudflared
+        run: |
+          set -euo pipefail
+          if [ -f bin/cloudflared ]; then
+            sudo cp bin/cloudflared /usr/local/bin/cloudflared
+          else
+            echo "Local binary not found, downloading..."
+            curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o /tmp/cloudflared
+            chmod +x /tmp/cloudflared
+            sudo mv /tmp/cloudflared /usr/local/bin/cloudflared
+          fi
+          cloudflared --version
+
+      - name: Setup SSH
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          cat >> ~/.ssh/config <<'EOF'
+          Host *
+            StrictHostKeyChecking no
+            UserKnownHostsFile /dev/null
+            LogLevel ERROR
+          EOF
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq sshpass netcat-openbsd
+
+      - name: Run model probe
+        id: probe
+        env:
+          SSH_USERNAME: ${{ matrix.cpu_type == 'amd64' && secrets.AMD_SSH_USERNAME || secrets.SSH_USERNAME }}
+          SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }}
+          HOST_NAME: ${{ matrix.name }}
+          HOST_INDEX: ${{ matrix.index }}
+          HOST_CPU_TYPE: ${{ matrix.cpu_type }}
+          SSH_HOST: ${{ matrix.ssh_host }}
+          MODEL: ${{ github.event.inputs.model }}
+          TARGET: ${{ github.event.inputs.target_host }}
+          BASE_URL: ${{ github.event.inputs.base_url }}
+          API_KEY: ${{ secrets.OC2A_API_KEY }}
+        run: |
+          set -euo pipefail
+
+          echo "==========================================="
+          echo "Model probe for: ${HOST_NAME} (#${HOST_INDEX}, ${HOST_CPU_TYPE})"
+          echo "  model=${MODEL}  target=${TARGET}  base=${BASE_URL:-<network-only>}"
+          echo "==========================================="
+
+          TUNNEL_PID=""
+          cleanup() {
+            if [ -n "${TUNNEL_PID:-}" ]; then
+              kill "${TUNNEL_PID}" 2>/dev/null || true
+            fi
+          }
+          trap cleanup EXIT
+
+          SSH_OPTS="-o ConnectTimeout=30 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o PreferredAuthentications=password -o PubkeyAuthentication=no"
+
+          cloudflared access ssh --hostname "$SSH_HOST" --url "ssh://127.0.0.1:2222" >/dev/null 2>&1 &
+          TUNNEL_PID=$!
+
+          for _ in $(seq 1 20); do
+            if ! kill -0 "$TUNNEL_PID" 2>/dev/null; then
+              break
+            fi
+            if nc -z 127.0.0.1 2222; then
+              break
+            fi
+            sleep 1
+          done
+
+          if ! kill -0 "$TUNNEL_PID" 2>/dev/null || ! nc -z 127.0.0.1 2222; then
+            echo "❌ Tunnel failed"
+            exit 1
+          fi
+          echo "✅ Tunnel established"
+
+          # Ship the probe script (base64) to a temp file and run it there, so
+          # the remote shell never has to parse the script off stdin.
+          PROBE_B64="$(base64 -w0 scripts/model_probe.sh)"
+          PROBE_LINE="$(
+            sshpass -p "$SSH_PASSWORD" \
+              ssh $SSH_OPTS -p 2222 "${SSH_USERNAME}@127.0.0.1" \
+              "echo '${PROBE_B64}' | base64 -d > /tmp/model_probe.sh && NAME='${HOST_NAME}' MODEL='${MODEL}' TARGET='${TARGET}' BASE_URL='${BASE_URL}' API_KEY='${API_KEY}' bash /tmp/model_probe.sh; rc=\$?; rm -f /tmp/model_probe.sh; exit \$rc" \
+              | tail -1
+          )"
+
+          if [ -z "$PROBE_LINE" ]; then
+            PROBE_LINE="${HOST_NAME},${MODEL},${TARGET},NA,NA,NA,NA,NA"
+          fi
+          echo "probe_line=$PROBE_LINE" >> "$GITHUB_OUTPUT"
+          echo "✅ Probe result: $PROBE_LINE"
+
+      - name: Save result to file
+        env:
+          HOST_NAME: ${{ matrix.name }}
+          HOST_INDEX: ${{ matrix.index }}
+          HOST_CPU_TYPE: ${{ matrix.cpu_type }}
+          PROBE_LINE: ${{ steps.probe.outputs.probe_line }}
+        run: |
+          set -euo pipefail
+          mkdir -p probe_results
+          SAFE_NAME="$(printf '%s' "$HOST_NAME" | tr ' ' '_' | tr -cd '[:alnum:]_.-')"
+          printf '%s\n' "$PROBE_LINE" > "probe_results/${HOST_INDEX}_${HOST_CPU_TYPE}_${SAFE_NAME}.txt"
+
+      - name: Upload probe result artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: kilo-probe-result-${{ matrix.index }}
+          path: probe_results/*.txt
+          if-no-files-found: ignore
+          retention-days: 1
+
+  collect:
+    name: Collect Probe Results
+    needs:
+      - prepare
+      - probe
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Download all probe result artifacts
+        if: needs.prepare.outputs.host_count != '0'
+        uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+          pattern: kilo-probe-result-*
+        continue-on-error: true
+
+      - name: Merge results to CSV
+        env:
+          MODEL: ${{ github.event.inputs.model }}
+        run: |
+          set -euo pipefail
+          CSV_FILE="csv/kilo_probe_results.csv"
+          RUN_FILE="run_kilo_probe_results.csv"
+          mkdir -p csv
+          : > "$RUN_FILE"
+
+          if [ ! -f "$CSV_FILE" ]; then
+            echo "name,model,target,tcp-ms,tls-ms,ttfb-ms,total-ms,http,ts" > "$CSV_FILE"
+          fi
+
+          if [ -d artifacts ]; then
+            find artifacts -name "*.txt" -type f | sort | while read -r result_file; do
+              if [ -f "$result_file" ]; then
+                cat "$result_file" >> "$CSV_FILE"
+                cat "$result_file" >> "$RUN_FILE"
+                echo "Added: $(cat "$result_file")"
+              fi
+            done
+          fi
+
+          echo ""
+          echo "=== 本次运行结果 ==="
+          cat "$RUN_FILE"
+
+      - name: Commit results
+        run: |
+          set -euo pipefail
+          if [ -f csv/kilo_probe_results.csv ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add csv/kilo_probe_results.csv
+            git diff --staged --quiet || git commit -m "Update Kilo model probe results $(date -u +%Y-%m-%d)"
+            git push || echo "Nothing to push"
+          fi
+
+      - name: Summary
+        env:
+          MODEL: ${{ github.event.inputs.model }}
+          BASE_URL: ${{ github.event.inputs.base_url }}
+          TARGET: ${{ github.event.inputs.target_host }}
+          CPU_TYPE_FILTER: ${{ github.event.inputs.cpu_type }}
+          HOST_COUNT: ${{ needs.prepare.outputs.host_count }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## 📊 Kilo Model Probe (model: $MODEL)"
+            echo ""
+            echo "- Kilo 边缘: $TARGET"
+            echo "- 网关: ${BASE_URL:-<network-only>}"
+            echo "- CPU 类型: ${CPU_TYPE_FILTER}"
+            echo "- 目标主机数: ${HOST_COUNT}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          RUN_FILE="run_kilo_probe_results.csv"
+          RESULT_COUNT=0
+          [ -f "$RUN_FILE" ] && RESULT_COUNT=$(wc -l < "$RUN_FILE" | tr -d ' ')
+
+          {
+            echo "- 本次收到结果数: ${RESULT_COUNT}"
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ -s "$RUN_FILE" ]; then
+            {
+              echo "### 🏆 Top 10 by TTFB (本次运行)"
+              echo ""
+              echo "| Host | tcp_ms | tls_ms | ttfb_ms | total_ms | http |"
+              echo "|------|--------|--------|---------|----------|------|"
+            } >> "$GITHUB_STEP_SUMMARY"
+
+            grep -v 'NA,NA,NA,NA,NA' "$RUN_FILE" | \
+            awk -F',' '$6 != "NA" { print }' | \
+            sort -t',' -k6 -n | head -10 | \
+            awk -F',' '{printf "| %s | %s | %s | %s | %s | %s |\n", $1, $4, $5, $6, $7, $8}' >> "$GITHUB_STEP_SUMMARY" || true
+
+            {
+              echo ""
+              echo "### 📝 Results (本次运行)"
+              echo '```csv'
+              echo "name,model,target,tcp-ms,tls-ms,ttfb-ms,total-ms,http,ts"
+              sort -t',' -k6 -n "$RUN_FILE" >> "$GITHUB_STEP_SUMMARY" || true
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No results found." >> "$GITHUB_STEP_SUMMARY"
+          fi
