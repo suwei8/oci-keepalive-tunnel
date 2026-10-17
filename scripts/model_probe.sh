@@ -53,25 +53,41 @@ if [ "$have_curl" -eq 1 ]; then
   [ -n "$best_tls" ] && tls="$(awk "BEGIN{printf \"%.1f\", $best_tls*1000}")"
 fi
 
-# --- 2) streaming TTFB through the opencode2api gateway ---
+# --- 2) first-token latency through the opencode2api gateway ---
+# curl's time_starttransfer is unreliable behind Cloudflare/proxies: it reports
+# the proxy's response headers (~20ms), not the model's first byte. So we time
+# the first SSE "data:" line ourselves (first token) and the stream end.
 ttfb="NA"; total="NA"; http="NA"
 if [ "$have_curl" -eq 1 ] && [ -n "$BASE_URL" ] && [ -n "$API_KEY" ]; then
   best_ttfb=""; best_total=""
   i=1
   while [ "$i" -le "$RUNS" ]; do
-    read -r st tt hc <<<"$(curl -sN -o /dev/null --max-time 60 \
-      -w '%{time_starttransfer} %{time_total} %{http_code}' \
+    start_ns="$(date +%s%N)"
+    first_ns=""; saw_data=0
+    while IFS= read -r line; do
+      case "$line" in
+        data:*)
+          if [ "$saw_data" -eq 0 ]; then
+            first_ns="$(date +%s%N)"
+            saw_data=1
+          fi
+          ;;
+      esac
+    done < <(curl -sN --max-time 60 \
       "${BASE_URL%/}/v1/chat/completions" \
       -H "Authorization: Bearer ${API_KEY}" \
       -H 'Content-Type: application/json' \
-      -d "{\"model\":\"${MODEL}\",\"stream\":true,\"max_tokens\":1,\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}" 2>/dev/null)"
-    [ -n "${st:-}" ] && best_ttfb="$(minf "$best_ttfb" "$st")"
-    [ -n "${tt:-}" ] && best_total="$(minf "$best_total" "$tt")"
-    [ -n "${hc:-}" ] && http="$hc"
+      -d "{\"model\":\"${MODEL}\",\"stream\":true,\"max_tokens\":1,\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}" 2>/dev/null)
+    end_ns="$(date +%s%N)"
+    if [ "$saw_data" -eq 1 ]; then
+      best_ttfb="$(minf "$best_ttfb" "$(( (first_ns - start_ns) / 1000000 ))")"
+      best_total="$(minf "$best_total" "$(( (end_ns - start_ns) / 1000000 ))")"
+      http="200"
+    fi
     i=$((i + 1))
   done
-  [ -n "$best_ttfb" ] && ttfb="$(awk "BEGIN{printf \"%.1f\", $best_ttfb*1000}")"
-  [ -n "$best_total" ] && total="$(awk "BEGIN{printf \"%.1f\", $best_total*1000}")"
+  [ -n "$best_ttfb" ] && ttfb="$best_ttfb"
+  [ -n "$best_total" ] && total="$best_total"
 fi
 
 printf '%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
