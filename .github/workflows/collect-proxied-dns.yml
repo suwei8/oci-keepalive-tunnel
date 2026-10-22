@@ -43,8 +43,7 @@ jobs:
           echo ">>> 收集第一个账户的 proxied DNS 记录..."
           # hhwpxh.com
           RECORDS=$(curl -s "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records?per_page=500" \
-            -H "X-Auth-Email: ${CF_API_EMAIL}" \
-            -H "X-Auth-Key: ${CF_API_KEY}")
+            -H "Authorization: Bearer ${CF_API_KEY}")
           
           echo "$RECORDS" | jq -r '.result[] | select(.proxied == true) | .name' >> /tmp/proxied_domains.txt
           COUNT1=$(echo "$RECORDS" | jq '[.result[] | select(.proxied == true)] | length')
@@ -56,8 +55,7 @@ jobs:
           echo ">>> 收集第二个账户的 proxied DNS 记录..."
           # 555606.xyz
           RECORDS2=$(curl -s "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID_555606}/dns_records?per_page=500" \
-            -H "X-Auth-Email: ${CF_API_EMAIL_555606}" \
-            -H "X-Auth-Key: ${CF_API_KEY_555606}")
+            -H "Authorization: Bearer ${CF_API_KEY_555606}")
           
           echo "$RECORDS2" | jq -r '.result[] | select(.proxied == true) | .name' >> /tmp/proxied_domains.txt
           COUNT2=$(echo "$RECORDS2" | jq '[.result[] | select(.proxied == true)] | length')

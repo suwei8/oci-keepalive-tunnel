@@ -105,8 +105,7 @@ jobs:
           
           # 创建隧道
           CREATE_RESULT=$(curl -s -X POST "https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/cfd_tunnel" \
-            -H "X-Auth-Email: ${CF_API_EMAIL}" \
-            -H "X-Auth-Key: ${CF_API_KEY}" \
+            -H "Authorization: Bearer ${CF_API_KEY}" \
             -H "Content-Type: application/json" \
             -d "{\"name\": \"${TUNNEL_NAME}\", \"config_src\": \"cloudflare\"}")
           
@@ -117,8 +116,7 @@ jobs:
             echo "⚠️ 创建失败，尝试获取已存在的 Tunnel..."
             # 检查是否因重名失败，尝试获取已存在的隧道
             TUNNEL_ID=$(curl -s "https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/cfd_tunnel?name=${TUNNEL_NAME}" \
-              -H "X-Auth-Email: ${CF_API_EMAIL}" \
-              -H "X-Auth-Key: ${CF_API_KEY}" | jq -r '.result[0].id // empty')
+              -H "Authorization: Bearer ${CF_API_KEY}" | jq -r '.result[0].id // empty')
             if [ -n "$TUNNEL_ID" ]; then
               echo "✅ 使用已存在的 Tunnel"
             else
@@ -144,8 +142,7 @@ jobs:
           
           echo ">>> 获取 Tunnel Token..."
           TOKEN_RESULT=$(curl -s "https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/cfd_tunnel/${TUNNEL_ID}/token" \
-            -H "X-Auth-Email: ${CF_API_EMAIL}" \
-            -H "X-Auth-Key: ${CF_API_KEY}")
+            -H "Authorization: Bearer ${CF_API_KEY}")
           
           TUNNEL_TOKEN=$(echo "$TOKEN_RESULT" | jq -r '.result // empty')
           
@@ -215,8 +212,7 @@ jobs:
           
           # 配置 Tunnel ingress 规则
           CONFIG_RESULT=$(curl -s -X PUT "https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/cfd_tunnel/${TUNNEL_ID}/configurations" \
-            -H "X-Auth-Email: ${CF_API_EMAIL}" \
-            -H "X-Auth-Key: ${CF_API_KEY}" \
+            -H "Authorization: Bearer ${CF_API_KEY}" \
             -H "Content-Type: application/json" \
             -d "{
               \"config\": {
@@ -243,16 +239,14 @@ jobs:
           # 创建 DNS CNAME 记录 (指向隧道)
           echo ">>> 创建 DNS CNAME 记录..."
           DNS_RECORD=$(curl -s "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records?name=${FULL_HOSTNAME}" \
-            -H "X-Auth-Email: ${CF_API_EMAIL}" \
-            -H "X-Auth-Key: ${CF_API_KEY}" | jq -r '.result[0].id // empty')
+            -H "Authorization: Bearer ${CF_API_KEY}" | jq -r '.result[0].id // empty')
           
           CNAME_TARGET="${TUNNEL_ID}.cfargotunnel.com"
           
           if [ -z "$DNS_RECORD" ]; then
             # 创建新记录
             DNS_RESULT=$(curl -s -X POST "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records" \
-              -H "X-Auth-Email: ${CF_API_EMAIL}" \
-              -H "X-Auth-Key: ${CF_API_KEY}" \
+              -H "Authorization: Bearer ${CF_API_KEY}" \
               -H "Content-Type: application/json" \
               -d "{
                 \"type\": \"CNAME\",
@@ -271,8 +265,7 @@ jobs:
             # 更新现有记录
             echo ">>> DNS 记录已存在，更新..."
             curl -s -X PUT "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records/${DNS_RECORD}" \
-              -H "X-Auth-Email: ${CF_API_EMAIL}" \
-              -H "X-Auth-Key: ${CF_API_KEY}" \
+              -H "Authorization: Bearer ${CF_API_KEY}" \
               -H "Content-Type: application/json" \
               -d "{
                 \"type\": \"CNAME\",

@@ -129,8 +129,7 @@ jobs:
           
           RUNNER_IP=$(curl -s https://api.ipify.org)
           EXISTING_RULES=$(curl -s -X GET "https://api.cloudflare.com/client/v4/zones/$ZONE_ID/firewall/access_rules/rules" \
-            -H "X-Auth-Email: $API_EMAIL" \
-            -H "X-Auth-Key: $API_KEY" \
+            -H "Authorization: Bearer $API_KEY" \
             -H "Content-Type: application/json")
           
           RUNNER_WHITELISTED=false
@@ -140,7 +139,7 @@ jobs:
           
           if [ "$RUNNER_WHITELISTED" != "true" ]; then
             curl -s -X POST "https://api.cloudflare.com/client/v4/zones/$ZONE_ID/firewall/access_rules/rules" \
-              -H "X-Auth-Email: $API_EMAIL" -H "X-Auth-Key: $API_KEY" -H "Content-Type: application/json" \
+              -H "Authorization: Bearer $API_KEY" -H "Content-Type: application/json" \
               --data '{"mode":"whitelist","configuration":{"target":"ip","value":"'$RUNNER_IP'"},"notes":"GitHub Actions Runner IP (Auto)"}' > /dev/null
             sleep 3
           fi

@@ -140,8 +140,7 @@ jobs:
 
             DNS_CHANGED="false"
             dns_check=$(curl -s "https://api.cloudflare.com/client/v4/zones/${zone_id}/dns_records?name=${record_name}&type=${record_type}" \
-              -H "X-Auth-Email: ${cf_email}" \
-              -H "X-Auth-Key: ${cf_key}")
+              -H "Authorization: Bearer ${cf_key}")
 
             existing_id=$(echo "$dns_check" | jq -r '.result[0].id // empty')
             existing_content=$(echo "$dns_check" | jq -r '.result[0].content // empty')
@@ -149,8 +148,7 @@ jobs:
             if [ -z "$existing_id" ]; then
               echo ">>> 创建 DNS ${record_type}: ${masked_name} -> $(mask_ip "$record_content")"
               dns_result=$(curl -s -X POST "https://api.cloudflare.com/client/v4/zones/${zone_id}/dns_records" \
-                -H "X-Auth-Email: ${cf_email}" \
-                -H "X-Auth-Key: ${cf_key}" \
+                -H "Authorization: Bearer ${cf_key}" \
                 -H "Content-Type: application/json" \
                 -d "{\"type\":\"${record_type}\",\"name\":\"${record_name}\",\"content\":\"${record_content}\",\"proxied\":false,\"ttl\":1}")
 
@@ -164,8 +162,7 @@ jobs:
                 echo "⚠️ DNS ${record_type} 记录已存在，重新读取当前记录"
                 DNS_CHANGED="true"
                 dns_check=$(curl -s "https://api.cloudflare.com/client/v4/zones/${zone_id}/dns_records?name=${record_name}&type=${record_type}" \
-                  -H "X-Auth-Email: ${cf_email}" \
-                  -H "X-Auth-Key: ${cf_key}")
+                  -H "Authorization: Bearer ${cf_key}")
                 existing_id=$(echo "$dns_check" | jq -r '.result[0].id // empty')
                 existing_content=$(echo "$dns_check" | jq -r '.result[0].content // empty')
               else
@@ -183,8 +180,7 @@ jobs:
             if [ "$existing_content" != "$record_content" ]; then
               echo ">>> 更新 DNS ${record_type}: ${masked_name} -> $(mask_ip "$record_content")"
               dns_result=$(curl -s -X PUT "https://api.cloudflare.com/client/v4/zones/${zone_id}/dns_records/${existing_id}" \
-                -H "X-Auth-Email: ${cf_email}" \
-                -H "X-Auth-Key: ${cf_key}" \
+                -H "Authorization: Bearer ${cf_key}" \
                 -H "Content-Type: application/json" \
                 -d "{\"type\":\"${record_type}\",\"name\":\"${record_name}\",\"content\":\"${record_content}\",\"proxied\":false,\"ttl\":1}")
 

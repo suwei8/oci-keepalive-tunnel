@@ -90,8 +90,7 @@ echo "Tunnel Name: $TUNNEL_NAME"
 ```bash
 # 创建隧道 (类型: cloudflared, 配置来源: cloudflare)
 CREATE_RESULT=$(curl -s -X POST "https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/cfd_tunnel" \
-  -H "X-Auth-Email: ${CF_API_EMAIL}" \
-  -H "X-Auth-Key: ${CF_API_KEY}" \
+  -H "Authorization: Bearer ${CF_API_KEY}" \
   -H "Content-Type: application/json" \
   -d "{\"name\": \"${TUNNEL_NAME}\", \"config_src\": \"cloudflare\"}")
 
@@ -104,8 +103,7 @@ else
   echo "$CREATE_RESULT" | jq '.errors'
   # 检查是否因重名失败，尝试获取已存在的隧道
   TUNNEL_ID=$(curl -s "https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/cfd_tunnel?name=${TUNNEL_NAME}" \
-    -H "X-Auth-Email: ${CF_API_EMAIL}" \
-    -H "X-Auth-Key: ${CF_API_KEY}" | jq -r '.result[0].id // empty')
+    -H "Authorization: Bearer ${CF_API_KEY}" | jq -r '.result[0].id // empty')
   if [ -n "$TUNNEL_ID" ]; then
     echo "⚠️ 使用已存在的 Tunnel: $TUNNEL_ID"
   else
@@ -121,8 +119,7 @@ fi
 ```bash
 # 获取 Tunnel Token
 TOKEN_RESULT=$(curl -s "https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/cfd_tunnel/${TUNNEL_ID}/token" \
-  -H "X-Auth-Email: ${CF_API_EMAIL}" \
-  -H "X-Auth-Key: ${CF_API_KEY}")
+  -H "Authorization: Bearer ${CF_API_KEY}")
 
 TUNNEL_TOKEN=$(echo "$TOKEN_RESULT" | jq -r '.result // empty')
 
@@ -168,8 +165,7 @@ echo "SSH Hostname: $FULL_HOSTNAME"
 ```bash
 # 配置 Tunnel ingress 规则（SSH 服务）
 CONFIG_RESULT=$(curl -s -X PUT "https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/cfd_tunnel/${TUNNEL_ID}/configurations" \
-  -H "X-Auth-Email: ${CF_API_EMAIL}" \
-  -H "X-Auth-Key: ${CF_API_KEY}" \
+  -H "Authorization: Bearer ${CF_API_KEY}" \
   -H "Content-Type: application/json" \
   -d "{
     \"config\": {

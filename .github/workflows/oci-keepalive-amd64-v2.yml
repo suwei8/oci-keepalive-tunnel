@@ -459,7 +459,6 @@ jobs:
     if: always()
     runs-on: ubuntu-latest
     outputs:
-      data_status: ${{ steps.persist.outputs.data_status }}
       prediction_count: ${{ steps.merge.outputs.prediction_count }}
     steps:
       - name: Download prediction artifacts
@@ -505,59 +504,6 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
-      - name: Persist merged predictions to external repo
-        id: persist
-        env:
-          KEEPALIVE_DATA_REPO: ${{ secrets.KEEPALIVE_DATA_REPO }}
-          KEEPALIVE_DATA_TOKEN: ${{ secrets.KEEPALIVE_DATA_TOKEN }}
-        run: |
-          set -euo pipefail
-
-          DATA_STATUS="artifact_only"
-
-          if [ ! -f merged/predictions_amd64.csv ] || [ "$(wc -l < merged/predictions_amd64.csv)" -le 1 ]; then
-            DATA_STATUS="no_predictions"
-            echo "data_status=${DATA_STATUS}" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          if [ -z "${KEEPALIVE_DATA_REPO:-}" ] || [ -z "${KEEPALIVE_DATA_TOKEN:-}" ]; then
-            echo "data_status=${DATA_STATUS}" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          TMP_DIR="$(mktemp -d)"
-          trap 'rm -rf "$TMP_DIR"' EXIT
-
-          if ! git clone "https://x-access-token:${KEEPALIVE_DATA_TOKEN}@github.com/${KEEPALIVE_DATA_REPO}.git" "$TMP_DIR/repo" >/dev/null 2>&1; then
-            DATA_STATUS="external_repo_clone_failed"
-            echo "data_status=${DATA_STATUS}" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          mkdir -p "$TMP_DIR/repo/oci-keepalive/amd64"
-          cp merged/predictions_amd64.csv "$TMP_DIR/repo/oci-keepalive/amd64/predictions.csv"
-
-          cd "$TMP_DIR/repo"
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add oci-keepalive/amd64/predictions.csv
-
-          if git diff --staged --quiet; then
-            DATA_STATUS="external_repo_no_change"
-            echo "data_status=${DATA_STATUS}" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          git commit -m "Update amd64 keepalive predictions $(date -u +%Y-%m-%dT%H:%M:%SZ)" >/dev/null
-          if git push origin HEAD >/dev/null 2>&1; then
-            DATA_STATUS="external_repo_pushed"
-          else
-            DATA_STATUS="external_repo_push_failed"
-          fi
-
-          echo "data_status=${DATA_STATUS}" >> "$GITHUB_OUTPUT"
-
   notify:
     name: Summary Notification
     needs:
@@ -581,7 +527,6 @@ jobs:
       - name: Build summary message
         env:
           HOST_COUNT: ${{ needs.prepare.outputs.host_count }}
-          DATA_STATUS: ${{ needs.collect_predictions.outputs.data_status }}
           PREDICTION_COUNT: ${{ needs.collect_predictions.outputs.prediction_count }}
         run: |
           set -euo pipefail
@@ -590,7 +535,6 @@ jobs:
           {
             echo
             echo "<b>预测文件数</b>: ${PREDICTION_COUNT:-0}"
-            echo "<b>数据落盘</b>: ${DATA_STATUS:-unknown}"
           } >> telegram_message.txt
 
       - name: Send summary to Telegram

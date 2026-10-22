@@ -101,8 +101,7 @@ jobs:
 
           fetch_dns_record_json() {
             curl -fsSL "https://api.cloudflare.com/client/v4/zones/${CURRENT_ZONE_ID}/dns_records?name=${PROXY_DOMAIN}" \
-              -H "X-Auth-Email: ${CURRENT_API_EMAIL}" \
-              -H "X-Auth-Key: ${CURRENT_API_KEY}"
+              -H "Authorization: Bearer ${CURRENT_API_KEY}"
           }
 
           wait_for_dns_propagation() {
@@ -252,7 +251,7 @@ jobs:
             
             if [ -z "$DNS_RECORD" ]; then
               echo ">>> 创建 DNS A 记录: ${PROXY_DOMAIN} -> ${MASKED_IP}"
-              DNS_RESULT=$(curl -fsSL -X POST "https://api.cloudflare.com/client/v4/zones/${CURRENT_ZONE_ID}/dns_records" -H "X-Auth-Email: ${CURRENT_API_EMAIL}" -H "X-Auth-Key: ${CURRENT_API_KEY}" -H "Content-Type: application/json" -d "{\"type\":\"A\",\"name\":\"${PROXY_DOMAIN}\",\"content\":\"${PUBLIC_IP}\",\"proxied\":false,\"ttl\":1}" 2>/dev/null || true)
+              DNS_RESULT=$(curl -fsSL -X POST "https://api.cloudflare.com/client/v4/zones/${CURRENT_ZONE_ID}/dns_records" -H "Authorization: Bearer ${CURRENT_API_KEY}" -H "Content-Type: application/json" -d "{\"type\":\"A\",\"name\":\"${PROXY_DOMAIN}\",\"content\":\"${PUBLIC_IP}\",\"proxied\":false,\"ttl\":1}" 2>/dev/null || true)
               if echo "$DNS_RESULT" | jq -e '.success' > /dev/null; then
                 echo "✅ DNS 记录已创建"
               else
@@ -284,7 +283,7 @@ jobs:
                 kill $TUNNEL_PID 2>/dev/null || true
                 continue
               fi
-              curl -fsSL -X PUT "https://api.cloudflare.com/client/v4/zones/${CURRENT_ZONE_ID}/dns_records/${RECORD_ID}" -H "X-Auth-Email: ${CURRENT_API_EMAIL}" -H "X-Auth-Key: ${CURRENT_API_KEY}" -H "Content-Type: application/json" -d "{\"type\":\"A\",\"name\":\"${PROXY_DOMAIN}\",\"content\":\"${PUBLIC_IP}\",\"proxied\":false,\"ttl\":1}" > /dev/null || {
+              curl -fsSL -X PUT "https://api.cloudflare.com/client/v4/zones/${CURRENT_ZONE_ID}/dns_records/${RECORD_ID}" -H "Authorization: Bearer ${CURRENT_API_KEY}" -H "Content-Type: application/json" -d "{\"type\":\"A\",\"name\":\"${PROXY_DOMAIN}\",\"content\":\"${PUBLIC_IP}\",\"proxied\":false,\"ttl\":1}" > /dev/null || {
                 echo "❌ DNS 更新失败"
                 DNS_FAILED_COUNT=$((DNS_FAILED_COUNT + 1))
                 kill $TUNNEL_PID 2>/dev/null || true

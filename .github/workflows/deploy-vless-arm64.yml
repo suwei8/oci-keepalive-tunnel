@@ -94,8 +94,7 @@ jobs:
             local dns_result=""
 
             dns_check=$(curl -s "https://api.cloudflare.com/client/v4/zones/${zone_id}/dns_records?name=${record_name}&type=${record_type}" \
-              -H "X-Auth-Email: ${cf_email}" \
-              -H "X-Auth-Key: ${cf_key}")
+              -H "Authorization: Bearer ${cf_key}")
 
             existing_id=$(echo "$dns_check" | jq -r '.result[0].id // empty')
             existing_content=$(echo "$dns_check" | jq -r '.result[0].content // empty')
@@ -103,8 +102,7 @@ jobs:
             if [ -z "$existing_id" ]; then
               echo ">>> 创建 DNS ${record_type}: ${masked_name} -> ${record_content}"
               dns_result=$(curl -s -X POST "https://api.cloudflare.com/client/v4/zones/${zone_id}/dns_records" \
-                -H "X-Auth-Email: ${cf_email}" \
-                -H "X-Auth-Key: ${cf_key}" \
+                -H "Authorization: Bearer ${cf_key}" \
                 -H "Content-Type: application/json" \
                 -d "{\"type\":\"${record_type}\",\"name\":\"${record_name}\",\"content\":\"${record_content}\",\"proxied\":false}")
 
@@ -117,8 +115,7 @@ jobs:
             elif [ "$existing_content" != "$record_content" ]; then
               echo ">>> 更新 DNS ${record_type}: ${masked_name} -> ${record_content} (原值: ${existing_content})"
               dns_result=$(curl -s -X PUT "https://api.cloudflare.com/client/v4/zones/${zone_id}/dns_records/${existing_id}" \
-                -H "X-Auth-Email: ${cf_email}" \
-                -H "X-Auth-Key: ${cf_key}" \
+                -H "Authorization: Bearer ${cf_key}" \
                 -H "Content-Type: application/json" \
                 -d "{\"type\":\"${record_type}\",\"name\":\"${record_name}\",\"content\":\"${record_content}\",\"proxied\":false}")
 
@@ -259,14 +256,12 @@ jobs:
               
               # 查找 Tunnel ID
               TUNNELS=$(curl -s "https://api.cloudflare.com/client/v4/accounts/${TUNNEL_CF_ACCOUNT}/cfd_tunnel?is_deleted=false" \
-                -H "X-Auth-Email: ${TUNNEL_CF_EMAIL}" \
-                -H "X-Auth-Key: ${TUNNEL_CF_KEY}")
+                -H "Authorization: Bearer ${TUNNEL_CF_KEY}")
               
               TUNNEL_ID=""
               for tid in $(echo "$TUNNELS" | jq -r '.result[].id // empty' 2>/dev/null); do
                 CONFIG=$(curl -s "https://api.cloudflare.com/client/v4/accounts/${TUNNEL_CF_ACCOUNT}/cfd_tunnel/${tid}/configurations" \
-                  -H "X-Auth-Email: ${TUNNEL_CF_EMAIL}" \
-                  -H "X-Auth-Key: ${TUNNEL_CF_KEY}")
+                  -H "Authorization: Bearer ${TUNNEL_CF_KEY}")
                 
                 if echo "$CONFIG" | grep -iq "$SSH_HOST"; then
                   TUNNEL_ID="$tid"
@@ -280,8 +275,7 @@ jobs:
                 
                 # 检查 DNS 记录是否存在及内容是否正确
                 DNS_CHECK=$(curl -s "https://api.cloudflare.com/client/v4/zones/${VLESS_ZONE_ID}/dns_records?name=${VLESS_HOST}" \
-                  -H "X-Auth-Email: ${VLESS_CF_EMAIL}" \
-                  -H "X-Auth-Key: ${VLESS_CF_KEY}")
+                  -H "Authorization: Bearer ${VLESS_CF_KEY}")
                 
                 EXISTING_DNS_ID=$(echo "$DNS_CHECK" | jq -r '.result[0].id // empty')
                 EXISTING_DNS_CONTENT=$(echo "$DNS_CHECK" | jq -r '.result[0].content // empty')
@@ -289,15 +283,13 @@ jobs:
                 if [ -z "$EXISTING_DNS_ID" ]; then
                   echo ">>> 创建缺失的 DNS CNAME: $MASKED_VLESS_HOST -> Tunnel"
                   DNS_RESULT=$(curl -s -X POST "https://api.cloudflare.com/client/v4/zones/${VLESS_ZONE_ID}/dns_records" \
-                    -H "X-Auth-Email: ${VLESS_CF_EMAIL}" \
-                    -H "X-Auth-Key: ${VLESS_CF_KEY}" \
+                    -H "Authorization: Bearer ${VLESS_CF_KEY}" \
                     -H "Content-Type: application/json" \
                     -d "{\"type\":\"CNAME\",\"name\":\"${VLESS_HOST}\",\"content\":\"${TUNNEL_CNAME}\",\"proxied\":true}")
                 elif [ "$EXISTING_DNS_CONTENT" != "$TUNNEL_CNAME" ]; then
                   echo ">>> 更新 DNS CNAME: $MASKED_VLESS_HOST -> Tunnel"
                   DNS_RESULT=$(curl -s -X PUT "https://api.cloudflare.com/client/v4/zones/${VLESS_ZONE_ID}/dns_records/${EXISTING_DNS_ID}" \
-                    -H "X-Auth-Email: ${VLESS_CF_EMAIL}" \
-                    -H "X-Auth-Key: ${VLESS_CF_KEY}" \
+                    -H "Authorization: Bearer ${VLESS_CF_KEY}" \
                     -H "Content-Type: application/json" \
                     -d "{\"type\":\"CNAME\",\"name\":\"${VLESS_HOST}\",\"content\":\"${TUNNEL_CNAME}\",\"proxied\":true}")
                 fi
@@ -387,14 +379,12 @@ jobs:
             # 查找包含 ssh_host 的 Tunnel (在 SSH_HOST 对应的账户中)
             echo ">>> 查找 Tunnel..."
             TUNNELS=$(curl -s "https://api.cloudflare.com/client/v4/accounts/${TUNNEL_CF_ACCOUNT}/cfd_tunnel?is_deleted=false" \
-              -H "X-Auth-Email: ${TUNNEL_CF_EMAIL}" \
-              -H "X-Auth-Key: ${TUNNEL_CF_KEY}")
+              -H "Authorization: Bearer ${TUNNEL_CF_KEY}")
             
             TUNNEL_ID=""
             for tid in $(echo "$TUNNELS" | jq -r '.result[].id // empty' 2>/dev/null); do
               CONFIG=$(curl -s "https://api.cloudflare.com/client/v4/accounts/${TUNNEL_CF_ACCOUNT}/cfd_tunnel/${tid}/configurations" \
-                -H "X-Auth-Email: ${TUNNEL_CF_EMAIL}" \
-                -H "X-Auth-Key: ${TUNNEL_CF_KEY}")
+                -H "Authorization: Bearer ${TUNNEL_CF_KEY}")
               
               if echo "$CONFIG" | grep -iq "$SSH_HOST"; then
                 TUNNEL_ID="$tid"
@@ -413,8 +403,7 @@ jobs:
             
             # 获取当前 ingress 配置
             CURRENT_CONFIG=$(curl -s "https://api.cloudflare.com/client/v4/accounts/${TUNNEL_CF_ACCOUNT}/cfd_tunnel/${TUNNEL_ID}/configurations" \
-              -H "X-Auth-Email: ${TUNNEL_CF_EMAIL}" \
-              -H "X-Auth-Key: ${TUNNEL_CF_KEY}")
+              -H "Authorization: Bearer ${TUNNEL_CF_KEY}")
             
             CURRENT_INGRESS=$(echo "$CURRENT_CONFIG" | jq '.result.config.ingress')
             
@@ -430,8 +419,7 @@ jobs:
               
               # 更新 Tunnel 配置
               UPDATE_RESULT=$(curl -s -X PUT "https://api.cloudflare.com/client/v4/accounts/${TUNNEL_CF_ACCOUNT}/cfd_tunnel/${TUNNEL_ID}/configurations" \
-                -H "X-Auth-Email: ${TUNNEL_CF_EMAIL}" \
-                -H "X-Auth-Key: ${TUNNEL_CF_KEY}" \
+                -H "Authorization: Bearer ${TUNNEL_CF_KEY}" \
                 -H "Content-Type: application/json" \
                 -d "{\"config\":{\"ingress\":$NEW_INGRESS}}")
               
@@ -450,8 +438,7 @@ jobs:
             
             # 检查 DNS 记录是否已存在及内容是否正确 (使用 VLESS 账户)
             DNS_CHECK=$(curl -s "https://api.cloudflare.com/client/v4/zones/${VLESS_ZONE_ID}/dns_records?name=${VLESS_HOST}" \
-              -H "X-Auth-Email: ${VLESS_CF_EMAIL}" \
-              -H "X-Auth-Key: ${VLESS_CF_KEY}")
+              -H "Authorization: Bearer ${VLESS_CF_KEY}")
             
             EXISTING_DNS_ID=$(echo "$DNS_CHECK" | jq -r '.result[0].id // empty')
             EXISTING_DNS_CONTENT=$(echo "$DNS_CHECK" | jq -r '.result[0].content // empty')
@@ -459,8 +446,7 @@ jobs:
             if [ -z "$EXISTING_DNS_ID" ]; then
               echo ">>> 创建 DNS CNAME: $MASKED_VLESS_HOST -> Tunnel"
               DNS_RESULT=$(curl -s -X POST "https://api.cloudflare.com/client/v4/zones/${VLESS_ZONE_ID}/dns_records" \
-                -H "X-Auth-Email: ${VLESS_CF_EMAIL}" \
-                -H "X-Auth-Key: ${VLESS_CF_KEY}" \
+                -H "Authorization: Bearer ${VLESS_CF_KEY}" \
                 -H "Content-Type: application/json" \
                 -d "{\"type\":\"CNAME\",\"name\":\"${VLESS_HOST}\",\"content\":\"${TUNNEL_CNAME}\",\"proxied\":true}")
               
@@ -473,8 +459,7 @@ jobs:
             elif [ "$EXISTING_DNS_CONTENT" != "$TUNNEL_CNAME" ]; then
               echo ">>> 更新 DNS CNAME: $MASKED_VLESS_HOST -> Tunnel (原: ${EXISTING_DNS_CONTENT})"
               DNS_RESULT=$(curl -s -X PUT "https://api.cloudflare.com/client/v4/zones/${VLESS_ZONE_ID}/dns_records/${EXISTING_DNS_ID}" \
-                -H "X-Auth-Email: ${VLESS_CF_EMAIL}" \
-                -H "X-Auth-Key: ${VLESS_CF_KEY}" \
+                -H "Authorization: Bearer ${VLESS_CF_KEY}" \
                 -H "Content-Type: application/json" \
                 -d "{\"type\":\"CNAME\",\"name\":\"${VLESS_HOST}\",\"content\":\"${TUNNEL_CNAME}\",\"proxied\":true}")
               
