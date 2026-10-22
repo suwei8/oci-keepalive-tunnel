@@ -8,6 +8,5 @@ routes = [
   { pattern = "sso.555606.xyz", custom_domain = true }
 ]
 
-[vars]
-# 更换更隐蔽的环境变量键名
-APP_TOKEN = "219f4d83-59e0-457f-b596-6a7e87dbc971"
+# APP_TOKEN 为 Worker secret（勿提交明文）：
+#   npx wrangler secret put APP_TOKEN

@@ -19,7 +19,7 @@ export default {
 
             let tcpConn = null;
             let isHandshakeComplete = false;
-            const appSecretHex = (env.APP_TOKEN || '219f4d83-59e0-457f-b596-6a7e87dbc971').replace(/-/g, '');
+            const appSecretHex = (env.APP_TOKEN || '').replace(/-/g, '');
 
             server.addEventListener('message', (event) => {
                 const payloadBuffer = event.data;
