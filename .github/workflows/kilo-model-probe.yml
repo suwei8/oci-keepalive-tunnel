@@ -26,7 +26,7 @@ on:
       base_url:
         description: "opencode2api 网关地址（留空则只测到 Kilo 边缘的网络 RTT）"
         required: false
-        default: "https://singapore-west4-ocapi.555606.xyz"
+        default: ""
       target_host:
         description: "Kilo 边缘主机名（anycast，勿用固定 IP）"
         required: true
