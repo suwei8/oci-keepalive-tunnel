@@ -229,7 +229,15 @@ jobs:
             # 3.1 建立 OCI 临时隧道 (Port 2222) - 带重试机制
             TUNNEL_SUCCESS=0
             MAX_RETRIES=3
-            
+            SSH_DEST="127.0.0.1"; SSH_PORT="2222"
+            if [[ "$SSH_HOST" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              SSH_DEST="$SSH_HOST"; SSH_PORT="22"
+              TUNNEL_SUCCESS=1
+              echo ">>> 直连模式 (transport=direct): ${SSH_DEST}:${SSH_PORT}"
+            fi
+            TUNNEL_OCI_PID=""
+
+            if [ "$SSH_PORT" = "2222" ]; then
             for RETRY in $(seq 1 $MAX_RETRIES); do
               echo ">>> 尝试连接 OCI Tunnel ($RETRY/$MAX_RETRIES)..."
               
@@ -257,6 +265,7 @@ jobs:
                 fi
               fi
             done
+            fi
             
             if [ $TUNNEL_SUCCESS -eq 0 ]; then
               echo "❌ OCI Tunnel 失败 (已重试 $MAX_RETRIES 次): $HOST_NAME"
@@ -275,7 +284,7 @@ jobs:
               echo "    尝试 SSH 连接 ($SSH_RETRY/3)..."
               
               # 尝试连接并执行命令 (使用 || true 防止失败退出)
-              PREPARE_OUTPUT=$(sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" '
+              PREPARE_OUTPUT=$(sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p "$SSH_PORT" "${SSH_USERNAME}@$SSH_DEST" '
                 which iperf3 > /dev/null 2>&1 || (sudo apt-get update -qq && sudo apt-get install -y -qq iperf3)
                 IP=$(curl -4 -s ip.sb)
                 echo "PUBLIC_IP::$IP"
@@ -331,7 +340,7 @@ jobs:
             # IPERF_UL_RESULT=...
             
             # 3.4 清理 OCI
-            sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" 'sudo pkill -9 iperf3 2>/dev/null || true'
+            sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p "$SSH_PORT" "${SSH_USERNAME}@$SSH_DEST" 'sudo pkill -9 iperf3 2>/dev/null || true'
             kill $TUNNEL_OCI_PID 2>/dev/null || true
             
             # 3.5 解析结果 & 写入 CSV

@@ -192,7 +192,7 @@ jobs:
           SSH_OPTS="-o ConnectTimeout=30 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ServerAliveInterval=60 -o PreferredAuthentications=password -o PubkeyAuthentication=no"
 
           fetch_metrics() {
-            sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -p 2222 "${REMOTE_SSH_USERNAME}@127.0.0.1" '
+            sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -p "$SSH_PORT" "${REMOTE_SSH_USERNAME}@$SSH_DEST" '
               CPU=$(top -bn1 | grep "Cpu(s)" | sed "s/.*, *\([0-9.]*\)%* id.*/\1/" | awk "{print 100 - \$1}")
               TOTAL_KB=$(awk "/^MemTotal:/ {print \$2}" /proc/meminfo)
               AVAIL_KB=$(awk "/^MemAvailable:/ {print \$2}" /proc/meminfo)
@@ -223,7 +223,7 @@ jobs:
           }
 
           sample_metrics() {
-            sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -p 2222 "${REMOTE_SSH_USERNAME}@127.0.0.1" '
+            sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -p "$SSH_PORT" "${REMOTE_SSH_USERNAME}@$SSH_DEST" '
               read cpu user nice system idle iowait irq softirq steal guest < /proc/stat
               PREV_TOTAL=$((user + nice + system + idle + iowait + irq + softirq + steal))
               PREV_IDLE=$((idle + iowait))
@@ -266,28 +266,35 @@ jobs:
             ' 2>/dev/null
           }
 
+          SSH_DEST="127.0.0.1"; SSH_PORT="2222"; TUNNEL_PID=""
+          if [[ "$SSH_HOST" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            SSH_DEST="$SSH_HOST"; SSH_PORT="22"
+            sleep 3600 & TUNNEL_PID=$!
+            echo ">>> 直连模式 (transport=direct): ${SSH_DEST}:${SSH_PORT}"
+          else
           case "$SSH_HOST" in
             *555606.xyz) CF_ACC_ID="$CF_ACC_ID_555606"; CF_ACC_SECRET="$CF_ACC_SECRET_555606" ;;
             *) CF_ACC_ID="$CF_ACC_ID_HHWPXH"; CF_ACC_SECRET="$CF_ACC_SECRET_HHWPXH" ;;
           esac
           env TUNNEL_SERVICE_TOKEN_ID="$CF_ACC_ID" TUNNEL_SERVICE_TOKEN_SECRET="$CF_ACC_SECRET" cloudflared access ssh --hostname "$SSH_HOST" --url "ssh://127.0.0.1:2222" >/dev/null 2>&1 &
           TUNNEL_PID=$!
+          fi
 
           for _ in $(seq 1 20); do
-            if nc -z 127.0.0.1 2222; then
+            if nc -z "$SSH_DEST" "$SSH_PORT"; then
               break
             fi
             sleep 1
           done
 
-          if ! nc -z 127.0.0.1 2222; then
+          if ! nc -z "$SSH_DEST" "$SSH_PORT"; then
             python3 scripts/keepalive_result_helper.py write-result \
               "$RESULT_FILE" "$HOST_NAME" "$HOST_INDEX" "tunnel_failed" "cloudflared ssh tunnel not ready"
             exit 1
           fi
 
           sshpass -p "$SSH_PASSWORD" \
-            ssh $SSH_OPTS -p 2222 "${REMOTE_SSH_USERNAME}@127.0.0.1" \
+            ssh $SSH_OPTS -p "$SSH_PORT" "${REMOTE_SSH_USERNAME}@$SSH_DEST" \
             "cat > '${REMOTE_RUNNER_SCRIPT}' && chmod +x '${REMOTE_RUNNER_SCRIPT}'" \
             < scripts/remote_keepalive_runner.sh
 
@@ -302,7 +309,7 @@ jobs:
           : >"$SAMPLE_FILE"
           REMOTE_PID="$(
             sshpass -p "$SSH_PASSWORD" \
-              ssh $SSH_OPTS -p 2222 "${REMOTE_SSH_USERNAME}@127.0.0.1" \
+              ssh $SSH_OPTS -p "$SSH_PORT" "${REMOTE_SSH_USERNAME}@$SSH_DEST" \
               "rm -f '${REMOTE_RUNNER_LOG}' '${REMOTE_RUNNER_EXIT}'; \
                nohup bash -lc '
                  export HOST_NAME='\"'\"'${HOST_NAME}'\"'\"';
@@ -333,13 +340,13 @@ jobs:
 
           remote_pid_alive() {
             sshpass -p "$SSH_PASSWORD" \
-              ssh $SSH_OPTS -p 2222 "${REMOTE_SSH_USERNAME}@127.0.0.1" \
+              ssh $SSH_OPTS -p "$SSH_PORT" "${REMOTE_SSH_USERNAME}@$SSH_DEST" \
               "kill -0 '${REMOTE_PID}' 2>/dev/null"
           }
 
           remote_exit_ready() {
             sshpass -p "$SSH_PASSWORD" \
-              ssh $SSH_OPTS -p 2222 "${REMOTE_SSH_USERNAME}@127.0.0.1" \
+              ssh $SSH_OPTS -p "$SSH_PORT" "${REMOTE_SSH_USERNAME}@$SSH_DEST" \
               "test -f '${REMOTE_RUNNER_EXIT}'"
           }
 
@@ -371,7 +378,7 @@ jobs:
           wait "$SAMPLE_PID" || true
           REMOTE_RC="$(
             sshpass -p "$SSH_PASSWORD" \
-              ssh $SSH_OPTS -p 2222 "${REMOTE_SSH_USERNAME}@127.0.0.1" \
+              ssh $SSH_OPTS -p "$SSH_PORT" "${REMOTE_SSH_USERNAME}@$SSH_DEST" \
               "cat '${REMOTE_RUNNER_EXIT}' 2>/dev/null" | tr -d '\r' | tail -n1
           )"
 
@@ -380,11 +387,11 @@ jobs:
           fi
 
           if ! sshpass -p "$SSH_PASSWORD" \
-            scp $SSH_OPTS -P 2222 \
-            "${REMOTE_SSH_USERNAME}@127.0.0.1:${REMOTE_RUNNER_LOG}" \
+            scp $SSH_OPTS -P "$SSH_PORT" \
+            "${REMOTE_SSH_USERNAME}@$SSH_DEST:${REMOTE_RUNNER_LOG}" \
             "$REMOTE_OUTPUT_FILE" >/dev/null 2>&1; then
             sshpass -p "$SSH_PASSWORD" \
-              ssh $SSH_OPTS -p 2222 "${REMOTE_SSH_USERNAME}@127.0.0.1" \
+              ssh $SSH_OPTS -p "$SSH_PORT" "${REMOTE_SSH_USERNAME}@$SSH_DEST" \
               "cat '${REMOTE_RUNNER_LOG}' 2>/dev/null" >"$REMOTE_OUTPUT_FILE" || true
           fi
           set -e
@@ -396,9 +403,9 @@ jobs:
           python3 scripts/keepalive_result_helper.py merge-sample-metrics \
             "$RESULT_FILE" "$SAMPLE_FILE"
 
-          if sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -p 2222 "${REMOTE_SSH_USERNAME}@127.0.0.1" "test -f /tmp/prediction_result.json"; then
-            sshpass -p "$SSH_PASSWORD" scp $SSH_OPTS -P 2222 \
-              "${REMOTE_SSH_USERNAME}@127.0.0.1:/tmp/prediction_result.json" \
+          if sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -p "$SSH_PORT" "${REMOTE_SSH_USERNAME}@$SSH_DEST" "test -f /tmp/prediction_result.json"; then
+            sshpass -p "$SSH_PASSWORD" scp $SSH_OPTS -P "$SSH_PORT" \
+              "${REMOTE_SSH_USERNAME}@$SSH_DEST:/tmp/prediction_result.json" \
               "$PREDICTION_FILE" >/dev/null
           fi
 

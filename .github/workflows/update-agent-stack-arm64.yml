@@ -244,21 +244,28 @@ jobs:
 
           SSH_OPTS="-o ConnectTimeout=30 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ServerAliveInterval=60"
 
+          SSH_DEST="127.0.0.1"; SSH_PORT="2222"; TUNNEL_PID=""
+          if [[ "$SSH_HOST" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            SSH_DEST="$SSH_HOST"; SSH_PORT="22"
+            sleep 3600 & TUNNEL_PID=$!
+            echo ">>> 直连模式 (transport=direct): ${SSH_DEST}:${SSH_PORT}"
+          else
           case "$SSH_HOST" in
             *555606.xyz) CF_ACC_ID="$CF_ACC_ID_555606"; CF_ACC_SECRET="$CF_ACC_SECRET_555606" ;;
             *) CF_ACC_ID="$CF_ACC_ID_HHWPXH"; CF_ACC_SECRET="$CF_ACC_SECRET_HHWPXH" ;;
           esac
           env TUNNEL_SERVICE_TOKEN_ID="$CF_ACC_ID" TUNNEL_SERVICE_TOKEN_SECRET="$CF_ACC_SECRET" cloudflared access ssh --hostname "$SSH_HOST" --url "ssh://127.0.0.1:2222" >/dev/null 2>&1 &
           TUNNEL_PID=$!
+          fi
 
           for _ in $(seq 1 20); do
-            if nc -z 127.0.0.1 2222; then
+            if nc -z "$SSH_DEST" "$SSH_PORT"; then
               break
             fi
             sleep 1
           done
 
-          if ! nc -z 127.0.0.1 2222; then
+          if ! nc -z "$SSH_DEST" "$SSH_PORT"; then
             python3 scripts/workflow_result_helper.py write-result \
               "$RESULT_FILE" "$HOST_NAME" "$HOST_INDEX" "tunnel_failed" "cloudflared ssh tunnel not ready"
             exit 1
@@ -274,7 +281,7 @@ jobs:
               sleep 10
             fi
             sshpass -p "$SSH_PASSWORD" \
-              ssh $SSH_OPTS -p 2222 "${SSH_USERNAME}@127.0.0.1" \
+              ssh $SSH_OPTS -p "$SSH_PORT" "${SSH_USERNAME}@$SSH_DEST" \
               "set -euo pipefail
                export BLOG_GITHUB_TOKEN='${BLOG_GITHUB_TOKEN}'
                export AGENTBRIDGE_GITHUB_TOKEN='${AGENTBRIDGE_GITHUB_TOKEN}'

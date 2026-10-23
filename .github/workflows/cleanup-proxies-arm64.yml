@@ -110,12 +110,19 @@ jobs:
             
             pkill -f "cloudflared.*2222" 2>/dev/null || true
             sleep 2
+            SSH_DEST="127.0.0.1"; SSH_PORT="2222"; TUNNEL_PID=""
+            if [[ "$SSH_HOST" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              SSH_DEST="$SSH_HOST"; SSH_PORT="22"
+              sleep 3600 & TUNNEL_PID=$!
+              echo ">>> 直连模式 (transport=direct): ${SSH_DEST}:${SSH_PORT}"
+            else
             case "$SSH_HOST" in
               *555606.xyz) CF_ACC_ID="$CF_ACC_ID_555606"; CF_ACC_SECRET="$CF_ACC_SECRET_555606" ;;
               *) CF_ACC_ID="$CF_ACC_ID_HHWPXH"; CF_ACC_SECRET="$CF_ACC_SECRET_HHWPXH" ;;
             esac
             env TUNNEL_SERVICE_TOKEN_ID="$CF_ACC_ID" TUNNEL_SERVICE_TOKEN_SECRET="$CF_ACC_SECRET" cloudflared access ssh --hostname "$SSH_HOST" --url "ssh://127.0.0.1:2222" &
             TUNNEL_PID=$!
+            fi
             sleep 5
             
             if ! kill -0 $TUNNEL_PID 2>/dev/null; then
@@ -125,7 +132,7 @@ jobs:
             
             echo ">>> 开始清理..."
             
-            sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" "
+            sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p "$SSH_PORT" "${SSH_USERNAME}@$SSH_DEST" "
               # 1. 清理 deploy-vless-amd64.yml 部署的服务 (Legacy Xray)
               if sudo systemctl is-active xray-vless > /dev/null 2>&1 || [ -f /etc/systemd/system/xray-vless.service ]; then
                   echo '>>> 发现 xray-vless 服务，正在移除...'

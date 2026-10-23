@@ -215,12 +215,19 @@ jobs:
             
             pkill -f "cloudflared.*2222" 2>/dev/null || true
             sleep 2
+            SSH_DEST="127.0.0.1"; SSH_PORT="2222"; TUNNEL_PID=""
+            if [[ "$SSH_HOST" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              SSH_DEST="$SSH_HOST"; SSH_PORT="22"
+              sleep 3600 & TUNNEL_PID=$!
+              echo ">>> 直连模式 (transport=direct): ${SSH_DEST}:${SSH_PORT}"
+            else
             case "$SSH_HOST" in
               *555606.xyz) CF_ACC_ID="$CF_ACC_ID_555606"; CF_ACC_SECRET="$CF_ACC_SECRET_555606" ;;
               *) CF_ACC_ID="$CF_ACC_ID_HHWPXH"; CF_ACC_SECRET="$CF_ACC_SECRET_HHWPXH" ;;
             esac
             env TUNNEL_SERVICE_TOKEN_ID="$CF_ACC_ID" TUNNEL_SERVICE_TOKEN_SECRET="$CF_ACC_SECRET" cloudflared access ssh --hostname "$SSH_HOST" --url "ssh://127.0.0.1:2222" &
             TUNNEL_PID=$!
+            fi
             sleep 5
             
             if ! kill -0 $TUNNEL_PID 2>/dev/null; then
@@ -231,7 +238,7 @@ jobs:
             
             DOMAIN_HOST_COUNT=$((DOMAIN_HOST_COUNT + 1))
             
-            PUBLIC_IP=$(sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${CURRENT_SSH_USER}@127.0.0.1" 'curl -4 -s ip.sb' 2>&1) || true
+            PUBLIC_IP=$(sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p "$SSH_PORT" "${CURRENT_SSH_USER}@$SSH_DEST" 'curl -4 -s ip.sb' 2>&1) || true
             PUBLIC_IP=$(echo "$PUBLIC_IP" | grep -oE "\b([0-9]{1,3}\.){3}[0-9]{1,3}\b" | head -1)
             if [ -z "$PUBLIC_IP" ]; then
               echo "❌ 无法获取公网 IP"
@@ -309,7 +316,7 @@ jobs:
             fi
             
             echo ">>> 检查 iptables 端口..."
-            sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${CURRENT_SSH_USER}@127.0.0.1" "
+            sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p "$SSH_PORT" "${CURRENT_SSH_USER}@$SSH_DEST" "
               echo '#!/bin/sh' > ~/.askpass.sh; echo 'echo \"$SSH_PASSWORD\"' >> ~/.askpass.sh; chmod +x ~/.askpass.sh; export SUDO_ASKPASS=~/.askpass.sh; sudo() { command sudo -A \"\$@\"; }; export -f sudo;
               export DEBIAN_FRONTEND=noninteractive
               sudo apt-get update -qq 2>/dev/null || true
@@ -330,10 +337,10 @@ jobs:
             " 2>&1 || true
             echo "✅ iptables 端口检查完成"
             
-            SERVICE_ACTIVE=$(sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${CURRENT_SSH_USER}@127.0.0.1" "echo '#!/bin/sh' > ~/.askpass.sh; echo 'echo \"\$SSH_PASSWORD\"' >> ~/.askpass.sh; chmod +x ~/.askpass.sh; export SUDO_ASKPASS=~/.askpass.sh; sudo() { command sudo -A \"\$@\"; }; export -f sudo; sudo systemctl is-active hysteria-server 2>/dev/null || echo 'inactive'" 2>&1 | tail -1) || true
+            SERVICE_ACTIVE=$(sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p "$SSH_PORT" "${CURRENT_SSH_USER}@$SSH_DEST" "echo '#!/bin/sh' > ~/.askpass.sh; echo 'echo \"\$SSH_PASSWORD\"' >> ~/.askpass.sh; chmod +x ~/.askpass.sh; export SUDO_ASKPASS=~/.askpass.sh; sudo() { command sudo -A \"\$@\"; }; export -f sudo; sudo systemctl is-active hysteria-server 2>/dev/null || echo 'inactive'" 2>&1 | tail -1) || true
             
             if [ "$SERVICE_ACTIVE" = "active" ]; then
-              CONFIG_DOMAIN=$(sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${CURRENT_SSH_USER}@127.0.0.1" "grep -oP 'cert: /etc/letsencrypt/live/\K[^/]+' /etc/hysteria/config.yaml 2>/dev/null || echo 'UNKNOWN'" 2>&1 | tail -1) || true
+              CONFIG_DOMAIN=$(sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p "$SSH_PORT" "${CURRENT_SSH_USER}@$SSH_DEST" "grep -oP 'cert: /etc/letsencrypt/live/\K[^/]+' /etc/hysteria/config.yaml 2>/dev/null || echo 'UNKNOWN'" 2>&1 | tail -1) || true
               if [ "$CONFIG_DOMAIN" != "$PROXY_DOMAIN_LC" ]; then
                 echo "⚠️ 配置域名不匹配: 当前='$CONFIG_DOMAIN', 应为='$PROXY_DOMAIN_LC'"
                 CONFIG_VALID="no"
@@ -341,7 +348,7 @@ jobs:
                 CONFIG_VALID="yes"
               fi
               # 检查证书是否已过期或即将过期 (30天内)
-              CERT_EXPIRY=$(sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${CURRENT_SSH_USER}@127.0.0.1" "echo '#!/bin/sh' > ~/.askpass.sh; echo 'echo \"\$SSH_PASSWORD\"' >> ~/.askpass.sh; chmod +x ~/.askpass.sh; export SUDO_ASKPASS=~/.askpass.sh; sudo() { command sudo -A \"\$@\"; }; export -f sudo; sudo openssl x509 -in /etc/letsencrypt/live/${PROXY_DOMAIN_LC}/fullchain.pem -noout -enddate 2>/dev/null | cut -d= -f2" 2>&1 | tail -1) || true
+              CERT_EXPIRY=$(sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p "$SSH_PORT" "${CURRENT_SSH_USER}@$SSH_DEST" "echo '#!/bin/sh' > ~/.askpass.sh; echo 'echo \"\$SSH_PASSWORD\"' >> ~/.askpass.sh; chmod +x ~/.askpass.sh; export SUDO_ASKPASS=~/.askpass.sh; sudo() { command sudo -A \"\$@\"; }; export -f sudo; sudo openssl x509 -in /etc/letsencrypt/live/${PROXY_DOMAIN_LC}/fullchain.pem -noout -enddate 2>/dev/null | cut -d= -f2" 2>&1 | tail -1) || true
               if [ -z "$CERT_EXPIRY" ]; then
                 echo "⚠️ 证书文件缺失: /etc/letsencrypt/live/${PROXY_DOMAIN_LC}/fullchain.pem"
                 CONFIG_VALID="no"
@@ -378,11 +385,11 @@ jobs:
             
             echo ">>> 开始部署..."
             echo ">>> 检查 SSL..."
-            CERT_EXISTS=$(sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${CURRENT_SSH_USER}@127.0.0.1" "echo '#!/bin/sh' > ~/.askpass.sh; echo 'echo \"\$SSH_PASSWORD\"' >> ~/.askpass.sh; chmod +x ~/.askpass.sh; export SUDO_ASKPASS=~/.askpass.sh; sudo() { command sudo -A \"\$@\"; }; export -f sudo; sudo test -f /etc/letsencrypt/live/${PROXY_DOMAIN_LC}/fullchain.pem && echo CERT_FOUND || echo CERT_MISSING" 2>/dev/null | tail -1) || true
+            CERT_EXISTS=$(sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p "$SSH_PORT" "${CURRENT_SSH_USER}@$SSH_DEST" "echo '#!/bin/sh' > ~/.askpass.sh; echo 'echo \"\$SSH_PASSWORD\"' >> ~/.askpass.sh; chmod +x ~/.askpass.sh; export SUDO_ASKPASS=~/.askpass.sh; sudo() { command sudo -A \"\$@\"; }; export -f sudo; sudo test -f /etc/letsencrypt/live/${PROXY_DOMAIN_LC}/fullchain.pem && echo CERT_FOUND || echo CERT_MISSING" 2>/dev/null | tail -1) || true
             
             if [ "$CERT_EXISTS" != "CERT_FOUND" ]; then
               echo ">>> 申请 SSL 证书..."
-              sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${CURRENT_SSH_USER}@127.0.0.1" "
+              sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p "$SSH_PORT" "${CURRENT_SSH_USER}@$SSH_DEST" "
                 echo '#!/bin/sh' > ~/.askpass.sh; echo 'echo \"$SSH_PASSWORD\"' >> ~/.askpass.sh; chmod +x ~/.askpass.sh; export SUDO_ASKPASS=~/.askpass.sh; sudo() { command sudo -A \"\$@\"; }; export -f sudo;
                 which certbot > /dev/null 2>&1 || (sudo apt-get update -qq && sudo apt-get install -y -qq certbot)
                 sudo systemctl stop nginx caddy 2>/dev/null || true
@@ -397,7 +404,7 @@ jobs:
                 sudo systemctl start nginx caddy 2>/dev/null || true
               " 2>&1
               
-              if sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${CURRENT_SSH_USER}@127.0.0.1" "echo '#!/bin/sh' > ~/.askpass.sh; echo 'echo \"\$SSH_PASSWORD\"' >> ~/.askpass.sh; chmod +x ~/.askpass.sh; export SUDO_ASKPASS=~/.askpass.sh; sudo() { command sudo -A \"\$@\"; }; export -f sudo; sudo test -f /etc/letsencrypt/live/${PROXY_DOMAIN_LC}/fullchain.pem" 2>/dev/null; then
+              if sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p "$SSH_PORT" "${CURRENT_SSH_USER}@$SSH_DEST" "echo '#!/bin/sh' > ~/.askpass.sh; echo 'echo \"\$SSH_PASSWORD\"' >> ~/.askpass.sh; chmod +x ~/.askpass.sh; export SUDO_ASKPASS=~/.askpass.sh; sudo() { command sudo -A \"\$@\"; }; export -f sudo; sudo test -f /etc/letsencrypt/live/${PROXY_DOMAIN_LC}/fullchain.pem" 2>/dev/null; then
                 echo "✅ SSL 证书获取成功"
               else
                 echo "❌ SSL 证书获取失败"
@@ -410,7 +417,7 @@ jobs:
             fi
                         
             echo ">>> 检查/安装 Hysteria..."
-            sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${CURRENT_SSH_USER}@127.0.0.1" "
+            sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p "$SSH_PORT" "${CURRENT_SSH_USER}@$SSH_DEST" "
                 echo '#!/bin/sh' > ~/.askpass.sh; echo 'echo \"$SSH_PASSWORD\"' >> ~/.askpass.sh; chmod +x ~/.askpass.sh; export SUDO_ASKPASS=~/.askpass.sh; sudo() { command sudo -A \"\$@\"; }; export -f sudo;
                 NEED_INSTALL=false
                 if [ ! -f /usr/local/bin/hysteria-server ]; then
@@ -432,9 +439,9 @@ jobs:
             " 2>&1 || true
 
             echo ">>> 更新配置文件..."
-            sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${CURRENT_SSH_USER}@127.0.0.1" "echo '#!/bin/sh' > ~/.askpass.sh; echo 'echo \"\$SSH_PASSWORD\"' >> ~/.askpass.sh; chmod +x ~/.askpass.sh; export SUDO_ASKPASS=~/.askpass.sh; sudo() { command sudo -A \"\$@\"; }; export -f sudo; sudo mkdir -p /etc/hysteria" 2>&1 || true
+            sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p "$SSH_PORT" "${CURRENT_SSH_USER}@$SSH_DEST" "echo '#!/bin/sh' > ~/.askpass.sh; echo 'echo \"\$SSH_PASSWORD\"' >> ~/.askpass.sh; chmod +x ~/.askpass.sh; export SUDO_ASKPASS=~/.askpass.sh; sudo() { command sudo -A \"\$@\"; }; export -f sudo; sudo mkdir -p /etc/hysteria" 2>&1 || true
             
-            sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${CURRENT_SSH_USER}@127.0.0.1" "cat > /tmp/config.yaml << EOFHY
+            sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p "$SSH_PORT" "${CURRENT_SSH_USER}@$SSH_DEST" "cat > /tmp/config.yaml << EOFHY
           listen: :2443
           tls:
             cert: /etc/letsencrypt/live/${PROXY_DOMAIN_LC}/fullchain.pem
@@ -479,12 +486,12 @@ jobs:
           WantedBy=multi-user.target"
             
             UNIT_B64=$(echo "$SYSTEMD_UNIT" | base64 -w 0)
-            sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${CURRENT_SSH_USER}@127.0.0.1" "echo '#!/bin/sh' > ~/.askpass.sh; echo 'echo \"\$SSH_PASSWORD\"' >> ~/.askpass.sh; chmod +x ~/.askpass.sh; export SUDO_ASKPASS=~/.askpass.sh; sudo() { command sudo -A \"\$@\"; }; export -f sudo; echo '$UNIT_B64' | base64 -d | sudo tee /etc/systemd/system/hysteria-server.service > /dev/null && sudo systemctl daemon-reload" 2>&1 || true
+            sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p "$SSH_PORT" "${CURRENT_SSH_USER}@$SSH_DEST" "echo '#!/bin/sh' > ~/.askpass.sh; echo 'echo \"\$SSH_PASSWORD\"' >> ~/.askpass.sh; chmod +x ~/.askpass.sh; export SUDO_ASKPASS=~/.askpass.sh; sudo() { command sudo -A \"\$@\"; }; export -f sudo; echo '$UNIT_B64' | base64 -d | sudo tee /etc/systemd/system/hysteria-server.service > /dev/null && sudo systemctl daemon-reload" 2>&1 || true
 
             echo ">>> 启动服务..."
             SERVICE_OK="no"
             for RETRY in 1 2 3; do
-                sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${CURRENT_SSH_USER}@127.0.0.1" "
+                sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p "$SSH_PORT" "${CURRENT_SSH_USER}@$SSH_DEST" "
                     echo '#!/bin/sh' > ~/.askpass.sh; echo 'echo \"$SSH_PASSWORD\"' >> ~/.askpass.sh; chmod +x ~/.askpass.sh; export SUDO_ASKPASS=~/.askpass.sh; sudo() { command sudo -A \"\$@\"; }; export -f sudo;
                     sudo systemctl enable hysteria-server
                     sudo systemctl restart hysteria-server

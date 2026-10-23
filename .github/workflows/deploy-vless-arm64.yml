@@ -194,12 +194,19 @@ jobs:
             
             pkill -f "cloudflared.*2222" 2>/dev/null || true
             sleep 2
+            SSH_DEST="127.0.0.1"; SSH_PORT="2222"; TUNNEL_PID=""
+            if [[ "$SSH_HOST" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              SSH_DEST="$SSH_HOST"; SSH_PORT="22"
+              sleep 3600 & TUNNEL_PID=$!
+              echo ">>> 直连模式 (transport=direct): ${SSH_DEST}:${SSH_PORT}"
+            else
             case "$SSH_HOST" in
               *555606.xyz) CF_ACC_ID="$CF_ACC_ID_555606"; CF_ACC_SECRET="$CF_ACC_SECRET_555606" ;;
               *) CF_ACC_ID="$CF_ACC_ID_HHWPXH"; CF_ACC_SECRET="$CF_ACC_SECRET_HHWPXH" ;;
             esac
             env TUNNEL_SERVICE_TOKEN_ID="$CF_ACC_ID" TUNNEL_SERVICE_TOKEN_SECRET="$CF_ACC_SECRET" cloudflared access ssh --hostname "$SSH_HOST" --url "ssh://127.0.0.1:2222" &
             TUNNEL_PID=$!
+            fi
             sleep 5
             
             if ! kill -0 $TUNNEL_PID 2>/dev/null; then
@@ -211,7 +218,7 @@ jobs:
             # 如果 vless_host 和 proxy_domains 均为空，则清理 VLESS 服务
             if ([ "$VLESS_HOST" = "null" ] || [ -z "$VLESS_HOST" ]) && ([ "$PROXY_DOMAIN" = "null" ] || [ -z "$PROXY_DOMAIN" ]); then
               echo ">>> 节点配置为空，清理 Xray VLESS 服务并跳过: host=$HOST_NAME vless_host=${VLESS_HOST:-<empty>} proxy_domains=${PROXY_DOMAIN:-<empty>}"
-              sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" "
+              sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p "$SSH_PORT" "${SSH_USERNAME}@$SSH_DEST" "
                 echo '#!/bin/sh' > ~/.askpass.sh; echo 'echo \"$SSH_PASSWORD\"' >> ~/.askpass.sh; chmod +x ~/.askpass.sh; export SUDO_ASKPASS=~/.askpass.sh; sudo() { command sudo -A \"\$@\"; }; export -f sudo;
                 sudo systemctl stop xray-vless 2>/dev/null || true
                 sudo systemctl disable xray-vless 2>/dev/null || true
@@ -224,8 +231,8 @@ jobs:
               continue
             fi
 
-            HOST_IPV4=$(sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" 'curl -s4 -m 10 ipv4.icanhazip.com || curl -s4 -m 10 ifconfig.me' 2>/dev/null | tr -d '[:space:]') || true
-            HOST_IPV6=$(sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" 'curl -s6 -m 10 ipv6.icanhazip.com || curl -s6 -m 10 ifconfig.me' 2>/dev/null | tr -d '[:space:]') || true
+            HOST_IPV4=$(sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p "$SSH_PORT" "${SSH_USERNAME}@$SSH_DEST" 'curl -s4 -m 10 ipv4.icanhazip.com || curl -s4 -m 10 ifconfig.me' 2>/dev/null | tr -d '[:space:]') || true
+            HOST_IPV6=$(sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p "$SSH_PORT" "${SSH_USERNAME}@$SSH_DEST" 'curl -s6 -m 10 ipv6.icanhazip.com || curl -s6 -m 10 ifconfig.me' 2>/dev/null | tr -d '[:space:]') || true
             if [ -n "$HOST_IPV4" ] || [ -n "$HOST_IPV6" ]; then
               echo ">>> 主机公网 IP: IPv4=${HOST_IPV4:-none} IPv6=${HOST_IPV6:-none}"
             else
@@ -241,7 +248,7 @@ jobs:
             fi
             
             # 检查 xray-vless 服务状态 (使用 systemd)
-            SERVICE_ACTIVE=$(sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" "echo '#!/bin/sh' > ~/.askpass.sh; echo 'echo \"$SSH_PASSWORD\"' >> ~/.askpass.sh; chmod +x ~/.askpass.sh; export SUDO_ASKPASS=~/.askpass.sh; sudo() { command sudo -A \"\$@\"; }; export -f sudo; sudo systemctl is-active xray-vless 2>/dev/null || echo 'inactive'" 2>&1 | tail -1) || true
+            SERVICE_ACTIVE=$(sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p "$SSH_PORT" "${SSH_USERNAME}@$SSH_DEST" "echo '#!/bin/sh' > ~/.askpass.sh; echo 'echo \"$SSH_PASSWORD\"' >> ~/.askpass.sh; chmod +x ~/.askpass.sh; export SUDO_ASKPASS=~/.askpass.sh; sudo() { command sudo -A \"\$@\"; }; export -f sudo; sudo systemctl is-active xray-vless 2>/dev/null || echo 'inactive'" 2>&1 | tail -1) || true
             
             if [ "$SERVICE_ACTIVE" = "active" ] && [ "$FORCE_REDEPLOY" != "true" ]; then
               echo "⏭️ 服务运行中，检查配置后跳过"
@@ -541,7 +548,7 @@ jobs:
             fi
 
             echo ">>> 传输 Xray 安装包到远端..."
-            if ! sshpass -p "$SSH_PASSWORD" scp $SSH_OPTS -P 2222 "$XRAY_CACHE_PATH" "${SSH_USERNAME}@127.0.0.1:/tmp/xray.zip" >/dev/null 2>&1; then
+            if ! sshpass -p "$SSH_PASSWORD" scp $SSH_OPTS -P "$SSH_PORT" "$XRAY_CACHE_PATH" "${SSH_USERNAME}@$SSH_DEST:/tmp/xray.zip" >/dev/null 2>&1; then
               echo "❌ Xray 安装包传输失败: $HOST_NAME"
               FAILED_COUNT=$((FAILED_COUNT + 1))
               kill $TUNNEL_PID 2>/dev/null || true
@@ -549,7 +556,7 @@ jobs:
             fi
 
             echo ">>> 检查/安装 Xray..."
-            sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" "
+            sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p "$SSH_PORT" "${SSH_USERNAME}@$SSH_DEST" "
               echo '#!/bin/sh' > ~/.askpass.sh; echo 'echo \"$SSH_PASSWORD\"' >> ~/.askpass.sh; chmod +x ~/.askpass.sh; export SUDO_ASKPASS=~/.askpass.sh; sudo() { command sudo -A \"\$@\"; }; export -f sudo;
               # 安装必要工具 (Firewall & Unzip)
               export DEBIAN_FRONTEND=noninteractive
@@ -666,17 +673,17 @@ jobs:
             
             # 使用 base64 传输 JSON 以避免转义问题
             CONFIG_B64=$(echo "$XRAY_CONFIG" | base64 -w 0)
-            sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" "echo '#!/bin/sh' > ~/.askpass.sh; echo 'echo \"$SSH_PASSWORD\"' >> ~/.askpass.sh; chmod +x ~/.askpass.sh; export SUDO_ASKPASS=~/.askpass.sh; sudo() { command sudo -A \"\$@\"; }; export -f sudo; sudo mkdir -p /etc/xray && echo '$CONFIG_B64' | base64 -d | sudo tee /etc/xray/config.json > /dev/null" 2>&1 || true
+            sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p "$SSH_PORT" "${SSH_USERNAME}@$SSH_DEST" "echo '#!/bin/sh' > ~/.askpass.sh; echo 'echo \"$SSH_PASSWORD\"' >> ~/.askpass.sh; chmod +x ~/.askpass.sh; export SUDO_ASKPASS=~/.askpass.sh; sudo() { command sudo -A \"\$@\"; }; export -f sudo; sudo mkdir -p /etc/xray && echo '$CONFIG_B64' | base64 -d | sudo tee /etc/xray/config.json > /dev/null" 2>&1 || true
             
             echo ">>> 创建 systemd 服务..."
             SYSTEMD_SERVICE="W1VuaXRdCkRlc2NyaXB0aW9uPVhyYXkgVkxFU1MgU2VydmljZQpBZnRlcj1uZXR3b3JrLnRhcmdldAoKW1NlcnZpY2VdClR5cGU9c2ltcGxlCkV4ZWNTdGFydD0vdXNyL2xvY2FsL2Jpbi94cmF5IHJ1biAtY29uZmlnIC9ldGMveHJheS9jb25maWcuanNvbgpSZXN0YXJ0PW9uLWZhaWx1cmUKUmVzdGFydFNlYz0zCgpbSW5zdGFsbF0KV2FudGVkQnk9bXVsdGktdXNlci50YXJnZXQK"
-            sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" "echo '#!/bin/sh' > ~/.askpass.sh; echo 'echo \"$SSH_PASSWORD\"' >> ~/.askpass.sh; chmod +x ~/.askpass.sh; export SUDO_ASKPASS=~/.askpass.sh; sudo() { command sudo -A \"\$@\"; }; export -f sudo; echo '$SYSTEMD_SERVICE' | base64 -d | sudo tee /etc/systemd/system/xray-vless.service > /dev/null && sudo systemctl daemon-reload" 2>&1 || true
+            sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p "$SSH_PORT" "${SSH_USERNAME}@$SSH_DEST" "echo '#!/bin/sh' > ~/.askpass.sh; echo 'echo \"$SSH_PASSWORD\"' >> ~/.askpass.sh; chmod +x ~/.askpass.sh; export SUDO_ASKPASS=~/.askpass.sh; sudo() { command sudo -A \"\$@\"; }; export -f sudo; echo '$SYSTEMD_SERVICE' | base64 -d | sudo tee /etc/systemd/system/xray-vless.service > /dev/null && sudo systemctl daemon-reload" 2>&1 || true
             
             echo ">>> 启动 Xray 服务..."
             SERVICE_OK="no"
             for RETRY in 1 2 3; do
               echo ">>> 尝试启动 (第 $RETRY 次)..."
-              sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" "
+              sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p "$SSH_PORT" "${SSH_USERNAME}@$SSH_DEST" "
                 echo '#!/bin/sh' > ~/.askpass.sh; echo 'echo \"$SSH_PASSWORD\"' >> ~/.askpass.sh; chmod +x ~/.askpass.sh; export SUDO_ASKPASS=~/.askpass.sh; sudo() { command sudo -A \"\$@\"; }; export -f sudo;
                 sudo systemctl stop xray-vless 2>/dev/null || true
                 sudo systemctl enable xray-vless

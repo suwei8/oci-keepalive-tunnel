@@ -137,6 +137,10 @@ jobs:
           HOST_INDEX: ${{ matrix.index }}
           HOST_NAME: ${{ matrix.name }}
           SSH_HOST: ${{ matrix.ssh_host }}
+          CF_ACC_ID_555606: ${{ secrets.CF_ACCESS_ID_555606 }}
+          CF_ACC_SECRET_555606: ${{ secrets.CF_ACCESS_SECRET_555606 }}
+          CF_ACC_ID_HHWPXH: ${{ secrets.CF_ACCESS_ID_HHWPXH }}
+          CF_ACC_SECRET_HHWPXH: ${{ secrets.CF_ACCESS_SECRET_HHWPXH }}
           SSH_USERNAME: ${{ secrets.SSH_USERNAME }}
           SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }}
           SAMPLE_INTERVAL_SECONDS: "10"
@@ -163,11 +167,22 @@ jobs:
 
           SSH_OPTS="-o ConnectTimeout=30 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ServerAliveInterval=30 -o PreferredAuthentications=password -o PubkeyAuthentication=no"
 
-          cloudflared access tcp --hostname "$SSH_HOST" --url "tcp://127.0.0.1:2222" >"$CLOUDFLARED_LOG" 2>&1 &
-          TUNNEL_PID=$!
+          SSH_DEST="127.0.0.1"; SSH_PORT="2222"
+          if [[ "$SSH_HOST" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            SSH_DEST="$SSH_HOST"; SSH_PORT="22"
+            sleep 3600 & TUNNEL_PID=$!
+            echo ">>> 直连模式 (transport=direct): ${SSH_DEST}:${SSH_PORT}"
+          else
+            case "$SSH_HOST" in
+              *555606.xyz) CF_ACC_ID="$CF_ACC_ID_555606"; CF_ACC_SECRET="$CF_ACC_SECRET_555606" ;;
+              *) CF_ACC_ID="$CF_ACC_ID_HHWPXH"; CF_ACC_SECRET="$CF_ACC_SECRET_HHWPXH" ;;
+            esac
+            env TUNNEL_SERVICE_TOKEN_ID="$CF_ACC_ID" TUNNEL_SERVICE_TOKEN_SECRET="$CF_ACC_SECRET" cloudflared access tcp --hostname "$SSH_HOST" --url "tcp://127.0.0.1:2222" >"$CLOUDFLARED_LOG" 2>&1 &
+            TUNNEL_PID=$!
+          fi
 
           for _ in $(seq 1 30); do
-            if nc -z 127.0.0.1 2222; then
+            if nc -z "$SSH_DEST" "$SSH_PORT"; then
               break
             fi
             if ! kill -0 "$TUNNEL_PID" 2>/dev/null; then
@@ -176,14 +191,14 @@ jobs:
             sleep 1
           done
 
-          if ! nc -z 127.0.0.1 2222; then
+          if ! nc -z "$SSH_DEST" "$SSH_PORT"; then
             python3 scripts/resource_monitor_helper.py update-result \
               "$RESULT_FILE" "tunnel_failed" "cloudflared tcp tunnel not ready"
             exit 1
           fi
 
           set +e
-          sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -p 2222 "${SSH_USERNAME}@127.0.0.1" \
+          sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -p "$SSH_PORT" "${SSH_USERNAME}@$SSH_DEST" \
             "export SAMPLE_INTERVAL_SECONDS='${SAMPLE_INTERVAL_SECONDS}'; \
              export MONITOR_DURATION_SECONDS='${MONITOR_DURATION_SECONDS}'; \
              bash -s" <<'EOF_REMOTE' >"$SAMPLE_FILE" 2>"$STDERR_FILE"
