@@ -188,6 +188,12 @@ jobs:
                   CONFIG_VALID="no"
               else
                   CONFIG_VALID="yes"
+                  # 域名轮换后配置可能已指向新域名但证书从未签发
+                  CERT_PRESENT=$(run_remote "sudo test -f /etc/letsencrypt/live/${PROXY_DOMAIN_LC}/fullchain.pem && echo CERT_FOUND || echo CERT_MISSING" 2>/dev/null | tail -1) || true
+                  if [ "$CERT_PRESENT" != "CERT_FOUND" ]; then
+                      echo "⚠️ 证书文件缺失: /etc/letsencrypt/live/${PROXY_DOMAIN_LC}/fullchain.pem"
+                      CONFIG_VALID="no"
+                  fi
               fi
           else
               CONFIG_VALID="no"
@@ -216,7 +222,7 @@ jobs:
             echo ">>> 申请 SSL 证书..."
             run_remote "
               which certbot > /dev/null 2>&1 || (sudo apt-get update -qq && sudo apt-get install -y -qq certbot)
-              sudo systemctl stop nginx 2>/dev/null || true
+              sudo systemctl stop nginx caddy 2>/dev/null || true
               sudo fuser -k 80/tcp 2>/dev/null || true
               sleep 2
               # 证书文件缺失时，强制清理所有旧 certbot 数据后重新签发
@@ -224,8 +230,8 @@ jobs:
               echo '>>> 清理旧证书数据...'
               sudo certbot delete --cert-name ${PROXY_DOMAIN_LC} --non-interactive 2>/dev/null || true
               sudo rm -rf /etc/letsencrypt/live/${PROXY_DOMAIN_LC} /etc/letsencrypt/archive/${PROXY_DOMAIN_LC} /etc/letsencrypt/renewal/${PROXY_DOMAIN_LC}.conf 2>/dev/null || true
-              sudo certbot certonly --standalone -d ${PROXY_DOMAIN} --non-interactive --agree-tos --email ${CF_API_EMAIL} --http-01-port 80 --pre-hook \"systemctl stop nginx\" --post-hook \"systemctl start nginx\" || true
-              sudo systemctl start nginx 2>/dev/null || true
+              sudo certbot certonly --standalone -d ${PROXY_DOMAIN} --non-interactive --agree-tos --email ${CF_API_EMAIL} --http-01-port 80 --pre-hook \"systemctl stop nginx; systemctl stop caddy; true\" --post-hook \"systemctl start nginx; systemctl start caddy; true\" || true
+              sudo systemctl start nginx caddy 2>/dev/null || true
             " 2>&1
             
              if run_remote "sudo test -f /etc/letsencrypt/live/${PROXY_DOMAIN_LC}/fullchain.pem" 2>/dev/null; then
