@@ -85,7 +85,7 @@ jobs:
               *555606.xyz) CF_ACC_ID="${{ secrets.CF_ACCESS_ID_555606 }}"; CF_ACC_SECRET="${{ secrets.CF_ACCESS_SECRET_555606 }}" ;;
               *) CF_ACC_ID="${{ secrets.CF_ACCESS_ID_HHWPXH }}"; CF_ACC_SECRET="${{ secrets.CF_ACCESS_SECRET_HHWPXH }}" ;;
             esac
-            env CF_ACCESS_CLIENT_ID="$CF_ACC_ID" CF_ACCESS_CLIENT_SECRET="$CF_ACC_SECRET" cloudflared access ssh --hostname "$SSH_HOST" --url "ssh://127.0.0.1:2222" &
+            env TUNNEL_SERVICE_TOKEN_ID="$CF_ACC_ID" TUNNEL_SERVICE_TOKEN_SECRET="$CF_ACC_SECRET" cloudflared access ssh --hostname "$SSH_HOST" --url "ssh://127.0.0.1:2222" &
             TUNNEL_PID=$!
             sleep 5
             
