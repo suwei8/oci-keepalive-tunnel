@@ -322,3 +322,4 @@ jobs:
             echo "" >> "$GITHUB_STEP_SUMMARY"
             echo "No results found." >> "$GITHUB_STEP_SUMMARY"
           fi
+
