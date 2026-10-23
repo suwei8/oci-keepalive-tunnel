@@ -59,7 +59,7 @@ jobs:
           CF_ACC_ID_HHWPXH: ${{ secrets.CF_ACCESS_ID_HHWPXH }}
           CF_ACC_SECRET_HHWPXH: ${{ secrets.CF_ACCESS_SECRET_HHWPXH }}
           HOSTS_CONFIG_URL: ${{ secrets.HOSTS_CONFIG_URL }}
-          SSH_USERNAME: ${{ secrets.AMD_SSH_USERNAME }}
+          SSH_USERNAME: ${{ secrets.SSH_USERNAME }}
           SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }}
           TARGET_HOST: ${{ github.event.inputs.target_host }}
         run: |
