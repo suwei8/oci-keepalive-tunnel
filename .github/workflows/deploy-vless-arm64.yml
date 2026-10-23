@@ -51,6 +51,10 @@ jobs:
       - name: Deploy to all hosts
         id: deploy
         env:
+          CF_ACC_ID_555606: ${{ secrets.CF_ACCESS_ID_555606 }}
+          CF_ACC_SECRET_555606: ${{ secrets.CF_ACCESS_SECRET_555606 }}
+          CF_ACC_ID_HHWPXH: ${{ secrets.CF_ACCESS_ID_HHWPXH }}
+          CF_ACC_SECRET_HHWPXH: ${{ secrets.CF_ACCESS_SECRET_HHWPXH }}
           HOSTS_CONFIG_URL: ${{ secrets.HOSTS_CONFIG_URL }}
           SSH_USERNAME: ${{ secrets.SSH_USERNAME }}
           SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }}
@@ -62,10 +66,6 @@ jobs:
           CF_API_KEY_555606: ${{ secrets.CF_API_KEY_555606 }}
           CF_ACCOUNT_ID_555606: ${{ secrets.CF_ACCOUNT_ID_555606 }}
           CF_ZONE_ID_555606: ${{ secrets.CF_ZONE_ID_555606 }}
-          CF_ACC_ID_555606: ${{ secrets.CF_ACCESS_ID_555606 }}
-          CF_ACC_SECRET_555606: ${{ secrets.CF_ACCESS_SECRET_555606 }}
-          CF_ACC_ID_HHWPXH: ${{ secrets.CF_ACCESS_ID_HHWPXH }}
-          CF_ACC_SECRET_HHWPXH: ${{ secrets.CF_ACCESS_SECRET_HHWPXH }}
           VLESS_UUID: ${{ secrets.VLESS_UUID }}
           FORCE_REDEPLOY: ${{ github.event.inputs.force_redeploy }}
           TARGET_HOST: ${{ github.event.inputs.target_host }}
