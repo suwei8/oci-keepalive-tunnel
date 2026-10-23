@@ -1,0 +1,294 @@
+name: Security Audit (All Hosts)
+
+# 只读安全检测：不改写远程任何状态，每台主机输出分类化检测结果。
+# 与 security-remediation-arm64.yml（事件响应清理）互补——本工作流负责发现，
+# remediation 负责处置。
+#
+# 检测维度：
+#   1. 持久化: crontab/systemd/rc 文件/authorized_keys/ld.so.preload
+#   2. 进程:   已删除可执行体、tmp 目录执行、伪装内核线程、高占用
+#   3. 网络:   异常监听端口、矿池/IRC 等可疑外联
+#   4. 账号:   uid=0 非 root、近期新增账号、登录成功/暴破失败记录
+#   5. 文件:   SUID 异常、敏感目录近期改动、已知 IOC 签名
+
+on:
+  schedule:
+    - cron: "0 2 * * 3"   # 每周三
+  workflow_dispatch:
+    inputs:
+      cpu_type:
+        description: '主机类型'
+        required: true
+        type: choice
+        default: all
+        options: [all, arm64, amd64]
+      target_host:
+        description: '指定主机 (留空=全部)'
+        required: false
+        default: ''
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Prepare Matrix
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.prepare.outputs.matrix }}
+      host_count: ${{ steps.prepare.outputs.host_count }}
+    steps:
+      - name: Build host matrix
+        id: prepare
+        env:
+          HOSTS_CONFIG_URL: ${{ secrets.HOSTS_CONFIG_URL }}
+          CPU_TYPE_FILTER: ${{ github.event.inputs.cpu_type }}
+          TARGET_HOST: ${{ github.event.inputs.target_host }}
+        run: |
+          set -euo pipefail
+          HOSTS_JSON="$(curl -fsSL "$HOSTS_CONFIG_URL")"
+          export HOSTS_JSON
+          MATRIX_JSON="$(python3 - <<'PY'
+          import json, os
+          hosts = json.loads(os.environ["HOSTS_JSON"])
+          cpu = (os.environ.get("CPU_TYPE_FILTER") or "all").strip().lower()
+          target = (os.environ.get("TARGET_HOST") or "").strip()
+          matrix = []
+          for index, host in enumerate(hosts):
+              if (host.get("transport") or "").strip() == "direct":
+                  continue
+              hc = (host.get("cpu_type") or "").strip().lower()
+              if hc not in {"arm64", "amd64"}:
+                  continue
+              if cpu != "all" and hc != cpu:
+                  continue
+              name = (host.get("name") or "").strip()
+              ssh_host = (host.get("ssh_host") or "").strip()
+              if not name or not ssh_host:
+                  continue
+              if target and name != target:
+                  continue
+              if "muse" in name.lower():
+                  continue
+              matrix.append({"index": index, "name": name,
+                             "ssh_host": ssh_host, "cpu_type": hc})
+          print(json.dumps({"include": matrix}, ensure_ascii=False))
+          PY
+          )"
+          export MATRIX_JSON
+          HOST_COUNT="$(python3 -c 'import json,os; print(len(json.loads(os.environ["MATRIX_JSON"])["include"]))')"
+          echo "matrix=${MATRIX_JSON}" >> "$GITHUB_OUTPUT"
+          echo "host_count=${HOST_COUNT}" >> "$GITHUB_OUTPUT"
+          echo "Prepared ${HOST_COUNT} host(s)"
+
+  audit:
+    name: ${{ matrix.name }}
+    needs: prepare
+    if: needs.prepare.outputs.host_count != '0'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix: ${{ fromJson(needs.prepare.outputs.matrix) }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Install cloudflared
+        run: |
+          set -euo pipefail
+          if [ -f bin/cloudflared ]; then
+            sudo cp bin/cloudflared /usr/local/bin/cloudflared
+          else
+            curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o /tmp/cloudflared
+            chmod +x /tmp/cloudflared
+            sudo mv /tmp/cloudflared /usr/local/bin/cloudflared
+          fi
+          cloudflared --version
+
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          cat >> ~/.ssh/config <<'EOF'
+          Host *
+            StrictHostKeyChecking no
+            UserKnownHostsFile /dev/null
+            LogLevel ERROR
+          EOF
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq sshpass netcat-openbsd jq
+
+      - name: Run security audit
+        id: audit
+        env:
+          CF_ACC_ID_555606: ${{ secrets.CF_ACCESS_ID_555606 }}
+          CF_ACC_SECRET_555606: ${{ secrets.CF_ACCESS_SECRET_555606 }}
+          CF_ACC_ID_HHWPXH: ${{ secrets.CF_ACCESS_ID_HHWPXH }}
+          CF_ACC_SECRET_HHWPXH: ${{ secrets.CF_ACCESS_SECRET_HHWPXH }}
+          SSH_USERNAME: ${{ matrix.cpu_type == 'amd64' && secrets.AMD_SSH_USERNAME || secrets.SSH_USERNAME }}
+          SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }}
+          HOST_NAME: ${{ matrix.name }}
+          HOST_INDEX: ${{ matrix.index }}
+          SSH_HOST: ${{ matrix.ssh_host }}
+        run: |
+          set -euo pipefail
+          echo "::add-mask::$SSH_HOST"
+
+          TUNNEL_PID=""
+          cleanup() { [ -n "${TUNNEL_PID:-}" ] && kill "$TUNNEL_PID" 2>/dev/null || true; }
+          trap cleanup EXIT
+
+          case "$SSH_HOST" in
+            *555606.xyz) CF_ACC_ID="$CF_ACC_ID_555606"; CF_ACC_SECRET="$CF_ACC_SECRET_555606" ;;
+            *) CF_ACC_ID="$CF_ACC_ID_HHWPXH"; CF_ACC_SECRET="$CF_ACC_SECRET_HHWPXH" ;;
+          esac
+          env TUNNEL_SERVICE_TOKEN_ID="$CF_ACC_ID" TUNNEL_SERVICE_TOKEN_SECRET="$CF_ACC_SECRET" \
+              cloudflared access ssh --hostname "$SSH_HOST" --url "ssh://127.0.0.1:2222" >/dev/null 2>&1 &
+          TUNNEL_PID=$!
+
+          for _ in $(seq 1 20); do
+            kill -0 "$TUNNEL_PID" 2>/dev/null || break
+            nc -z 127.0.0.1 2222 && break
+            sleep 1
+          done
+          if ! kill -0 "$TUNNEL_PID" 2>/dev/null || ! nc -z 127.0.0.1 2222; then
+            echo "verdict=unreachable" >> "$GITHUB_OUTPUT"
+            echo "❌ Tunnel failed"
+            exit 1
+          fi
+
+          SSH_OPTS="-o ConnectTimeout=25 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o PreferredAuthentications=password -o PubkeyAuthentication=no"
+
+          # ============ 远程只读审计 ============
+          sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -p 2222 "${SSH_USERNAME}@127.0.0.1" 'bash -s' <<'REMOTE' > audit_raw.txt 2>&1 || true
+          SUDO=""; sudo -n true 2>/dev/null && SUDO="sudo -n"
+          f() { echo "[FLAG] $1"; }   # 需要关注
+          i() { echo "[INFO] $1"; }
+
+          echo "===== A. PERSISTENCE ====="
+          # A1 crontab: 所有用户 + 系统 cron 目录里的可疑内容
+          for U in $(cut -d: -f1 /etc/passwd 2>/dev/null); do
+            C=$(crontab -u "$U" -l 2>/dev/null | grep -vE '^\s*#|^\s*$' || true)
+            [ -n "$C" ] && echo "crontab[$U]: $C" | head -5
+          done
+          $SUDO grep -rhoE 'curl[^|]*\||wget[^|]*\||base64[^|]*\||/tmp/[a-z0-9._-]+|nohup[^&]*' \
+            /etc/cron.d /etc/cron.daily /etc/cron.hourly /var/spool/cron 2>/dev/null | sort -u | head -10 | \
+            while read -r L; do f "cron-suspicious: $L"; done
+          # A2 systemd: 启用的非发行版路径单元 / 近期新增
+          systemctl list-unit-files --state=enabled --no-legend 2>/dev/null | \
+            awk '{print $1}' | grep -vE '^(ssh|sshd|cron|cloudflared|docker|containerd|systemd|dbus|network|NetworkManager|snap|cloud-init|qemu|rsyslog|unattended|chrony|accounts|acpid|atd|blk|console|crypt|e2scrub|finalrd|getty|grub|irqbalance|kmod|lvm|lxd|modem|multipath|polkit|pollinate|secureboot|serial|sysstat|ua-|ubuntu|ufw|user|uuidd|vbox|wpa|apport|avahi|bluetooth|cups|fwupd|iscsi|open-iscsi|packagekit|pcscd|smartmontools|spice|thermald|udisks|whoopsie)' | \
+            while read -r U; do i "enabled-unit: $U"; done
+          find /etc/systemd/system -name '*.service' -mtime -30 2>/dev/null | \
+            while read -r S; do f "new-unit-30d: $S"; done
+          # A3 shell 初始化脚本注入
+          grep -rlE 'curl .*\||wget .*\||base64 -d|nc -e|/dev/tcp/' \
+            /etc/profile.d /etc/bash.bashrc /root/.bashrc /root/.profile \
+            /home/*/.bashrc /home/*/.profile 2>/dev/null | \
+            while read -r R; do f "rc-inject: $R"; done
+          # A4 authorized_keys 盘点 (指纹，不打印公钥内容)
+          find /root/.ssh /home/*/.ssh -name authorized_keys 2>/dev/null | \
+            while read -r K; do N=$(wc -l < "$K"); i "authkeys: $K ($N keys)"; done
+          # A5 ld.so.preload (rootkit 经典)
+          [ -s /etc/ld.so.preload ] && f "ld.so.preload non-empty: $(cat /etc/ld.so.preload 2>/dev/null)"
+          [ -e /etc/ld.so.preload ] && ! $SUDO test -s /etc/ld.so.preload && i "ld.so.preload exists (empty ok)"
+
+          echo "===== B. PROCESSES ====="
+          # B1 可执行体已删除的进程 (落盘后被擦除 = 高度可疑)
+          for P in /proc/[0-9]*/exe; do
+            T=$(readlink "$P" 2>/dev/null || true)
+            case "$T" in *"(deleted)"*) f "deleted-exe: pid $(basename "$(dirname "$P")") -> $T";; esac
+          done
+          # B2 从临时目录运行的进程
+          ps -eo pid,comm,args --no-headers 2>/dev/null | \
+            grep -E '/tmp/|/dev/shm/|/var/tmp/' | grep -v 'grep' | head -10 | \
+            while read -r L; do f "tmp-exec: $L"; done
+          # B3 伪装内核线程 (comm 是内核线程名但有 cmdline)
+          ps -eo pid,comm,args --no-headers 2>/dev/null | \
+            awk '$2 ~ /^\[?kworker|kthreadd|rcu_sched/ && NF > 3 {print}' | head -5 | \
+            while read -r L; do f "kthread-impersonation: $L"; done
+          # B4 CPU 占用 top
+          ps -eo pid,comm,%cpu --sort=-%cpu --no-headers 2>/dev/null | head -3 | \
+            while read -r L; do i "topcpu: $L"; done
+          # B5 已知 IOC / 矿工程序签名
+          pgrep -af 'uhavenobotsxd|\.monitor|xmrig|kdevtmpfsi|kinsing|stratum|minerd|cpuminer|masscan|zgrab' 2>/dev/null | \
+            while read -r L; do f "ioc-process: $L"; done
+
+          echo "===== C. NETWORK ====="
+          # C1 监听端口
+          ss -tlnp 2>/dev/null | awk 'NR>1 {print $4, $7}' | \
+            sed 's/.*:\([0-9]*\) /\1 /; s/users:((//; s/".*//' | sort -n | uniq -c | \
+            while read -r L; do i "listen: $L"; done
+          # C2 可疑外联 (矿池/IRC/C2 常见端口)
+          ss -tnp 2>/dev/null | awk '$1=="ESTAB" {print $5}' | \
+            grep -oE ':[0-9]+$' | tr -d ':' | \
+            grep -xE '3333|4444|5555|6666|6667|7777|14444|45700|53556|9001' | sort | uniq -c | \
+            while read -r L; do f "suspicious-outbound port: $L"; done
+          # C3 非隧道外联统计
+          ESTAB=$(ss -tn state established 2>/dev/null | wc -l)
+          i "established-connections: $ESTAB"
+
+          echo "===== D. ACCOUNTS ====="
+          # D1 uid=0 非 root
+          awk -F: '$3==0 && $1!="root" {print $1}' /etc/passwd | \
+            while read -r U; do f "uid0-nonroot: $U"; done
+          # D2 近 30 天新建账号
+          for U in $(awk -F: '$3>=1000 {print $1}' /etc/passwd); do
+            CH=$(chage -l "$U" 2>/dev/null | awk -F': ' '/Last password change/{print $2}')
+            i "user: $U (pwd-changed: $CH)"
+          done
+          # D3 登录记录
+          last -n 15 -a 2>/dev/null | grep -vE 'reboot|wtmp|^$' | \
+            while read -r L; do i "last: $L"; done
+          # D4 SSH 暴破失败统计 (近1000行日志)
+          FAILS=$($SUDO journalctl -u ssh -u sshd --since "7 days ago" --no-pager 2>/dev/null | grep -c 'Failed password' || true)
+          [ "${FAILS:-0}" -gt 100 ] && f "ssh-bruteforce-7d: $FAILS failed attempts" || i "ssh-failures-7d: ${FAILS:-0}"
+
+          echo "===== E. FILESYSTEM ====="
+          # E1 非常规 SUID
+          find / -xdev -perm -4000 -type f 2>/dev/null | \
+            grep -vE '^/(usr/)?(bin|sbin|lib|opt)/(sudo|su|mount|umount|passwd|chsh|chfn|newgrp|gpasswd|ping|fusermount|pkexec|polkit|ssh-agent|Xorg|snap|docker|crontab|at|expiry|chage|bsd-write|ssh-keysign|mount.cifs|mount.nfs|dmcrypt|pam_timestamp|unix_chkpwd|userhelper|staprun|dotlockfile|pt_chown|traceroute|mtr|arping|screen|kcheckpass|dbus-daemon-launch-helper|pppd|ntfs-3g|qemu|mail|postdrop|postqueue|clamscan|procmail|exim|sendmail|openvpn|chrome|sandbo)' | \
+            head -15 | while read -r S; do f "suid-unusual: $S"; done
+          # E2 系统目录近期改动
+          find /usr/bin /usr/sbin /bin /sbin -mtime -7 -type f 2>/dev/null | \
+            head -15 | while read -r F2; do f "recent-modified-bin: $F2"; done
+          # E3 已知 IOC 文件
+          for P in /arm7.uhavenobotsxd /root/arm7.uhavenobotsxd /root/.monitor /tmp/.monitor \
+                   /tmp/xmrig* /dev/shm/* /var/tmp/.*; do
+            [ -e "$P" ] && f "ioc-file: $P"
+          done
+          # E4 /tmp 隐藏文件
+          find /tmp /dev/shm /var/tmp -name '.*' -type f 2>/dev/null | head -10 | \
+            while read -r H; do f "tmp-hidden: $H"; done
+
+          echo "===== DONE ====="
+          REMOTE
+
+          # ============ 结果汇总 ============
+          FLAGS=$(grep -c '^\[FLAG\]' audit_raw.txt || true)
+          INFOS=$(grep -c '^\[INFO\]' audit_raw.txt || true)
+          {
+            echo "### 🔍 ${HOST_NAME} — audit"
+            echo "- flags: **${FLAGS}** | info: ${INFOS}"
+            if [ "$FLAGS" -gt 0 ]; then
+              echo "- ⚠️ 需要人工复核的项:"
+              grep '^\[FLAG\]' audit_raw.txt | sed 's/^/  - /' | head -20
+            else
+              echo "- ✅ 无异常项"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          cat audit_raw.txt | head -80
+
+          echo "flags=${FLAGS}" >> "$GITHUB_OUTPUT"
+          [ "$FLAGS" -gt 0 ] && echo "verdict=suspicious" >> "$GITHUB_OUTPUT" \
+                            || echo "verdict=clean" >> "$GITHUB_OUTPUT"
+
+      - name: Upload audit artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: audit-${{ matrix.index }}-${{ matrix.name }}
+          path: audit_raw.txt
+          if-no-files-found: ignore
+          retention-days: 30
