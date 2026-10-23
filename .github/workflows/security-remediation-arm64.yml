@@ -87,9 +87,8 @@ jobs:
             sleep 2
             SSH_DEST="127.0.0.1"; SSH_PORT="2222"; TUNNEL_PID=""
             if [[ "$SSH_HOST" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-              SSH_DEST="$SSH_HOST"; SSH_PORT="22"
-              sleep 3600 & TUNNEL_PID=$!
-              echo ">>> 直连模式 (transport=direct): ${SSH_DEST}:${SSH_PORT}"
+              echo ">>> 跳过直连主机 (transport=direct): $HOST_NAME"
+              continue
             else
             case "$SSH_HOST" in
               *555606.xyz) CF_ACC_ID="$CF_ACC_ID_555606"; CF_ACC_SECRET="$CF_ACC_SECRET_555606" ;;

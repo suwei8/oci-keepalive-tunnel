@@ -231,9 +231,8 @@ jobs:
             MAX_RETRIES=3
             SSH_DEST="127.0.0.1"; SSH_PORT="2222"
             if [[ "$SSH_HOST" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-              SSH_DEST="$SSH_HOST"; SSH_PORT="22"
-              TUNNEL_SUCCESS=1
-              echo ">>> 直连模式 (transport=direct): ${SSH_DEST}:${SSH_PORT}"
+              echo ">>> 跳过直连主机 (transport=direct): $HOST_NAME"
+              continue
             fi
             TUNNEL_OCI_PID=""
 

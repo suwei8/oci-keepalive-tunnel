@@ -75,6 +75,8 @@ jobs:
                   continue
               if "muse" in host_name.lower():
                   continue
+              if (host.get("transport") or "").strip() == "direct":
+                  continue
               matrix.append(
                   {
                       "index": index,
@@ -169,9 +171,8 @@ jobs:
 
           SSH_DEST="127.0.0.1"; SSH_PORT="2222"
           if [[ "$SSH_HOST" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            SSH_DEST="$SSH_HOST"; SSH_PORT="22"
-            sleep 3600 & TUNNEL_PID=$!
-            echo ">>> 直连模式 (transport=direct): ${SSH_DEST}:${SSH_PORT}"
+            echo ">>> 跳过直连主机 (transport=direct): $HOST_NAME"
+            exit 0
           else
             case "$SSH_HOST" in
               *555606.xyz) CF_ACC_ID="$CF_ACC_ID_555606"; CF_ACC_SECRET="$CF_ACC_SECRET_555606" ;;
