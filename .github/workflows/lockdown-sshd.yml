@@ -154,9 +154,22 @@ jobs:
           printf '# SSH 仅监听 localhost —— 仅允许 Cloudflare Tunnel 进入\nListenAddress 127.0.0.1\n' \
             | run_root tee /etc/ssh/sshd_config.d/99-tunnel-only.conf > /dev/null
           run_root sshd -t
-          run_root systemctl reload sshd 2>/dev/null || run_root systemctl reload ssh 2>/dev/null || run_root service ssh reload
-          echo ">>> sshd reloaded"
+          if run_root systemctl is-active --quiet ssh.socket; then
+            # Ubuntu 24.04+ socket activation: 22 归 ssh.socket 管，须 override ListenStream
+            run_root mkdir -p /etc/systemd/system/ssh.socket.d
+            printf '# 仅监听 localhost —— 仅允许 Cloudflare Tunnel 进入\n[Socket]\nListenStream=\nListenStream=127.0.0.1:22\n' \
+              | run_root tee /etc/systemd/system/ssh.socket.d/10-tunnel-only.conf > /dev/null
+            run_root systemctl daemon-reload
+            run_root systemctl restart ssh.socket
+            echo ">>> ssh.socket overridden to 127.0.0.1:22"
+          else
+            run_root systemctl reload sshd 2>/dev/null || run_root systemctl reload ssh 2>/dev/null || run_root service ssh reload
+            echo ">>> sshd reloaded"
+          fi
           run_root ss -tlnp | grep ':22 '
+          if run_root ss -tlnH 'sport = :22' | grep -Ev '127\.0\.0\.1:22|\[::1\]:22'; then
+            echo "❌ 仍存在非 loopback :22 监听"; exit 1
+          fi
           SSHD
 
           echo "===== Step 3: verify ====="
