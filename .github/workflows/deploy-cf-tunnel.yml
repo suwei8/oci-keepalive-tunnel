@@ -6,9 +6,6 @@ on:
       ssh_ip:
         description: '远程实例 IP 地址'
         required: true
-      ssh_password:
-        description: 'SSH 密码'
-        required: true
       tunnel_tag_name:
         description: '隧道标签名称 (如 singapore-West9)'
         required: true
@@ -42,7 +39,7 @@ jobs:
         env:
           SSH_IP: ${{ github.event.inputs.ssh_ip }}
           SSH_USERNAME: ${{ github.event.inputs.ssh_username }}
-          SSH_PASSWORD: ${{ github.event.inputs.ssh_password }}
+          SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }}
         run: |
           set -euo pipefail
           SSH_OPTS="-o ConnectTimeout=30 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ServerAliveInterval=30"
@@ -160,7 +157,7 @@ jobs:
         env:
           SSH_IP: ${{ github.event.inputs.ssh_ip }}
           SSH_USERNAME: ${{ github.event.inputs.ssh_username }}
-          SSH_PASSWORD: ${{ github.event.inputs.ssh_password }}
+          SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }}
           TUNNEL_TOKEN: ${{ steps.token.outputs.tunnel_token }}
         run: |
           set -euo pipefail
@@ -289,7 +286,7 @@ jobs:
           CF_ACC_ID_HHWPXH: ${{ secrets.CF_ACCESS_ID_HHWPXH }}
           CF_ACC_SECRET_HHWPXH: ${{ secrets.CF_ACCESS_SECRET_HHWPXH }}
           SSH_USERNAME: ${{ github.event.inputs.ssh_username }}
-          SSH_PASSWORD: ${{ github.event.inputs.ssh_password }}
+          SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }}
           TUNNEL_TAG_NAME: ${{ github.event.inputs.tunnel_tag_name }}
         run: |
           echo "::add-mask::$SSH_PASSWORD"
@@ -331,7 +328,7 @@ jobs:
         env:
           SSH_IP: ${{ github.event.inputs.ssh_ip }}
           ROOT_USERNAME: ${{ github.event.inputs.ssh_username }}
-          ROOT_PASSWORD: ${{ github.event.inputs.ssh_password }}
+          ROOT_PASSWORD: ${{ secrets.SSH_PASSWORD }}
           NEW_USERNAME: ${{ secrets.SSH_USERNAME }}
           NEW_PASSWORD: ${{ secrets.SSH_PASSWORD }}
         run: |

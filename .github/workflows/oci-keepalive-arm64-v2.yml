@@ -78,6 +78,8 @@ jobs:
                   continue
               if (host.get("transport") or "").strip() == "direct":
                   continue
+              if host.get("keepalive") is False:
+                  continue
               if "muse" in (host.get("name") or "").lower():
                   continue
               ssh_host = (host.get("ssh_host") or "").strip()

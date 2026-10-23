@@ -81,6 +81,8 @@ jobs:
                   continue
               if (host.get("transport") or "").strip() == "direct":
                   continue
+              if host.get("keepalive") is False:
+                  continue
               host_name = (host.get("name") or "").lower()
               if "gcp" in host_name:
                   continue
