@@ -4,7 +4,9 @@ set -uo pipefail
 
 AGY_SWITCHER_REPO="suwei8/agy-cli"
 AGENTBRIDGE_REPO="suwei8/agent-bridge"
+AGENTBRIDGE_DIST_REPO="suwei8/agent-bridge-dist"
 AGENTBRIDGE_ASSET_PRIMARY="agent-bridge"
+[ "$(uname -m)" = "x86_64" ] && AGENTBRIDGE_ASSET_PRIMARY="agent-bridge-linux-amd64"
 AGENTBRIDGE_ASSET_FALLBACK="agent-bridge-linux-aarch64-ubuntu20.04"
 DEFAULT_TELEGRAM_CHAT_IDS="1118793113,8415850251"
 
@@ -386,8 +388,14 @@ download_repo_file() {
   local token="$2"
   local path="$3"
   local destination="$4"
+  local auth=()
+
+  if [ -n "$token" ]; then
+    auth=(-H "Authorization: Bearer ${token}")
+  fi
+
   curl -fsSL \
-    -H "Authorization: Bearer ${token}" \
+    "${auth[@]}" \
     -H "Accept: application/vnd.github.raw+json" \
     -H "X-GitHub-Api-Version: 2022-11-28" \
     "https://api.github.com/repos/${repo}/contents/${path}" \
@@ -508,7 +516,7 @@ resolve_bridge_release() {
     return 0
   fi
 
-  BRIDGE_RELEASE_JSON_CACHE="$(github_latest_release_json "$AGENTBRIDGE_REPO" "${AGENTBRIDGE_GITHUB_TOKEN:-}")" || return 1
+  BRIDGE_RELEASE_JSON_CACHE="$(github_latest_release_json "$AGENTBRIDGE_DIST_REPO" "${AGENTBRIDGE_GITHUB_TOKEN:-}")" || return 1
   RESULT_BRIDGE_RELEASE_TAG="$(printf '%s\n' "$BRIDGE_RELEASE_JSON_CACHE" | json_get_tag)"
   [ -n "$RESULT_BRIDGE_RELEASE_TAG" ] || RESULT_BRIDGE_RELEASE_TAG="unknown"
 }
@@ -766,11 +774,11 @@ refresh_agentbridge_files_only() {
   resolve_bridge_release || return 1
   release_json="$BRIDGE_RELEASE_JSON_CACHE"
 
-  download_repo_file "$AGENTBRIDGE_REPO" "${AGENTBRIDGE_GITHUB_TOKEN:-}" "manage.sh" "$tmp_manage" || return 1
-  if download_release_asset "$AGENTBRIDGE_REPO" "${AGENTBRIDGE_GITHUB_TOKEN:-}" "$release_json" "$AGENTBRIDGE_ASSET_PRIMARY" "$tmp_binary"; then
+  download_repo_file "$AGENTBRIDGE_DIST_REPO" "" "manage.sh" "$tmp_manage" || return 1
+  if download_release_asset "$AGENTBRIDGE_DIST_REPO" "${AGENTBRIDGE_GITHUB_TOKEN:-}" "$release_json" "$AGENTBRIDGE_ASSET_PRIMARY" "$tmp_binary"; then
     downloaded_asset="$AGENTBRIDGE_ASSET_PRIMARY"
   else
-    download_release_asset "$AGENTBRIDGE_REPO" "${AGENTBRIDGE_GITHUB_TOKEN:-}" "$release_json" "$AGENTBRIDGE_ASSET_FALLBACK" "$tmp_binary" || return 1
+    download_release_asset "$AGENTBRIDGE_DIST_REPO" "${AGENTBRIDGE_GITHUB_TOKEN:-}" "$release_json" "$AGENTBRIDGE_ASSET_FALLBACK" "$tmp_binary" || return 1
     downloaded_asset="$AGENTBRIDGE_ASSET_FALLBACK"
   fi
 
@@ -792,7 +800,7 @@ refresh_agentbridge_files_only() {
     return 1
   fi
 
-  if download_release_asset "$AGENTBRIDGE_REPO" "${AGENTBRIDGE_GITHUB_TOKEN:-}" "$release_json" "${downloaded_asset}.sha256" "$tmp_sha256"; then
+  if download_release_asset "$AGENTBRIDGE_DIST_REPO" "${AGENTBRIDGE_GITHUB_TOKEN:-}" "$release_json" "${downloaded_asset}.sha256" "$tmp_sha256"; then
     expected_sha="$(awk '{print $1}' "$tmp_sha256" 2>/dev/null | head -n 1 || true)"
     actual_sha="$(sha256sum "$tmp_binary" 2>/dev/null | awk '{print $1}' || true)"
     rm -f "$tmp_sha256"
@@ -833,7 +841,7 @@ refresh_manage_script_if_present() {
 
   [ -e /home/sw/manage.sh ] || return 0
 
-  download_repo_file "$AGENTBRIDGE_REPO" "${AGENTBRIDGE_GITHUB_TOKEN:-}" "manage.sh" "$tmp_manage" || return 1
+  download_repo_file "$AGENTBRIDGE_DIST_REPO" "" "manage.sh" "$tmp_manage" || return 1
   chmod +x "$tmp_manage"
   mv -f "$tmp_manage" /home/sw/manage.sh
   return 0
@@ -1136,7 +1144,7 @@ update_bridge() {
   fi
   kill_named_processes "bridge"
 
-  if ! download_repo_file "$AGENTBRIDGE_REPO" "${AGENTBRIDGE_GITHUB_TOKEN:-}" "manage.sh" /home/sw/manage.sh.tmp; then
+  if ! download_repo_file "$AGENTBRIDGE_DIST_REPO" "" "manage.sh" /home/sw/manage.sh.tmp; then
     RESULT_BRIDGE_STATUS="bridge_failed"
     RESULT_WORKFLOW_STATUS="bridge_failed"
     add_note "failed to download AgentBridge manage.sh"
