@@ -60,6 +60,7 @@ jobs:
           CF_ACC_SECRET_HHWPXH: ${{ secrets.CF_ACCESS_SECRET_HHWPXH }}
           HOSTS_CONFIG_URL: ${{ secrets.HOSTS_CONFIG_URL }}
           SSH_USERNAME: ${{ secrets.SSH_USERNAME }}
+          AMD_USERNAME: ${{ secrets.AMD_SSH_USERNAME }}
           SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }}
           TARGET_HOST: ${{ github.event.inputs.target_host }}
         run: |
@@ -97,51 +98,71 @@ jobs:
           echo "✅ Tunnel established"
 
           SSH_OPTS="-o ConnectTimeout=25 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o PreferredAuthentications=password -o PubkeyAuthentication=no"
-          SSH_RUN() { sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -p 2222 "${SSH_USERNAME}@127.0.0.1" "$@"; }
+          # 依次尝试登录账号：root → SSH_USERNAME → AMD_SSH_USERNAME
+          LOGIN_USER=""
+          for u in root "$SSH_USERNAME" "$AMD_USERNAME"; do
+            [ -n "$u" ] || continue
+            if sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -p 2222 "${u}@127.0.0.1" 'true' 2>/dev/null; then
+              LOGIN_USER="$u"; echo ">>> login as: $u"; break
+            fi
+          done
+          [ -n "$LOGIN_USER" ] || { echo "❌ 无可用登录账号"; exit 1; }
+          SSH_RUN() { sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -p 2222 "${LOGIN_USER}@127.0.0.1" "export P='$SSH_PASSWORD'; bash -s"; }
 
           echo "===== Step 0: pre-check cloudflared service ====="
-          SSH_RUN 'bash -s' <<'PRE'
+          SSH_RUN <<'PRE'
           set -e
-          SUDO=""; sudo -n true 2>/dev/null && SUDO="sudo -n" || { echo "❌ 无 passwordless sudo"; exit 1; }
-          $SUDO systemctl is-enabled --quiet cloudflared && echo "enabled: yes" || { echo "enabled: NO"; exit 1; }
-          $SUDO systemctl is-active --quiet cloudflared && echo "active: yes" || { echo "active: NO"; exit 1; }
+          run_root() {
+            if [ "$(id -u)" -eq 0 ]; then "$@";
+            elif sudo -n true 2>/dev/null; then sudo -n "$@";
+            else printf '%s\n' "$P" | sudo -S -k "$@" 2>/dev/null; fi
+          }
+          run_root systemctl is-enabled --quiet cloudflared && echo "enabled: yes" || { echo "enabled: NO"; exit 1; }
+          run_root systemctl is-active --quiet cloudflared && echo "active: yes" || { echo "active: NO"; exit 1; }
           echo ">>> cloudflared service OK"
           echo "--- current :22 listeners ---"
-          $SUDO ss -tlnp | grep ':22 ' || echo "(none)"
+          run_root ss -tlnp | grep ':22 ' || echo "(none)"
           PRE
 
           echo "===== Step 1: iptables drop public :22 ====="
-          SSH_RUN 'bash -s' <<'FW'
+          SSH_RUN <<'FW'
           set -e
-          SUDO=""; sudo -n true 2>/dev/null && SUDO="sudo -n" || exit 1
-          $SUDO iptables -C INPUT -i lo -p tcp --dport 22 -j ACCEPT 2>/dev/null || \
-            $SUDO iptables -I INPUT 1 -i lo -p tcp --dport 22 -j ACCEPT
-          $SUDO iptables -C INPUT -p tcp --dport 22 -j DROP 2>/dev/null || \
-            $SUDO iptables -A INPUT -p tcp --dport 22 -j DROP
+          run_root() {
+            if [ "$(id -u)" -eq 0 ]; then "$@";
+            elif sudo -n true 2>/dev/null; then sudo -n "$@";
+            else printf '%s\n' "$P" | sudo -S -k "$@" 2>/dev/null; fi
+          }
+          run_root iptables -C INPUT -i lo -p tcp --dport 22 -j ACCEPT 2>/dev/null || \
+            run_root iptables -I INPUT 1 -i lo -p tcp --dport 22 -j ACCEPT
+          run_root iptables -C INPUT -p tcp --dport 22 -j DROP 2>/dev/null || \
+            run_root iptables -A INPUT -p tcp --dport 22 -j DROP
           echo ">>> iptables: lo allow + public drop on :22 applied"
-          $SUDO iptables -S INPUT | grep -- '--dport 22'
+          run_root iptables -S INPUT | grep -- '--dport 22'
           FW
 
           echo "===== Step 2: sshd ListenAddress 127.0.0.1 ====="
-          SSH_RUN 'bash -s' <<'SSHD'
+          SSH_RUN <<'SSHD'
           set -e
-          SUDO=""; sudo -n true 2>/dev/null && SUDO="sudo -n" || exit 1
+          run_root() {
+            if [ "$(id -u)" -eq 0 ]; then "$@";
+            elif sudo -n true 2>/dev/null; then sudo -n "$@";
+            else printf '%s\n' "$P" | sudo -S -k "$@" 2>/dev/null; fi
+          }
           # 移除既有 ListenAddress（主配置 + drop-in），写入统一 drop-in
-          $SUDO sed -i 's/^[[:space:]]*ListenAddress[[:space:]].*/# &/' /etc/ssh/sshd_config
-          $SUDO mkdir -p /etc/ssh/sshd_config.d
+          run_root sed -i 's/^[[:space:]]*ListenAddress[[:space:]].*/# &/' /etc/ssh/sshd_config
+          run_root mkdir -p /etc/ssh/sshd_config.d
           printf '# SSH 仅监听 localhost —— 仅允许 Cloudflare Tunnel 进入\nListenAddress 127.0.0.1\n' \
-            | $SUDO tee /etc/ssh/sshd_config.d/99-tunnel-only.conf > /dev/null
-          $SUDO sshd -t
-          $SUDO systemctl reload sshd 2>/dev/null || $SUDO systemctl reload ssh 2>/dev/null || $SUDO service ssh reload
+            | run_root tee /etc/ssh/sshd_config.d/99-tunnel-only.conf > /dev/null
+          run_root sshd -t
+          run_root systemctl reload sshd 2>/dev/null || run_root systemctl reload ssh 2>/dev/null || run_root service ssh reload
           echo ">>> sshd reloaded"
-          $SUDO ss -tlnp | grep ':22 '
+          run_root ss -tlnp | grep ':22 '
           SSHD
 
           echo "===== Step 3: verify ====="
           sleep 2
-          SSH_RUN 'echo "✅ 隧道重连 OK: $(hostname) | listeners: $(ss -tln | grep ":22 " | tr "\n" " ")"' || {
-            echo "❌ 重连失败 —— 立即人工检查！"
-            exit 1
-          }
+          SSH_RUN <<'VERIFY' || { echo "❌ 重连失败 —— 立即人工检查！"; exit 1; }
+          echo "✅ 隧道重连 OK: $(hostname) | listeners: $(ss -tln | grep ':22 ' | tr '\n' ' ')"
+          VERIFY
           echo ">>> 完成：sshd 现在只监听 127.0.0.1，公网 22 已关闭"
           echo "✅ LOCKDOWN-DONE $TARGET_HOST" >> "$GITHUB_STEP_SUMMARY"
