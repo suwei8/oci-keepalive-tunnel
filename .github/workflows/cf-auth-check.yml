@@ -1,0 +1,41 @@
+name: Check CF Credentials
+
+on:
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Test account credentials
+        env:
+          CF_API_EMAIL: ${{ secrets.CF_API_EMAIL }}
+          CF_API_KEY: ${{ secrets.CF_API_KEY }}
+          CF_ZONE_ID: ${{ secrets.CF_ZONE_ID }}
+          CF_API_EMAIL_555606: ${{ secrets.CF_API_EMAIL_555606 }}
+          CF_API_KEY_555606: ${{ secrets.CF_API_KEY_555606 }}
+          CF_ZONE_ID_555606: ${{ secrets.CF_ZONE_ID_555606 }}
+        run: |
+          check() {
+            local label="$1" email="$2" key="$3" zone="$4"
+            echo "=== $label ==="
+            local resp
+            resp=$(curl -s -H "Authorization: Bearer $key" \
+              "https://api.cloudflare.com/client/v4/zones/$zone/dns_records?per_page=1")
+            if echo "$resp" | jq -e '.success == true' > /dev/null; then
+              echo "✅ Bearer auth OK (API Token 格式正确)"
+              return 0
+            fi
+            resp=$(curl -s -H "X-Auth-Email: $email" -H "X-Auth-Key: $key" \
+              "https://api.cloudflare.com/client/v4/zones/$zone/dns_records?per_page=1")
+            if echo "$resp" | jq -e '.success == true' > /dev/null; then
+              echo "⚠️ X-Auth OK — 这是 Global API Key，Bearer 调用会失败，需换成 API Token"
+              return 1
+            fi
+            echo "❌ 认证完全失败: $(echo "$resp" | jq -c '.errors')"
+            return 1
+          }
+          rc=0
+          check "账户1 (CF_API_KEY)" "$CF_API_EMAIL" "$CF_API_KEY" "$CF_ZONE_ID" || rc=1
+          check "账户2 (CF_API_KEY_555606)" "$CF_API_EMAIL_555606" "$CF_API_KEY_555606" "$CF_ZONE_ID_555606" || rc=1
+          exit $rc
