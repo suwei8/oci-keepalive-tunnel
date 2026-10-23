@@ -79,9 +79,15 @@ jobs:
           HYSTERIA_PORT=2443
           echo "::add-mask::$HYSTERIA_PORT"
           
-          # 获取配置
           # 获取配置 (添加随机参数避开 CDN 缓存)
-          HOSTS_CONFIG=$(curl -s "${HOSTS_CONFIG_URL}?t=$(date +%s)") || true
+          HOSTS_CONFIG=$(curl -fsSL "${HOSTS_CONFIG_URL}?t=$(date +%s)") || {
+            echo "❌ 无法获取主机配置 (HOSTS_CONFIG_URL 拉取失败，请检查 URL 是否过期或 token 无效)"
+            exit 1
+          }
+          echo "$HOSTS_CONFIG" | jq -e '. | arrays' > /dev/null || {
+            echo "❌ 主机配置不是有效 JSON 数组"
+            exit 1
+          }
 
           mask_ip() {
             local ip="$1"

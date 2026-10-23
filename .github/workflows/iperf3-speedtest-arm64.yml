@@ -97,7 +97,14 @@ jobs:
           SSH_OPTS="-o ConnectTimeout=30 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ServerAliveInterval=30"
           
           # 获取配置
-          HOSTS_CONFIG=$(curl -s $HOSTS_CONFIG_URL) || true
+          HOSTS_CONFIG=$(curl -fsSL "$HOSTS_CONFIG_URL") || {
+            echo "❌ 无法获取主机配置 (HOSTS_CONFIG_URL 拉取失败)"
+            exit 1
+          }
+          echo "$HOSTS_CONFIG" | jq -e '. | arrays' > /dev/null || {
+            echo "❌ 主机配置不是有效 JSON 数组"
+            exit 1
+          }
           
           # 1. 建立到家庭客户机的 Tunnel (全局持久连接, Port 2202)
           echo ">>> 正在连接家庭测速客户机 ($IPERF_CLIENT_HOST)..."
