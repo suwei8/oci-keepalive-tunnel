@@ -1,0 +1,147 @@
+name: Lockdown sshd to localhost (Tunnel-only SSH)
+
+# 把指定主机的 sshd 收敛到只监听 127.0.0.1 —— 公网 22 彻底消失，
+# SSH 只能经 Cloudflare Tunnel (+Access) 进入。
+#
+# 安全顺序：
+#   1. 先验证 cloudflared 是 enabled+active 的系统服务（否则改完即失联）
+#   2. iptables: lo 放行 22、其余入站 22 DROP（立即生效）
+#   3. sshd drop-in: ListenAddress 127.0.0.1（配置级，重启/fw flush 后仍生效）
+#   4. sshd -t 校验后 reload，确认 ss 只显示 127.0.0.1:22
+#   5. 断开重连一次，证明隧道路径仍可用
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_host:
+        description: '主机名 (须与 nodes.json name 完全一致)'
+        required: true
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  lockdown:
+    name: "Lockdown ${{ github.event.inputs.target_host }}"
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Install cloudflared
+        run: |
+          set -euo pipefail
+          if [ -f bin/cloudflared ]; then
+            sudo cp bin/cloudflared /usr/local/bin/cloudflared
+          else
+            curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o /tmp/cloudflared
+            chmod +x /tmp/cloudflared
+            sudo mv /tmp/cloudflared /usr/local/bin/cloudflared
+          fi
+
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          cat >> ~/.ssh/config <<'EOF'
+          Host *
+            StrictHostKeyChecking no
+            UserKnownHostsFile /dev/null
+            LogLevel ERROR
+          EOF
+          sudo apt-get update -qq && sudo apt-get install -y -qq sshpass netcat-openbsd jq
+
+      - name: Apply localhost-only sshd
+        env:
+          CF_ACC_ID_555606: ${{ secrets.CF_ACCESS_ID_555606 }}
+          CF_ACC_SECRET_555606: ${{ secrets.CF_ACCESS_SECRET_555606 }}
+          CF_ACC_ID_HHWPXH: ${{ secrets.CF_ACCESS_ID_HHWPXH }}
+          CF_ACC_SECRET_HHWPXH: ${{ secrets.CF_ACCESS_SECRET_HHWPXH }}
+          HOSTS_CONFIG_URL: ${{ secrets.HOSTS_CONFIG_URL }}
+          SSH_USERNAME: ${{ secrets.AMD_SSH_USERNAME }}
+          SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }}
+          TARGET_HOST: ${{ github.event.inputs.target_host }}
+        run: |
+          set -euo pipefail
+
+          SSH_HOST=$(curl -fsSL "$HOSTS_CONFIG_URL" | jq -r \
+            --arg n "$TARGET_HOST" '.[] | select(.name == $n) | .ssh_host')
+          if [ -z "$SSH_HOST" ] || [ "$SSH_HOST" = "null" ]; then
+            echo "❌ host '$TARGET_HOST' not found"
+            exit 1
+          fi
+          if [[ "$SSH_HOST" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "❌ '$TARGET_HOST' 仍是直连 IP ($SSH_HOST)，先跑 deploy-cf-tunnel 上隧道"
+            exit 1
+          fi
+          echo "::add-mask::$SSH_HOST"
+          echo ">>> Target: $TARGET_HOST via tunnel"
+
+          case "$SSH_HOST" in
+            *555606.xyz) CF_ACC_ID="$CF_ACC_ID_555606"; CF_ACC_SECRET="$CF_ACC_SECRET_555606" ;;
+            *) CF_ACC_ID="$CF_ACC_ID_HHWPXH"; CF_ACC_SECRET="$CF_ACC_SECRET_HHWPXH" ;;
+          esac
+          env TUNNEL_SERVICE_TOKEN_ID="$CF_ACC_ID" TUNNEL_SERVICE_TOKEN_SECRET="$CF_ACC_SECRET" \
+              cloudflared access ssh --hostname "$SSH_HOST" --url "ssh://127.0.0.1:2222" >/dev/null 2>&1 &
+          TUNNEL_PID=$!
+          cleanup() { kill "$TUNNEL_PID" 2>/dev/null || true; }
+          trap cleanup EXIT
+
+          for _ in $(seq 1 20); do
+            kill -0 "$TUNNEL_PID" 2>/dev/null || break
+            nc -z 127.0.0.1 2222 && break
+            sleep 1
+          done
+          nc -z 127.0.0.1 2222 || { echo "❌ Tunnel failed"; exit 1; }
+          echo "✅ Tunnel established"
+
+          SSH_OPTS="-o ConnectTimeout=25 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o PreferredAuthentications=password -o PubkeyAuthentication=no"
+          SSH_RUN() { sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -p 2222 "${SSH_USERNAME}@127.0.0.1" "$@"; }
+
+          echo "===== Step 0: pre-check cloudflared service ====="
+          SSH_RUN 'bash -s' <<'PRE'
+          set -e
+          SUDO=""; sudo -n true 2>/dev/null && SUDO="sudo -n" || { echo "❌ 无 passwordless sudo"; exit 1; }
+          $SUDO systemctl is-enabled --quiet cloudflared && echo "enabled: yes" || { echo "enabled: NO"; exit 1; }
+          $SUDO systemctl is-active --quiet cloudflared && echo "active: yes" || { echo "active: NO"; exit 1; }
+          echo ">>> cloudflared service OK"
+          echo "--- current :22 listeners ---"
+          $SUDO ss -tlnp | grep ':22 ' || echo "(none)"
+          PRE
+
+          echo "===== Step 1: iptables drop public :22 ====="
+          SSH_RUN 'bash -s' <<'FW'
+          set -e
+          SUDO=""; sudo -n true 2>/dev/null && SUDO="sudo -n" || exit 1
+          $SUDO iptables -C INPUT -i lo -p tcp --dport 22 -j ACCEPT 2>/dev/null || \
+            $SUDO iptables -I INPUT 1 -i lo -p tcp --dport 22 -j ACCEPT
+          $SUDO iptables -C INPUT -p tcp --dport 22 -j DROP 2>/dev/null || \
+            $SUDO iptables -A INPUT -p tcp --dport 22 -j DROP
+          echo ">>> iptables: lo allow + public drop on :22 applied"
+          $SUDO iptables -S INPUT | grep -- '--dport 22'
+          FW
+
+          echo "===== Step 2: sshd ListenAddress 127.0.0.1 ====="
+          SSH_RUN 'bash -s' <<'SSHD'
+          set -e
+          SUDO=""; sudo -n true 2>/dev/null && SUDO="sudo -n" || exit 1
+          # 移除既有 ListenAddress（主配置 + drop-in），写入统一 drop-in
+          $SUDO sed -i 's/^[[:space:]]*ListenAddress[[:space:]].*/# &/' /etc/ssh/sshd_config
+          $SUDO mkdir -p /etc/ssh/sshd_config.d
+          printf '# SSH 仅监听 localhost —— 仅允许 Cloudflare Tunnel 进入\nListenAddress 127.0.0.1\n' \
+            | $SUDO tee /etc/ssh/sshd_config.d/99-tunnel-only.conf > /dev/null
+          $SUDO sshd -t
+          $SUDO systemctl reload sshd 2>/dev/null || $SUDO systemctl reload ssh 2>/dev/null || $SUDO service ssh reload
+          echo ">>> sshd reloaded"
+          $SUDO ss -tlnp | grep ':22 '
+          SSHD
+
+          echo "===== Step 3: verify ====="
+          sleep 2
+          SSH_RUN 'echo "✅ 隧道重连 OK: $(hostname) | listeners: $(ss -tln | grep ":22 " | tr "\n" " ")"' || {
+            echo "❌ 重连失败 —— 立即人工检查！"
+            exit 1
+          }
+          echo ">>> 完成：sshd 现在只监听 127.0.0.1，公网 22 已关闭"
+          echo "✅ LOCKDOWN-DONE $TARGET_HOST" >> "$GITHUB_STEP_SUMMARY"
