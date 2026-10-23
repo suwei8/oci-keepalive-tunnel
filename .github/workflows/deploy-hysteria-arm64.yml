@@ -380,7 +380,10 @@ jobs:
               fi
               # 检查证书是否已过期或即将过期 (30天内)
               CERT_EXPIRY=$(sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" "echo '#!/bin/sh' > ~/.askpass.sh; echo 'echo \"\$SSH_PASSWORD\"' >> ~/.askpass.sh; chmod +x ~/.askpass.sh; export SUDO_ASKPASS=~/.askpass.sh; sudo() { command sudo -A \"\$@\"; }; export -f sudo; sudo openssl x509 -in /etc/letsencrypt/live/${PROXY_DOMAIN_LC}/fullchain.pem -noout -enddate 2>/dev/null | cut -d= -f2" 2>&1 | tail -1) || true
-              if [ -n "$CERT_EXPIRY" ]; then
+              if [ -z "$CERT_EXPIRY" ]; then
+                echo "⚠️ 证书文件缺失: /etc/letsencrypt/live/${PROXY_DOMAIN_LC}/fullchain.pem"
+                CONFIG_VALID="no"
+              else
                 EXPIRY_EPOCH=$(date -d "$CERT_EXPIRY" +%s 2>/dev/null || echo 0)
                 NOW_EPOCH=$(date +%s)
                 DAYS_LEFT=$(( (EXPIRY_EPOCH - NOW_EPOCH) / 86400 ))
@@ -398,6 +401,35 @@ jobs:
               echo ">>> 更新 Hysteria 镜像..."
               # 如果配置无效，先修复配置
               if [ "$CONFIG_VALID" = "no" ]; then
+                # 域名轮换后新证书可能从未签发，先确保证书存在再改配置
+                CERT_FILE=$(sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" "echo '#!/bin/sh' > ~/.askpass.sh; echo 'echo \"\$SSH_PASSWORD\"' >> ~/.askpass.sh; chmod +x ~/.askpass.sh; export SUDO_ASKPASS=~/.askpass.sh; sudo() { command sudo -A \"\$@\"; }; export -f sudo; sudo test -f /etc/letsencrypt/live/${PROXY_DOMAIN_LC}/fullchain.pem && echo CERT_FOUND || echo CERT_MISSING" 2>/dev/null | tail -1) || true
+                if [ "$CERT_FILE" != "CERT_FOUND" ]; then
+                  echo ">>> 为新域名申请 SSL 证书..."
+                  sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" "
+                    echo '#!/bin/sh' > ~/.askpass.sh; echo 'echo \"$SSH_PASSWORD\"' >> ~/.askpass.sh; chmod +x ~/.askpass.sh; export SUDO_ASKPASS=~/.askpass.sh; sudo() { command sudo -A \"\$@\"; }; export -f sudo;
+                    if ! command -v certbot > /dev/null 2>&1; then
+                      sudo env DEBIAN_FRONTEND=noninteractive apt-get update -qq && sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq certbot || true
+                    fi
+                    STOPPED_SVCS=''
+                    for S in caddy nginx apache2 httpd; do
+                      if systemctl is-active --quiet \$S 2>/dev/null; then STOPPED_SVCS=\"\$STOPPED_SVCS \$S\"; sudo systemctl stop \$S; fi
+                    done
+                    sudo fuser -k 80/tcp 2>/dev/null || true
+                    sleep 2
+                    sudo certbot delete --cert-name ${PROXY_DOMAIN_LC} --non-interactive 2>/dev/null || true
+                    sudo rm -rf /etc/letsencrypt/live/${PROXY_DOMAIN_LC} /etc/letsencrypt/archive/${PROXY_DOMAIN_LC} /etc/letsencrypt/renewal/${PROXY_DOMAIN_LC}.conf 2>/dev/null || true
+                    sudo certbot certonly --standalone -d ${PROXY_DOMAIN} --non-interactive --agree-tos --email ${CURRENT_API_EMAIL} --pre-hook \"systemctl stop nginx; systemctl stop caddy; true\" --post-hook \"systemctl start nginx; systemctl start caddy; true\" || true
+                    for S in \$STOPPED_SVCS; do sudo systemctl start \$S 2>/dev/null || true; done
+                  " 2>&1
+                  CERT_FILE=$(sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" "echo '#!/bin/sh' > ~/.askpass.sh; echo 'echo \"\$SSH_PASSWORD\"' >> ~/.askpass.sh; chmod +x ~/.askpass.sh; export SUDO_ASKPASS=~/.askpass.sh; sudo() { command sudo -A \"\$@\"; }; export -f sudo; sudo test -f /etc/letsencrypt/live/${PROXY_DOMAIN_LC}/fullchain.pem && echo CERT_FOUND || echo CERT_MISSING" 2>/dev/null | tail -1) || true
+                  if [ "$CERT_FILE" != "CERT_FOUND" ]; then
+                    echo "❌ SSL 证书申请失败，跳过该主机"
+                    FAILED_COUNT=$((FAILED_COUNT + 1))
+                    kill $TUNNEL_PID 2>/dev/null || true
+                    continue
+                  fi
+                  echo "✅ SSL 证书就绪"
+                fi
                 echo ">>> 修复配置文件..."
                 sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" "cat > /home/sw/docker_root/hy/hy.yaml << EOFHY
           listen: :${HYSTERIA_PORT}
@@ -432,7 +464,10 @@ jobs:
           EOFHY" 2>&1 || true
                 echo "✅ 配置已修复"
               fi
-              sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" "echo '#!/bin/sh' > ~/.askpass.sh; echo 'echo \"\$SSH_PASSWORD\"' >> ~/.askpass.sh; chmod +x ~/.askpass.sh; export SUDO_ASKPASS=~/.askpass.sh; sudo() { command sudo -A \"\$@\"; }; export -f sudo; cd /home/sw/docker_root/hy && sudo docker compose pull && sudo docker compose up -d" 2>&1 || true
+              # 配置被改写时必须重建容器，hysteria 只在启动时读取 hy.yaml 证书路径
+              RECREATE_OPT=""
+              [ "$CONFIG_VALID" = "no" ] && RECREATE_OPT="--force-recreate"
+              sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p 2222 "${SSH_USERNAME}@127.0.0.1" "echo '#!/bin/sh' > ~/.askpass.sh; echo 'echo \"\$SSH_PASSWORD\"' >> ~/.askpass.sh; chmod +x ~/.askpass.sh; export SUDO_ASKPASS=~/.askpass.sh; sudo() { command sudo -A \"\$@\"; }; export -f sudo; cd /home/sw/docker_root/hy && sudo docker compose pull && sudo docker compose up -d $RECREATE_OPT" 2>&1 || true
               UPDATED_COUNT=$((UPDATED_COUNT + 1))
               echo "✅ 镜像已更新"
               NODES_INFO="${NODES_INFO}hysteria2://${HYSTERIA_PASSWORD}@${PROXY_DOMAIN}:${HYSTERIA_PORT}?insecure=0&sni=${PROXY_DOMAIN}#${HOST_NAME}\n"
@@ -506,7 +541,7 @@ jobs:
                   fi
                 fi
                 # 停止所有占用端口80的服务
-                sudo systemctl stop nginx 2>/dev/null || true
+                sudo systemctl stop nginx caddy 2>/dev/null || true
                 sudo docker stop \$(sudo docker ps -q --filter 'publish=80') 2>/dev/null || true
                 sudo docker stop nginx 2>/dev/null || true
                 sudo docker stop hysteria-server 2>/dev/null || true
@@ -517,8 +552,8 @@ jobs:
                 echo '>>> 清理旧证书数据...'
                 sudo certbot delete --cert-name ${PROXY_DOMAIN_LC} --non-interactive 2>/dev/null || true
                 sudo rm -rf /etc/letsencrypt/live/${PROXY_DOMAIN_LC} /etc/letsencrypt/archive/${PROXY_DOMAIN_LC} /etc/letsencrypt/renewal/${PROXY_DOMAIN_LC}.conf 2>/dev/null || true
-                sudo certbot certonly --standalone -d ${PROXY_DOMAIN} --non-interactive --agree-tos --email ${CURRENT_API_EMAIL} --http-01-port 80 --pre-hook \"systemctl stop nginx\" --post-hook \"systemctl start nginx\" || true
-                sudo systemctl start nginx 2>/dev/null || true
+                sudo certbot certonly --standalone -d ${PROXY_DOMAIN} --non-interactive --agree-tos --email ${CURRENT_API_EMAIL} --http-01-port 80 --pre-hook \"systemctl stop nginx; systemctl stop caddy; true\" --post-hook \"systemctl start nginx; systemctl start caddy; true\" || true
+                sudo systemctl start nginx caddy 2>/dev/null || true
               " 2>&1
               
               # 验证证书是否存在
