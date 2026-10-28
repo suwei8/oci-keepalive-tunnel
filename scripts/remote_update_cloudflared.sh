@@ -185,6 +185,16 @@ verify_mode() {
     st="${st:-running}"
   fi
 
+  # apply 失败时把最近一次 cfup-* 单元的 journal 打出来(错误细节都在里面)
+  if [ "$st" != "done" ] && [ "$st" != "running" ]; then
+    unit="$(run_root journalctl -F _SYSTEMD_UNIT 2>/dev/null | grep '^cfup-' | sort | tail -1)"
+    if [ -n "$unit" ]; then
+      echo "----- journal $unit (tail 50) -----"
+      run_root journalctl -u "$unit" --no-pager -n 50 2>/dev/null | tail -50
+      echo "----- end journal -----"
+    fi
+  fi
+
   emit AFTER_VERSION "${now:-${aft:-unknown}}"
   emit APPLY_STATUS "${st:-missing}"
   emit APPLY_METHOD "${meth:-unknown}"
