@@ -299,7 +299,7 @@ jobs:
           WF="$(python3 -c "import json; print(json.load(open('$RESULT_FILE')).get('workflow_status',''))")"
           echo ">>> 最终状态: $WF"
           case "$WF" in
-            verify_failed|launch_failed|remote_failed|tunnel_failed|auth_failed) exit 1 ;;
+            verify_failed|launch_failed|remote_failed|tunnel_failed|auth_failed|stale_process) exit 1 ;;
           esac
 
       - name: Upload result
@@ -353,7 +353,8 @@ jobs:
 
           upgraded   = [f'{d["host"]}({ver(d)})' for d in rows if d.get("workflow_status") == "success"]
           latest     = [d["host"] for d in rows if d.get("workflow_status") == "already_latest"]
-          pending    = [d["host"] for d in rows if d.get("workflow_status") in ("upgrade_launched", "verify_pending")]
+          pending    = [f'{d["host"]}({d.get("workflow_status")})' for d in rows
+                        if d.get("workflow_status") in ("upgrade_launched", "verify_pending", "stale_process")]
           noinstall  = [d["host"] for d in rows if d.get("workflow_status") in ("not_installed", "unsupported_os")]
           failed     = [f'{d["host"]}({d.get("workflow_status")})' for d in rows
                         if d.get("workflow_status") in ("verify_failed", "remote_failed", "tunnel_failed", "launch_failed", "auth_failed")]

@@ -64,13 +64,29 @@ ensure_apt_repo() {
 }
 
 restart_service() {
+  local svc="none" extra="" stray="" p cgrp u
   if run_root systemctl cat cloudflared.service >/dev/null 2>&1; then
     run_root systemctl try-restart cloudflared.service || true
     sleep 3
-    run_root systemctl is-active cloudflared.service 2>/dev/null || echo "unknown"
-  else
-    echo "none"
+    svc="$(run_root systemctl is-active cloudflared.service 2>/dev/null || echo unknown)"
   fi
+  # 隧道可能跑在别的单元(cloudflared@x.service 等)或非 systemd 进程里:
+  # 按运行中进程的 cgroup 反查所属单元逐个重启; 非 systemd 托管的记录下来。
+  for p in $(pgrep -x cloudflared 2>/dev/null); do
+    cgrp="$(awk -F: '{print $NF}' "/proc/$p/cgroup" 2>/dev/null)"
+    case "$cgrp" in
+      *.service)
+        u="${cgrp##*/}"
+        if [ "$u" != "cloudflared.service" ]; then
+          run_root systemctl try-restart "$u" || true
+          extra="$extra $u"
+        fi ;;
+      *) stray="$stray $p" ;;
+    esac
+  done
+  [ -n "$extra" ] && svc="${svc} restarted_extra:$(echo "$extra" | xargs | tr ' ' ',')"
+  [ -n "$stray" ] && svc="${svc} stray_pids:$(echo "$stray" | xargs | tr ' ' ',')"
+  echo "$svc"
 }
 
 check_mode() {
@@ -202,12 +218,33 @@ verify_mode() {
     fi
   fi
 
+  # 检查"正在运行的进程"版本: 二进制升级了但旧进程没重启,
+  # CF 面板仍显示旧版本(隧道由其它单元/裸进程/docker 提供)。
+  # /proc/<pid>/exe 对旧二进制(已删除)仍能执行拿到旧版本号;
+  # 需 root 才能读他人进程 exe -> run_root。
+  # etimes>90s 才算 stale, 避开服务重启瞬间旧 pid 未退出的误判。
+  local stale=0 running_vers="" pv p_age
+  for p in $(pgrep -x cloudflared 2>/dev/null); do
+    pv="$(run_root /proc/$p/exe --version 2>/dev/null | awk '{print $3}')"
+    p_age="$(ps -o etimes= -p "$p" 2>/dev/null | tr -d ' ')"
+    running_vers="$running_vers ${p}:${pv:-?}(${p_age:-?}s)"
+    if [ -n "${TARGET_VERSION:-}" ] && ! ver_ge "${pv:-}" "$TARGET_VERSION" \
+       && [ "${p_age:-9999}" -gt 90 ] 2>/dev/null; then
+      stale=$((stale+1))
+    fi
+  done
+  running_vers="$(echo "$running_vers" | xargs)"
+
   emit AFTER_VERSION "${now:-${aft:-unknown}}"
   emit APPLY_STATUS "${st:-missing}"
   emit APPLY_METHOD "${meth:-unknown}"
   emit SERVICE_ACTIVE "${svc:-none}"
+  emit RUNNING_PROCS "${running_vers:-none}"
+  emit STALE_PROCS "$stale"
 
-  if [ -n "${TARGET_VERSION:-}" ] && ver_ge "${now:-}" "$TARGET_VERSION"; then
+  if [ "$stale" -gt 0 ]; then
+    emit WORKFLOW_STATUS stale_process
+  elif [ -n "${TARGET_VERSION:-}" ] && ver_ge "${now:-}" "$TARGET_VERSION"; then
     emit WORKFLOW_STATUS success
   elif [ "$st" = "running" ]; then
     emit WORKFLOW_STATUS verify_pending
