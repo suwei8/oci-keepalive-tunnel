@@ -122,8 +122,15 @@ apply_mode() {
   if is_dpkg; then
     method="apt"
     ensure_apt_repo || true
-    if run_root apt-get update -qq \
-       && run_root env DEBIAN_FRONTEND=noninteractive apt-get install -y --only-upgrade cloudflared; then
+    # 只刷新 cloudflared 源索引: 有的主机源列表本身带病(如 ports 镜像上
+    # 挂了 binary-amd64 外来架构条目), 全量 apt-get update 会 404 返回非零,
+    # 但 cloudflared 源其实是好的, 不应被其它源拖死。
+    run_root apt-get update \
+      -o Dir::Etc::sourcelist="sources.list.d/cloudflared.list" \
+      -o Dir::Etc::sourceparts="-" \
+      -o APT::Get::List-Cleanup="0" -qq \
+      || run_root apt-get update -qq || true
+    if run_root env DEBIAN_FRONTEND=noninteractive apt-get install -y --only-upgrade cloudflared; then
       status="done"
     else
       status="apt_failed"
