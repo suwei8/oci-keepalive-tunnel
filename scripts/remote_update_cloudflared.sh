@@ -63,27 +63,38 @@ ensure_apt_repo() {
   rm -f "$tmp_key" "$tmp_list"
 }
 
+# 列出运行中的 cloudflared 进程: 每行 "pid|ver|age_s|owner_unit"
+# /proc/<pid>/exe 对旧(已替换)二进制仍可执行拿到旧版本号;
+# 需 root 才能读他人进程 exe -> run_root。owner 由 cgroup 末段解析。
+list_cloudflared_procs() {
+  local p pv p_age cgrp unit
+  for p in $(pgrep -x cloudflared 2>/dev/null); do
+    pv="$(run_root /proc/"$p"/exe --version 2>/dev/null | awk '{print $3}')"
+    p_age="$(ps -o etimes= -p "$p" 2>/dev/null | tr -d ' ')"
+    cgrp="$(awk -F: '{print $NF}' "/proc/$p/cgroup" 2>/dev/null)"
+    unit="${cgrp##*/}"
+    echo "${p}|${pv:-?}|${p_age:-0}|${unit:-?}"
+  done
+}
+
 restart_service() {
-  local svc="none" extra="" stray="" p cgrp u
+  local svc="none" extra="" stray="" p pv p_age unit
   if run_root systemctl cat cloudflared.service >/dev/null 2>&1; then
     run_root systemctl try-restart cloudflared.service || true
     sleep 3
     svc="$(run_root systemctl is-active cloudflared.service 2>/dev/null || echo unknown)"
   fi
-  # 隧道可能跑在别的单元(cloudflared@x.service 等)或非 systemd 进程里:
-  # 按运行中进程的 cgroup 反查所属单元逐个重启; 非 systemd 托管的记录下来。
-  for p in $(pgrep -x cloudflared 2>/dev/null); do
-    cgrp="$(awk -F: '{print $NF}' "/proc/$p/cgroup" 2>/dev/null)"
-    case "$cgrp" in
+  # 隧道可能跑在别的单元(cloudflared@x.service 等): 按进程 cgroup 反查
+  # 所属单元逐个重启; docker/裸进程无法重启 -> 记录 stray。
+  while IFS='|' read -r p pv p_age unit; do
+    case "$unit" in
+      cloudflared.service) : ;;  # 上面已处理
       *.service)
-        u="${cgrp##*/}"
-        if [ "$u" != "cloudflared.service" ]; then
-          run_root systemctl try-restart "$u" || true
-          extra="$extra $u"
-        fi ;;
-      *) stray="$stray $p" ;;
+        run_root systemctl try-restart "$unit" || true
+        extra="$extra $unit" ;;
+      *) stray="$stray ${p}(${unit})" ;;
     esac
-  done
+  done < <(list_cloudflared_procs)
   [ -n "$extra" ] && svc="${svc} restarted_extra:$(echo "$extra" | xargs | tr ' ' ',')"
   [ -n "$stray" ] && svc="${svc} stray_pids:$(echo "$stray" | xargs | tr ' ' ',')"
   echo "$svc"
@@ -114,7 +125,41 @@ check_mode() {
   emit INSTALL_TYPE "$install_type"
 
   if [ -n "${TARGET_VERSION:-}" ] && ver_ge "${before:-}" "$TARGET_VERSION"; then
-    emit WORKFLOW_STATUS already_latest
+    # 二进制已最新,但"正在运行的进程"可能还是旧版: 隧道不归
+    # cloudflared.service 管时,apt postinst/try-restart 碰不到它,
+    # CF 面板仍显示旧版本。扫描运行进程, 归 systemd 单元的直接重启
+    # (新二进制即生效) -> restart_launched,走工作流的 verify 通道;
+    # docker/裸进程 -> stale_process 交人工。
+    local stale=0 units="" strays="" rvers=""
+    while IFS='|' read -r p pv p_age unit; do
+      rvers="$rvers ${p}:${pv}(${p_age}s@${unit})"
+      if ! ver_ge "${pv:-}" "$TARGET_VERSION" && [ "${p_age:-9999}" -gt 90 ] 2>/dev/null; then
+        stale=$((stale+1))
+        case "$unit" in
+          *.service) units="$units $unit" ;;
+          *) strays="$strays ${p}(${unit})" ;;
+        esac
+      fi
+    done < <(list_cloudflared_procs)
+    rvers="$(echo "$rvers" | xargs)"; strays="$(echo "$strays" | xargs)"
+    emit RUNNING_PROCS "${rvers:-none}"
+    emit STALE_PROCS "$stale"
+    if [ "$stale" -eq 0 ]; then
+      emit WORKFLOW_STATUS already_latest
+      return 0
+    fi
+    units="$(echo "$units" | xargs)"
+    emit STRAY_PIDS "${strays:-none}"
+    if [ -n "$units" ]; then
+      # 先 emit 再重启: 若该单元正承载本 SSH 会话, restart 会立即断连,
+      # 结果行必须在此之前已送达。断连属预期, 工作流按 restart_launched 走 verify。
+      emit WORKFLOW_STATUS restart_launched
+      for u in $units; do
+        run_root systemctl try-restart "$u" || true
+      done
+    else
+      emit WORKFLOW_STATUS stale_process
+    fi
     return 0
   fi
 
@@ -220,19 +265,15 @@ verify_mode() {
 
   # 检查"正在运行的进程"版本: 二进制升级了但旧进程没重启,
   # CF 面板仍显示旧版本(隧道由其它单元/裸进程/docker 提供)。
-  # /proc/<pid>/exe 对旧二进制(已删除)仍能执行拿到旧版本号;
-  # 需 root 才能读他人进程 exe -> run_root。
   # etimes>90s 才算 stale, 避开服务重启瞬间旧 pid 未退出的误判。
-  local stale=0 running_vers="" pv p_age
-  for p in $(pgrep -x cloudflared 2>/dev/null); do
-    pv="$(run_root /proc/$p/exe --version 2>/dev/null | awk '{print $3}')"
-    p_age="$(ps -o etimes= -p "$p" 2>/dev/null | tr -d ' ')"
-    running_vers="$running_vers ${p}:${pv:-?}(${p_age:-?}s)"
+  local stale=0 running_vers=""
+  while IFS='|' read -r p pv p_age unit; do
+    running_vers="$running_vers ${p}:${pv}(${p_age}s@${unit})"
     if [ -n "${TARGET_VERSION:-}" ] && ! ver_ge "${pv:-}" "$TARGET_VERSION" \
        && [ "${p_age:-9999}" -gt 90 ] 2>/dev/null; then
       stale=$((stale+1))
     fi
-  done
+  done < <(list_cloudflared_procs)
   running_vers="$(echo "$running_vers" | xargs)"
 
   emit AFTER_VERSION "${now:-${aft:-unknown}}"

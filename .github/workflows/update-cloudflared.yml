@@ -227,10 +227,13 @@ jobs:
               < scripts/remote_update_cloudflared.sh > "$PHASE_A_LOG" 2>&1
             RC_A=$?
             set -e
+            # restart_launched 会重启承载本会话的单元 -> 会话死(rc=255)但
+            # RESULT 行已送达, 不算失败不重试
+            grep -q '^RESULT_WORKFLOW_STATUS=' "$PHASE_A_LOG" && break
           done
           cat "$PHASE_A_LOG"
 
-          if [ "$RC_A" -ne 0 ] || ! grep -q '^RESULT_WORKFLOW_STATUS=' "$PHASE_A_LOG"; then
+          if ! grep -q '^RESULT_WORKFLOW_STATUS=' "$PHASE_A_LOG"; then
             if grep -q "Permission denied" "$PHASE_A_LOG"; then
               python3 scripts/workflow_result_helper.py write-result \
                 "$RESULT_FILE" "$HOST_NAME" "$HOST_INDEX" "auth_failed" "ssh auth rejected"
@@ -245,7 +248,7 @@ jobs:
           STATUS_A="$(grep '^RESULT_WORKFLOW_STATUS=' "$PHASE_A_LOG" | tail -1 | cut -d= -f2)"
           echo ">>> Phase A 状态: $STATUS_A"
 
-          if [ "$STATUS_A" = "upgrade_launched" ]; then
+          if [ "$STATUS_A" = "upgrade_launched" ] || [ "$STATUS_A" = "restart_launched" ]; then
             cp "$PHASE_A_LOG" "$COMBINED_LOG"
             echo ">>> 升级已在远程 systemd 单元中执行, 等待隧道重建..."
             sleep 45
@@ -285,7 +288,7 @@ jobs:
           import json, sys
           p = sys.argv[1]
           d = json.load(open(p))
-          if d.get("workflow_status") in ("upgrade_launched", "verify_pending", "", None):
+          if d.get("workflow_status") in ("upgrade_launched", "restart_launched", "verify_pending", "", None):
               d["workflow_status"] = "verify_failed"
               json.dump(d, open(p, "w"), ensure_ascii=False, indent=2)
           PY
@@ -354,7 +357,7 @@ jobs:
           upgraded   = [f'{d["host"]}({ver(d)})' for d in rows if d.get("workflow_status") == "success"]
           latest     = [d["host"] for d in rows if d.get("workflow_status") == "already_latest"]
           pending    = [f'{d["host"]}({d.get("workflow_status")})' for d in rows
-                        if d.get("workflow_status") in ("upgrade_launched", "verify_pending", "stale_process")]
+                        if d.get("workflow_status") in ("upgrade_launched", "restart_launched", "verify_pending", "stale_process")]
           noinstall  = [d["host"] for d in rows if d.get("workflow_status") in ("not_installed", "unsupported_os")]
           failed     = [f'{d["host"]}({d.get("workflow_status")})' for d in rows
                         if d.get("workflow_status") in ("verify_failed", "remote_failed", "tunnel_failed", "launch_failed", "auth_failed")]
