@@ -212,17 +212,32 @@ jobs:
           fi
 
           # ---- Phase A: check -> 落后则以 systemd-run 分离启动 apply ----
-          set +e
-          sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -p 2222 "${SSH_USERNAME}@127.0.0.1" \
-            "export SSH_PASSWORD='$SSH_PASSWORD' TARGET_VERSION='$TARGET_VERSION'; cat > /tmp/cfup-agent.sh && bash /tmp/cfup-agent.sh check" \
-            < scripts/remote_update_cloudflared.sh > "$PHASE_A_LOG" 2>&1
-          RC_A=$?
-          set -e
+          # 隧道/远端 cloudflared 重启会造成 kex reset, 重试 3 次并重建代理
+          RC_A=255; SSH_ATTEMPT=0
+          while [ "$RC_A" -eq 255 ] && [ "$SSH_ATTEMPT" -lt 3 ]; do
+            SSH_ATTEMPT=$((SSH_ATTEMPT + 1))
+            if [ "$SSH_ATTEMPT" -gt 1 ]; then
+              echo "[WARN] Phase A SSH 失败 (rc=255), 重建代理重试 ${SSH_ATTEMPT}/3"
+              start_proxy || true
+              sleep 10
+            fi
+            set +e
+            sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -p 2222 "${SSH_USERNAME}@127.0.0.1" \
+              "export SSH_PASSWORD='$SSH_PASSWORD' TARGET_VERSION='$TARGET_VERSION'; cat > /tmp/cfup-agent.sh && bash /tmp/cfup-agent.sh check" \
+              < scripts/remote_update_cloudflared.sh > "$PHASE_A_LOG" 2>&1
+            RC_A=$?
+            set -e
+          done
           cat "$PHASE_A_LOG"
 
           if [ "$RC_A" -ne 0 ] || ! grep -q '^RESULT_WORKFLOW_STATUS=' "$PHASE_A_LOG"; then
-            python3 scripts/workflow_result_helper.py merge-remote-log \
-              "$PHASE_A_LOG" "$RESULT_FILE" "$HOST_NAME" "$HOST_INDEX" 1
+            if grep -q "Permission denied" "$PHASE_A_LOG"; then
+              python3 scripts/workflow_result_helper.py write-result \
+                "$RESULT_FILE" "$HOST_NAME" "$HOST_INDEX" "auth_failed" "ssh auth rejected"
+            else
+              python3 scripts/workflow_result_helper.py merge-remote-log \
+                "$PHASE_A_LOG" "$RESULT_FILE" "$HOST_NAME" "$HOST_INDEX" 1
+            fi
             python3 scripts/workflow_result_helper.py enforce-fatal "$RESULT_FILE" || true
             exit 1
           fi
@@ -284,7 +299,7 @@ jobs:
           WF="$(python3 -c "import json; print(json.load(open('$RESULT_FILE')).get('workflow_status',''))")"
           echo ">>> 最终状态: $WF"
           case "$WF" in
-            verify_failed|launch_failed|remote_failed|tunnel_failed) exit 1 ;;
+            verify_failed|launch_failed|remote_failed|tunnel_failed|auth_failed) exit 1 ;;
           esac
 
       - name: Upload result
@@ -341,7 +356,7 @@ jobs:
           pending    = [d["host"] for d in rows if d.get("workflow_status") in ("upgrade_launched", "verify_pending")]
           noinstall  = [d["host"] for d in rows if d.get("workflow_status") in ("not_installed", "unsupported_os")]
           failed     = [f'{d["host"]}({d.get("workflow_status")})' for d in rows
-                        if d.get("workflow_status") in ("verify_failed", "remote_failed", "tunnel_failed", "launch_failed")]
+                        if d.get("workflow_status") in ("verify_failed", "remote_failed", "tunnel_failed", "launch_failed", "auth_failed")]
           reported   = {d["host"] for d in rows}
 
           def fmt(items, limit=15):
