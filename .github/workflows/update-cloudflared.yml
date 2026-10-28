@@ -160,11 +160,13 @@ jobs:
           CF_ACC_ID_HHWPXH: ${{ secrets.CF_ACCESS_ID_HHWPXH }}
           CF_ACC_SECRET_HHWPXH: ${{ secrets.CF_ACCESS_SECRET_HHWPXH }}
           SSH_USERNAME: ${{ matrix.cpu_type == 'amd64' && secrets.AMD_SSH_USERNAME || secrets.SSH_USERNAME }}
+          ALT_SSH_USERNAME: ${{ matrix.cpu_type == 'amd64' && secrets.SSH_USERNAME || secrets.AMD_SSH_USERNAME }}
           GCP_SSH_USERNAME: ${{ secrets.GCP_SSH_USERNAME }}
           SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }}
           HOST_NAME: ${{ matrix.name }}
           HOST_INDEX: ${{ matrix.index }}
           SSH_HOST: ${{ matrix.ssh_host }}
+          CPU_TYPE: ${{ matrix.cpu_type }}
           TARGET_VERSION: ${{ needs.prepare.outputs.target_version }}
         run: |
           set -Eeuo pipefail
@@ -180,13 +182,6 @@ jobs:
 
           echo "::add-mask::$SSH_HOST"
           echo "::add-mask::$SSH_PASSWORD"
-
-          # GCP/trustclaw 主机用 GCP 专属 SSH 用户(同 deploy-vless/hysteria-amd64)
-          if echo "$HOST_NAME" | grep -Eqi "GCP|trustclaw" && [ -n "${GCP_SSH_USERNAME:-}" ]; then
-            SSH_USERNAME="$GCP_SSH_USERNAME"
-            echo ">>> 使用 GCP/trustclaw 用户名"
-          fi
-          echo "::add-mask::$SSH_USERNAME"
 
           TUNNEL_PID=""
           start_proxy() {
@@ -220,6 +215,32 @@ jobs:
               "$RESULT_FILE" "$HOST_NAME" "$HOST_INDEX" "tunnel_failed" "cloudflared ssh tunnel not ready"
             exit 1
           fi
+
+          # 登录用户探测: GCP/trustclaw -> GCP 用户优先; amd64 -> AMD 用户优先;
+          # 每个候选只做一次认证尝试, 首个成功者用, 不锁死在单一用户名上
+          CANDIDATES="$SSH_USERNAME ${ALT_SSH_USERNAME:-}"
+          if echo "$HOST_NAME" | grep -Eqi "GCP|trustclaw"; then
+            CANDIDATES="${GCP_SSH_USERNAME:-} $CANDIDATES"
+          fi
+          RESOLVED_SSH_USER=""
+          for u in $CANDIDATES; do
+            [ -z "$u" ] && continue
+            [ "$u" = "$RESOLVED_SSH_USER" ] && continue
+            if sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -o NumberOfPasswordPrompts=1 \
+                 -p 2222 "$u@127.0.0.1" "true" 2>/dev/null; then
+              RESOLVED_SSH_USER="$u"
+              break
+            fi
+          done
+          if [ -z "$RESOLVED_SSH_USER" ]; then
+            echo "❌ 所有候选用户名认证均失败"
+            python3 scripts/workflow_result_helper.py write-result \
+              "$RESULT_FILE" "$HOST_NAME" "$HOST_INDEX" "auth_failed" "all ssh user candidates rejected"
+            exit 1
+          fi
+          SSH_USERNAME="$RESOLVED_SSH_USER"
+          echo "::add-mask::$SSH_USERNAME"
+          echo ">>> SSH 用户已解析"
 
           # ---- Phase A: check -> 落后则以 systemd-run 分离启动 apply ----
           # 隧道/远端 cloudflared 重启会造成 kex reset, 重试 3 次并重建代理
