@@ -210,7 +210,9 @@ jobs:
           cleanup() { [ -n "${TUNNEL_PID:-}" ] && kill "$TUNNEL_PID" 2>/dev/null || true; }
           trap cleanup EXIT
 
-          SSH_OPTS="-o ConnectTimeout=25 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o PreferredAuthentications=password -o PubkeyAuthentication=no -o ServerAliveInterval=30"
+          # keyboard-interactive 也要放行: GCP 镜像常 PasswordAuthentication=no
+          # 但 KbdInteractiveAuthentication=yes, sshpass 对 kbd-int 提示符同样喂密码
+          SSH_OPTS="-o ConnectTimeout=25 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o PreferredAuthentications=password,keyboard-interactive -o PubkeyAuthentication=no -o ServerAliveInterval=30"
 
           if ! start_proxy; then
             echo "❌ 隧道代理未就绪"
