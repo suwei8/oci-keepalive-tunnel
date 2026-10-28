@@ -1,0 +1,386 @@
+name: Update cloudflared (All Hosts)
+
+# 批量升级所有主机上的 cloudflared。
+#
+# 难点: SSH 经 cloudflared 隧道, 升级时 postinst / systemctl restart 会断开
+# 当前会话。因此实际升级放在 systemd-run 分离单元中执行(断连不中断),
+# 等待隧道重建后二次 SSH 回连核验版本。
+#
+# 每台主机流程 (scripts/remote_update_cloudflared.sh):
+#   check  -> 已最新/未安装则直接结束; 否则 systemd-run 启动 apply
+#   apply  -> dpkg 安装走 apt --only-upgrade (缺 repo 自动补);
+#             裸二进制走 GitHub releases 下载替换; 之后 try-restart 服务
+#   verify -> 回连校验 cloudflared --version 与 systemctl is-active
+#
+# 注意: transport=direct 的主机不在矩阵内(与现有工作流一致)。
+
+on:
+  workflow_dispatch:
+    inputs:
+      cpu_type:
+        description: '主机类型'
+        required: true
+        type: choice
+        default: all
+        options: [all, arm64, amd64]
+      target_host:
+        description: '指定主机 (留空=全部)'
+        required: false
+        default: ''
+      target_version:
+        description: '目标版本 (留空=GitHub latest release)'
+        required: false
+        default: ''
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Prepare Matrix
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.prepare.outputs.matrix }}
+      host_count: ${{ steps.prepare.outputs.host_count }}
+      target_version: ${{ steps.prepare.outputs.target_version }}
+    steps:
+      - name: Build host matrix and resolve target version
+        id: prepare
+        env:
+          HOSTS_CONFIG_URL: ${{ secrets.HOSTS_CONFIG_URL }}
+          CPU_TYPE_FILTER: ${{ github.event.inputs.cpu_type }}
+          TARGET_HOST: ${{ github.event.inputs.target_host }}
+          TARGET_VERSION_INPUT: ${{ github.event.inputs.target_version }}
+          BLOG_GITHUB_TOKEN: ${{ secrets.BLOG_GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          HOSTS_JSON="$(curl -fsSL "$HOSTS_CONFIG_URL")"
+          export HOSTS_JSON
+          MATRIX_JSON="$(python3 - <<'PY'
+          import json, os
+          hosts = json.loads(os.environ["HOSTS_JSON"])
+          cpu = (os.environ.get("CPU_TYPE_FILTER") or "all").strip().lower()
+          target = (os.environ.get("TARGET_HOST") or "").strip()
+          matrix = []
+          for index, host in enumerate(hosts):
+              if (host.get("transport") or "").strip() == "direct":
+                  continue
+              hc = (host.get("cpu_type") or "").strip().lower()
+              if hc not in {"arm64", "amd64"}:
+                  continue
+              if cpu != "all" and hc != cpu:
+                  continue
+              name = (host.get("name") or "").strip()
+              ssh_host = (host.get("ssh_host") or "").strip()
+              if not name or not ssh_host:
+                  continue
+              if target and name != target:
+                  continue
+              if "muse" in name.lower():
+                  continue
+              matrix.append({"index": index, "name": name,
+                             "ssh_host": ssh_host, "cpu_type": hc})
+          print(json.dumps({"include": matrix}, ensure_ascii=False))
+          PY
+          )"
+          export MATRIX_JSON
+          HOST_COUNT="$(python3 -c 'import json,os; print(len(json.loads(os.environ["MATRIX_JSON"])["include"]))')"
+
+          if [ -n "${TARGET_VERSION_INPUT:-}" ]; then
+            TARGET_VERSION="$TARGET_VERSION_INPUT"
+          else
+            TARGET_VERSION="$(curl -fsSL \
+              -H "Authorization: Bearer ${BLOG_GITHUB_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              https://api.github.com/repos/cloudflare/cloudflared/releases/latest \
+              | python3 -c 'import json,sys; print(json.load(sys.stdin)["tag_name"])')" \
+              || TARGET_VERSION="$(curl -fsSL \
+                https://api.github.com/repos/cloudflare/cloudflared/releases/latest \
+                | python3 -c 'import json,sys; print(json.load(sys.stdin)["tag_name"])')"
+          fi
+          TARGET_VERSION="${TARGET_VERSION#v}"
+          if [ -z "$TARGET_VERSION" ]; then
+            echo "❌ 无法解析 cloudflared 目标版本"
+            exit 1
+          fi
+
+          echo "matrix=${MATRIX_JSON}" >> "$GITHUB_OUTPUT"
+          echo "host_count=${HOST_COUNT}" >> "$GITHUB_OUTPUT"
+          echo "target_version=${TARGET_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Prepared ${HOST_COUNT} host(s), target cloudflared ${TARGET_VERSION}"
+
+  update:
+    name: ${{ matrix.name }}
+    needs: prepare
+    if: needs.prepare.outputs.host_count != '0'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix: ${{ fromJson(needs.prepare.outputs.matrix) }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Install cloudflared
+        run: |
+          set -euo pipefail
+          if [ -f bin/cloudflared ]; then
+            sudo cp bin/cloudflared /usr/local/bin/cloudflared
+          else
+            curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o /tmp/cloudflared
+            chmod +x /tmp/cloudflared
+            sudo mv /tmp/cloudflared /usr/local/bin/cloudflared
+          fi
+          cloudflared --version
+
+      - name: Setup SSH
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          cat >> ~/.ssh/config <<'EOF'
+          Host *
+            StrictHostKeyChecking no
+            UserKnownHostsFile /dev/null
+            LogLevel ERROR
+          EOF
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq sshpass netcat-openbsd jq
+
+      - name: Update cloudflared on remote host
+        env:
+          CF_ACC_ID_555606: ${{ secrets.CF_ACCESS_ID_555606 }}
+          CF_ACC_SECRET_555606: ${{ secrets.CF_ACCESS_SECRET_555606 }}
+          CF_ACC_ID_HHWPXH: ${{ secrets.CF_ACCESS_ID_HHWPXH }}
+          CF_ACC_SECRET_HHWPXH: ${{ secrets.CF_ACCESS_SECRET_HHWPXH }}
+          SSH_USERNAME: ${{ matrix.cpu_type == 'amd64' && secrets.AMD_SSH_USERNAME || secrets.SSH_USERNAME }}
+          SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }}
+          HOST_NAME: ${{ matrix.name }}
+          HOST_INDEX: ${{ matrix.index }}
+          SSH_HOST: ${{ matrix.ssh_host }}
+          TARGET_VERSION: ${{ needs.prepare.outputs.target_version }}
+        run: |
+          set -Eeuo pipefail
+
+          mkdir -p results
+          RESULT_FILE="results/host_${HOST_INDEX}.json"
+          PHASE_A_LOG="results/host_${HOST_INDEX}.check.log"
+          PHASE_B_LOG="results/host_${HOST_INDEX}.verify.log"
+          COMBINED_LOG="results/host_${HOST_INDEX}.remote.log"
+
+          python3 scripts/workflow_result_helper.py write-result \
+            "$RESULT_FILE" "$HOST_NAME" "$HOST_INDEX" "running" ""
+
+          echo "::add-mask::$SSH_HOST"
+          echo "::add-mask::$SSH_PASSWORD"
+
+          TUNNEL_PID=""
+          start_proxy() {
+            if [ -n "${TUNNEL_PID:-}" ]; then
+              kill "$TUNNEL_PID" 2>/dev/null || true
+              TUNNEL_PID=""
+            fi
+            case "$SSH_HOST" in
+              *555606.xyz) CF_ACC_ID="$CF_ACC_ID_555606"; CF_ACC_SECRET="$CF_ACC_SECRET_555606" ;;
+              *) CF_ACC_ID="$CF_ACC_ID_HHWPXH"; CF_ACC_SECRET="$CF_ACC_SECRET_HHWPXH" ;;
+            esac
+            env TUNNEL_SERVICE_TOKEN_ID="$CF_ACC_ID" TUNNEL_SERVICE_TOKEN_SECRET="$CF_ACC_SECRET" \
+              cloudflared access ssh --hostname "$SSH_HOST" --url "ssh://127.0.0.1:2222" >/dev/null 2>&1 &
+            TUNNEL_PID=$!
+            for _ in $(seq 1 20); do
+              nc -z 127.0.0.1 2222 && return 0
+              sleep 1
+            done
+            return 1
+          }
+          cleanup() { [ -n "${TUNNEL_PID:-}" ] && kill "$TUNNEL_PID" 2>/dev/null || true; }
+          trap cleanup EXIT
+
+          SSH_OPTS="-o ConnectTimeout=25 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o PreferredAuthentications=password -o PubkeyAuthentication=no -o ServerAliveInterval=30"
+
+          if ! start_proxy; then
+            echo "❌ 隧道代理未就绪"
+            python3 scripts/workflow_result_helper.py write-result \
+              "$RESULT_FILE" "$HOST_NAME" "$HOST_INDEX" "tunnel_failed" "cloudflared ssh tunnel not ready"
+            exit 1
+          fi
+
+          # ---- Phase A: check -> 落后则以 systemd-run 分离启动 apply ----
+          set +e
+          sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -p 2222 "${SSH_USERNAME}@127.0.0.1" \
+            "export SSH_PASSWORD='$SSH_PASSWORD' TARGET_VERSION='$TARGET_VERSION'; cat > /tmp/cfup-agent.sh && bash /tmp/cfup-agent.sh check" \
+            < scripts/remote_update_cloudflared.sh > "$PHASE_A_LOG" 2>&1
+          RC_A=$?
+          set -e
+          cat "$PHASE_A_LOG"
+
+          if [ "$RC_A" -ne 0 ] || ! grep -q '^RESULT_WORKFLOW_STATUS=' "$PHASE_A_LOG"; then
+            python3 scripts/workflow_result_helper.py merge-remote-log \
+              "$PHASE_A_LOG" "$RESULT_FILE" "$HOST_NAME" "$HOST_INDEX" 1
+            python3 scripts/workflow_result_helper.py enforce-fatal "$RESULT_FILE" || true
+            exit 1
+          fi
+
+          STATUS_A="$(grep '^RESULT_WORKFLOW_STATUS=' "$PHASE_A_LOG" | tail -1 | cut -d= -f2)"
+          echo ">>> Phase A 状态: $STATUS_A"
+
+          if [ "$STATUS_A" = "upgrade_launched" ]; then
+            cp "$PHASE_A_LOG" "$COMBINED_LOG"
+            echo ">>> 升级已在远程 systemd 单元中执行, 等待隧道重建..."
+            sleep 45
+
+            for i in $(seq 1 10); do
+              if ! kill -0 "$TUNNEL_PID" 2>/dev/null || ! nc -z 127.0.0.1 2222; then
+                echo "[WARN] 代理进程已死或端口不通, 重建代理 (attempt $i/10)"
+                start_proxy || true
+              fi
+
+              set +e
+              sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -p 2222 "${SSH_USERNAME}@127.0.0.1" \
+                "export SSH_PASSWORD='$SSH_PASSWORD' TARGET_VERSION='$TARGET_VERSION'; bash /tmp/cfup-agent.sh verify" \
+                > "$PHASE_B_LOG" 2>&1
+              RC_B=$?
+              set -e
+              cat "$PHASE_B_LOG" >> "$COMBINED_LOG"
+              cat "$PHASE_B_LOG"
+
+              if [ "$RC_B" -eq 0 ] && grep -q '^RESULT_WORKFLOW_STATUS=' "$PHASE_B_LOG"; then
+                VS="$(grep '^RESULT_WORKFLOW_STATUS=' "$PHASE_B_LOG" | tail -1 | cut -d= -f2)"
+                if [ "$VS" != "verify_pending" ]; then
+                  break
+                fi
+                echo "[INFO] 远程升级仍在进行 (attempt $i/10), 继续等待..."
+              else
+                echo "[WARN] 核验 SSH 失败 rc=$RC_B (attempt $i/10), 重试..."
+              fi
+              sleep 15
+            done
+
+            python3 scripts/workflow_result_helper.py merge-remote-log \
+              "$COMBINED_LOG" "$RESULT_FILE" "$HOST_NAME" "$HOST_INDEX" 0
+
+            # verify 始终未产出最终状态 -> 标记 verify_failed 便于人工复核
+            python3 - "$RESULT_FILE" <<'PY'
+          import json, sys
+          p = sys.argv[1]
+          d = json.load(open(p))
+          if d.get("workflow_status") in ("upgrade_launched", "verify_pending", "", None):
+              d["workflow_status"] = "verify_failed"
+              json.dump(d, open(p, "w"), ensure_ascii=False, indent=2)
+          PY
+          else
+            # already_latest / not_installed / launch_failed / unsupported_os
+            python3 scripts/workflow_result_helper.py merge-remote-log \
+              "$PHASE_A_LOG" "$RESULT_FILE" "$HOST_NAME" "$HOST_INDEX" "$RC_A"
+          fi
+
+          python3 scripts/workflow_result_helper.py enforce-fatal "$RESULT_FILE" || true
+          WF="$(python3 -c "import json; print(json.load(open('$RESULT_FILE')).get('workflow_status',''))")"
+          echo ">>> 最终状态: $WF"
+          case "$WF" in
+            verify_failed|launch_failed|remote_failed|tunnel_failed) exit 1 ;;
+          esac
+
+      - name: Upload result
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: result-${{ matrix.index }}
+          path: |
+            results/host_${{ matrix.index }}.json
+            results/host_${{ matrix.index }}.check.log
+            results/host_${{ matrix.index }}.verify.log
+          if-no-files-found: ignore
+          retention-days: 7
+
+  notify:
+    name: Summary Notification
+    needs:
+      - prepare
+      - update
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all results
+        uses: actions/download-artifact@v8
+        with:
+          path: all-results
+          pattern: result-*
+          merge-multiple: false
+        continue-on-error: true
+
+      - name: Build summary message
+        env:
+          HOST_COUNT: ${{ needs.prepare.outputs.host_count }}
+          TARGET_VERSION: ${{ needs.prepare.outputs.target_version }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import glob, json, os
+
+          rows = []
+          for p in sorted(glob.glob("all-results/**/host_*.json", recursive=True)):
+              try:
+                  rows.append(json.load(open(p)))
+              except Exception:
+                  pass
+
+          def ver(d):
+              b = d.get("before_version", "?")
+              a = d.get("after_version", "")
+              return f"{b}→{a}" if a and a != "unknown" else str(b)
+
+          upgraded   = [f'{d["host"]}({ver(d)})' for d in rows if d.get("workflow_status") == "success"]
+          latest     = [d["host"] for d in rows if d.get("workflow_status") == "already_latest"]
+          pending    = [d["host"] for d in rows if d.get("workflow_status") in ("upgrade_launched", "verify_pending")]
+          noinstall  = [d["host"] for d in rows if d.get("workflow_status") in ("not_installed", "unsupported_os")]
+          failed     = [f'{d["host"]}({d.get("workflow_status")})' for d in rows
+                        if d.get("workflow_status") in ("verify_failed", "remote_failed", "tunnel_failed", "launch_failed")]
+          reported   = {d["host"] for d in rows}
+
+          def fmt(items, limit=15):
+              if not items:
+                  return "无"
+              s = "、".join(str(i) for i in items[:limit])
+              return s + (f" 等{len(items)}台" if len(items) > limit else "")
+
+          lines = [
+              "🔄 <b>cloudflared 批量升级</b>",
+              f"🎯 目标版本: {os.environ.get('TARGET_VERSION', '?')} | 主机数: {len(reported)}",
+              "",
+              f"✅ 已升级({len(upgraded)}): {fmt(upgraded)}",
+              f"⏭️ 已最新({len(latest)}): {fmt(latest)}",
+              f"⚠️ 待复核({len(pending) + len(failed)}): {fmt(pending + failed)}",
+              f"⊘ 未安装({len(noinstall)}): {fmt(noinstall)}",
+          ]
+          open("telegram_message.txt", "w").write("\n".join(lines)[:3900])
+          print("\n".join(lines))
+          PY
+
+      - name: Send summary to Telegram
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          set -euo pipefail
+          if [ -z "${TELEGRAM_BOT_TOKEN:-}" ] || [ -z "${TELEGRAM_CHAT_ID:-}" ]; then
+            echo "⚠️ Telegram 未配置, 跳过"
+            exit 0
+          fi
+          MESSAGE="$(cat telegram_message.txt)"
+          IFS=',' read -ra CHAT_IDS <<< "$TELEGRAM_CHAT_ID"
+          for chat_id in "${CHAT_IDS[@]}"; do
+            chat_id=$(echo "$chat_id" | xargs)
+            [ -z "$chat_id" ] && continue
+            curl -fsSL -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+              -d chat_id="${chat_id}" \
+              -d parse_mode="HTML" \
+              --data-urlencode "text=${MESSAGE}" >/dev/null || true
+          done
+          echo "✅ Telegram 通知已发送"

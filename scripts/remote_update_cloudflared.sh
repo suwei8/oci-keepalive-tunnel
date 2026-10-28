@@ -1,0 +1,207 @@
+#!/usr/bin/env bash
+# cloudflared 远程升级辅助脚本 —— 在目标主机上执行。
+#
+# 模式:
+#   check   检查当前版本; 已最新/未安装则直接输出 RESULT_* 退出;
+#           落后则通过 systemd-run 分离单元启动 `apply`。
+#           注意: SSH 走 cloudflared 隧道, 升级重启服务必然断开本会话,
+#           所以升级绝不能在前台 SSH 会话内执行。
+#   apply   实际执行升级 (systemd-run 单元内以 root 运行)。
+#           dpkg 安装的走 apt --only-upgrade (缺 repo 自动补齐);
+#           手工二进制安装的走 GitHub releases 下载替换。
+#           完成后 try-restart cloudflared 服务并写 /tmp/cfup_result.env。
+#   verify  升级后核验版本与服务状态, 输出 RESULT_*。
+#
+# 环境变量: TARGET_VERSION (目标版本, 如 2025.11.1); SSH_PASSWORD 仅作 sudo -S 兜底。
+
+set -uo pipefail
+
+MODE="${1:-check}"
+RESULT_FILE="/tmp/cfup_result.env"
+
+run_root() {
+  if [ "$(id -u)" -eq 0 ]; then
+    "$@"
+  elif sudo -n true 2>/dev/null; then
+    sudo "$@"
+  else
+    printf '%s\n' "${SSH_PASSWORD:-}" | sudo -S -k "$@"
+  fi
+}
+
+current_version() {
+  cloudflared --version 2>/dev/null | awk '{print $3}'
+}
+
+is_dpkg() {
+  dpkg-query -W -f='${Status}' cloudflared 2>/dev/null | grep -q 'install ok installed'
+}
+
+ver_ge() {
+  # $1 >= $2 (sort -V 版本比较); $1 为空视为不满足
+  [ -n "$1" ] && [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | head -n1)" = "$2" ]
+}
+
+emit() {
+  local v
+  v="$(printf '%s' "$2" | tr -d '\r\n\t' | tr ' ' '_')"
+  echo "RESULT_$1=${v:-unknown}"
+}
+
+ensure_apt_repo() {
+  [ -f /etc/apt/sources.list.d/cloudflared.list ] && return 0
+  if ! command -v curl >/dev/null 2>&1; then
+    run_root apt-get update -qq || true
+    run_root apt-get install -y -qq curl ca-certificates || true
+  fi
+  local tmp_key tmp_list
+  tmp_key="$(mktemp)"; tmp_list="$(mktemp)"
+  curl -fsSL https://pkg.cloudflare.com/cloudflare-public-v2.gpg -o "$tmp_key" || { rm -f "$tmp_key" "$tmp_list"; return 1; }
+  run_root install -D -m 644 "$tmp_key" /usr/share/keyrings/cloudflare-public-v2.gpg || { rm -f "$tmp_key" "$tmp_list"; return 1; }
+  printf '%s\n' 'deb [signed-by=/usr/share/keyrings/cloudflare-public-v2.gpg] https://pkg.cloudflare.com/cloudflared any main' > "$tmp_list"
+  run_root install -D -m 644 "$tmp_list" /etc/apt/sources.list.d/cloudflared.list || { rm -f "$tmp_key" "$tmp_list"; return 1; }
+  rm -f "$tmp_key" "$tmp_list"
+}
+
+restart_service() {
+  if run_root systemctl cat cloudflared.service >/dev/null 2>&1; then
+    run_root systemctl try-restart cloudflared.service || true
+    sleep 3
+    run_root systemctl is-active cloudflared.service 2>/dev/null || echo "unknown"
+  else
+    echo "none"
+  fi
+}
+
+check_mode() {
+  if [ "$(uname -s 2>/dev/null)" != "Linux" ]; then
+    emit WORKFLOW_STATUS unsupported_os
+    emit BEFORE_VERSION none
+    emit TARGET_VERSION "${TARGET_VERSION:-unknown}"
+    return 0
+  fi
+
+  if ! command -v cloudflared >/dev/null 2>&1; then
+    emit WORKFLOW_STATUS not_installed
+    emit BEFORE_VERSION none
+    emit TARGET_VERSION "${TARGET_VERSION:-unknown}"
+    emit INSTALL_TYPE none
+    return 0
+  fi
+
+  local before install_type
+  before="$(current_version)"
+  if is_dpkg; then install_type="dpkg"; else install_type="binary"; fi
+
+  emit BEFORE_VERSION "${before:-unknown}"
+  emit TARGET_VERSION "${TARGET_VERSION:-unknown}"
+  emit INSTALL_TYPE "$install_type"
+
+  if [ -n "${TARGET_VERSION:-}" ] && ver_ge "${before:-}" "$TARGET_VERSION"; then
+    emit WORKFLOW_STATUS already_latest
+    return 0
+  fi
+
+  # 分离执行升级: 升级重启 cloudflared 会断开本 SSH 会话(走隧道),
+  # 必须放进独立 systemd 单元里跑。
+  if run_root systemd-run --unit="cfup-$(date +%s)" --description="cloudflared upgrade" bash "$0" apply; then
+    emit WORKFLOW_STATUS upgrade_launched
+  else
+    emit WORKFLOW_STATUS launch_failed
+  fi
+}
+
+apply_mode() {
+  {
+    echo "STATUS=running"
+    echo "STARTED=$(date -u +%FT%TZ)"
+  } | run_root tee "$RESULT_FILE" >/dev/null
+
+  local status="failed" method="none" svc="none" after="unknown"
+
+  if is_dpkg; then
+    method="apt"
+    ensure_apt_repo || true
+    if run_root apt-get update -qq \
+       && run_root env DEBIAN_FRONTEND=noninteractive apt-get install -y --only-upgrade cloudflared; then
+      status="done"
+    else
+      status="apt_failed"
+    fi
+  else
+    local bin arch
+    bin="$(command -v cloudflared || true)"
+    case "$(uname -m)" in
+      x86_64|amd64) arch="amd64" ;;
+      aarch64|arm64) arch="arm64" ;;
+      *) arch="" ;;
+    esac
+    if [ -n "$bin" ] && [ -n "$arch" ]; then
+      method="binary"
+      if curl -fsSL "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${arch}" -o /tmp/cfup.new \
+         && /tmp/cfup.new --version >/dev/null 2>&1; then
+        if run_root install -m 0755 /tmp/cfup.new "$bin"; then
+          status="done"
+        else
+          status="install_failed"
+        fi
+      else
+        status="download_failed"
+      fi
+      rm -f /tmp/cfup.new
+    else
+      status="not_installed"
+    fi
+  fi
+
+  if [ "$status" = "done" ]; then
+    svc="$(restart_service)"
+  fi
+  after="$(current_version)"
+
+  {
+    echo "STATUS=${status}"
+    echo "AFTER_VERSION=${after:-unknown}"
+    echo "METHOD=${method}"
+    echo "SERVICE=${svc:-none}"
+    echo "FINISHED=$(date -u +%FT%TZ)"
+  } | run_root tee "$RESULT_FILE" >/dev/null
+}
+
+verify_mode() {
+  local now svc st aft meth
+  now="$(current_version)"
+  if run_root systemctl cat cloudflared.service >/dev/null 2>&1; then
+    svc="$(run_root systemctl is-active cloudflared.service 2>/dev/null || echo unknown)"
+  else
+    svc="none"
+  fi
+
+  st="missing"; aft=""; meth="unknown"
+  if [ -f "$RESULT_FILE" ]; then
+    st="$(grep -E '^STATUS=' "$RESULT_FILE" | tail -1 | cut -d= -f2-)"
+    aft="$(grep -E '^AFTER_VERSION=' "$RESULT_FILE" | tail -1 | cut -d= -f2-)"
+    meth="$(grep -E '^METHOD=' "$RESULT_FILE" | tail -1 | cut -d= -f2-)"
+    st="${st:-running}"
+  fi
+
+  emit AFTER_VERSION "${now:-${aft:-unknown}}"
+  emit APPLY_STATUS "${st:-missing}"
+  emit APPLY_METHOD "${meth:-unknown}"
+  emit SERVICE_ACTIVE "${svc:-none}"
+
+  if [ -n "${TARGET_VERSION:-}" ] && ver_ge "${now:-}" "$TARGET_VERSION"; then
+    emit WORKFLOW_STATUS success
+  elif [ "$st" = "running" ]; then
+    emit WORKFLOW_STATUS verify_pending
+  else
+    emit WORKFLOW_STATUS verify_failed
+  fi
+}
+
+case "$MODE" in
+  check)  check_mode ;;
+  apply)  apply_mode ;;
+  verify) verify_mode ;;
+  *) echo "unknown mode: $MODE" >&2; exit 2 ;;
+esac
