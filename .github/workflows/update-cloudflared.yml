@@ -160,6 +160,7 @@ jobs:
           CF_ACC_ID_HHWPXH: ${{ secrets.CF_ACCESS_ID_HHWPXH }}
           CF_ACC_SECRET_HHWPXH: ${{ secrets.CF_ACCESS_SECRET_HHWPXH }}
           SSH_USERNAME: ${{ matrix.cpu_type == 'amd64' && secrets.AMD_SSH_USERNAME || secrets.SSH_USERNAME }}
+          GCP_SSH_USERNAME: ${{ secrets.GCP_SSH_USERNAME }}
           SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }}
           HOST_NAME: ${{ matrix.name }}
           HOST_INDEX: ${{ matrix.index }}
@@ -179,6 +180,13 @@ jobs:
 
           echo "::add-mask::$SSH_HOST"
           echo "::add-mask::$SSH_PASSWORD"
+
+          # GCP/trustclaw 主机用 GCP 专属 SSH 用户(同 deploy-vless/hysteria-amd64)
+          if echo "$HOST_NAME" | grep -Eqi "GCP|trustclaw" && [ -n "${GCP_SSH_USERNAME:-}" ]; then
+            SSH_USERNAME="$GCP_SSH_USERNAME"
+            echo ">>> 使用 GCP/trustclaw 用户名"
+          fi
+          echo "::add-mask::$SSH_USERNAME"
 
           TUNNEL_PID=""
           start_proxy() {
