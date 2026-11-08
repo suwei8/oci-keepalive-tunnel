@@ -272,8 +272,62 @@ jobs:
           set -e
 
           if [ "$SSH_RC" -ne 0 ]; then
+            set +e
+            DIAG_FILE="results/host_${HOST_INDEX}.diag.log"
+
+            # 根据 ssh stderr 初步分类失败原因
+            REASON="ssh sampling failed"
+            if grep -qiE "permission denied" "$STDERR_FILE" 2>/dev/null; then
+              REASON="ssh auth failed (permission denied)"
+            elif grep -qiE "timed out|timeout" "$STDERR_FILE" 2>/dev/null; then
+              REASON="ssh connect timeout"
+            elif grep -qiE "connection refused" "$STDERR_FILE" 2>/dev/null; then
+              REASON="ssh connection refused"
+            elif grep -qiE "connection reset|closed by|connection closed|broken pipe" "$STDERR_FILE" 2>/dev/null; then
+              REASON="ssh connection reset (origin/tunnel likely down)"
+            elif grep -qiE "banner|handshake|kex|protocol" "$STDERR_FILE" 2>/dev/null; then
+              REASON="ssh handshake failed"
+            elif grep -qiE "command not found|no such file|not found" "$STDERR_FILE" 2>/dev/null; then
+              REASON="remote missing required tools"
+            fi
+
+            {
+              echo "=== classification: ${REASON} (ssh rc=${SSH_RC}) ==="
+              echo
+              echo "=== ssh stderr ==="
+              tail -40 "$STDERR_FILE"
+              echo
+              echo "=== cloudflared log tail ==="
+              tail -20 "$CLOUDFLARED_LOG"
+              echo
+              echo "=== ssh banner probe (127.0.0.1:${SSH_PORT}) ==="
+              timeout 8 bash -c 'exec 3<>/dev/tcp/127.0.0.1/'"${SSH_PORT}"' && IFS= read -r -t 5 line <&3 && echo "$line" && exec 3>&-' \
+                || echo "(no banner / connect failed)"
+              echo
+              echo "=== quick ssh echo probe ==="
+              sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -p "$SSH_PORT" "${SSH_USERNAME}@$SSH_DEST" \
+                "echo __SSH_OK__ && uname -a" 2>&1 | tail -20
+              ECHO_RC=${PIPESTATUS[0]}
+              echo "(echo probe rc=${ECHO_RC})"
+              if [ "$ECHO_RC" -eq 0 ]; then
+                echo
+                echo "=== remote env probe ==="
+                sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -p "$SSH_PORT" "${SSH_USERNAME}@$SSH_DEST" \
+                  "command -v bash; command -v awk; command -v nproc; head -1 /proc/stat; uptime" 2>&1 | tail -20
+              fi
+            } > "$DIAG_FILE" 2>&1
+
+            cat "$DIAG_FILE"
+
+            # 摘取 stderr 最后一行作为摘要附注
+            STDERR_TAIL="$(grep -vE '^[[:space:]]*$' "$STDERR_FILE" 2>/dev/null | tail -1 | head -c 120)"
+            NOTES="${REASON}"
+            if [ -n "$STDERR_TAIL" ]; then
+              NOTES="${REASON} | ${STDERR_TAIL}"
+            fi
+
             python3 scripts/resource_monitor_helper.py update-result \
-              "$RESULT_FILE" "remote_failed" "ssh sampling failed"
+              "$RESULT_FILE" "remote_failed" "$NOTES"
             exit 1
           fi
 
@@ -300,6 +354,7 @@ jobs:
             results/host_${{ matrix.index }}.samples
             results/host_${{ matrix.index }}.stderr.log
             results/host_${{ matrix.index }}.cloudflared.log
+            results/host_${{ matrix.index }}.diag.log
           if-no-files-found: ignore
           retention-days: 3
 
