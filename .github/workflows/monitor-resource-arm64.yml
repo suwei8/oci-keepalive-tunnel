@@ -61,6 +61,9 @@ jobs:
           elif target_index:
               selected_indexes.add(target_index)
 
+          # 无法采样的平台（如 Android/Termux uid 禁读 /proc）在此排除
+          excluded_names = {"cn-手机phj110"}
+
           matrix = []
           for index, host in enumerate(hosts):
               if selected_indexes and str(index) not in selected_indexes:
@@ -74,6 +77,8 @@ jobs:
               if not ssh_host or not host_name:
                   continue
               if "muse" in host_name.lower():
+                  continue
+              if host_name.lower() in excluded_names:
                   continue
               if (host.get("transport") or "").strip() == "direct":
                   continue
