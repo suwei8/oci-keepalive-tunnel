@@ -204,6 +204,10 @@ jobs:
              export MONITOR_DURATION_SECONDS='${MONITOR_DURATION_SECONDS}'; \
              bash -s" <<'EOF_REMOTE' >"$SAMPLE_FILE" 2>"$STDERR_FILE"
             set -eu
+            if [ ! -r /proc/stat ] || [ ! -r /proc/meminfo ]; then
+              echo "platform unsupported: /proc/stat or /proc/meminfo not readable (restricted uid, e.g. Android app)" >&2
+              exit 42
+            fi
             SAMPLE_INTERVAL_SECONDS="${SAMPLE_INTERVAL_SECONDS:-10}"
             MONITOR_DURATION_SECONDS="${MONITOR_DURATION_SECONDS:-300}"
             MAX_LOOPS=$((MONITOR_DURATION_SECONDS / SAMPLE_INTERVAL_SECONDS))
@@ -276,9 +280,15 @@ jobs:
             DIAG_FILE="results/host_${HOST_INDEX}.diag.log"
 
             # 根据 ssh stderr 初步分类失败原因
-            REASON="ssh sampling failed"
-            if grep -qiE "permission denied" "$STDERR_FILE" 2>/dev/null; then
+            if [ "$SSH_RC" -eq 42 ]; then
+              REASON="platform unsupported (/proc not readable)"
+            else
+              REASON="ssh sampling failed"
+            fi
+            if grep -qiE "permission denied \(publickey|permission denied \(password|please try again" "$STDERR_FILE" 2>/dev/null; then
               REASON="ssh auth failed (permission denied)"
+            elif grep -qiE "permission denied" "$STDERR_FILE" 2>/dev/null; then
+              REASON="remote permission denied (see diag log)"
             elif grep -qiE "timed out|timeout" "$STDERR_FILE" 2>/dev/null; then
               REASON="ssh connect timeout"
             elif grep -qiE "connection refused" "$STDERR_FILE" 2>/dev/null; then
