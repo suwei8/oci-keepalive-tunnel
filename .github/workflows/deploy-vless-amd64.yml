@@ -110,6 +110,7 @@ jobs:
 
             existing_id=$(echo "$dns_check" | jq -r '.result[0].id // empty')
             existing_content=$(echo "$dns_check" | jq -r '.result[0].content // empty')
+            [ -n "$existing_content" ] && echo "::add-mask::$existing_content"
 
             if [ -z "$existing_id" ]; then
               echo ">>> 创建 DNS ${record_type}: ${masked_name} -> ${record_content}"
@@ -241,6 +242,12 @@ jobs:
 
             HOST_IPV4=$(sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p "$SSH_PORT" "${CURRENT_SSH_USER}@$SSH_DEST" 'curl -s4 -m 10 ipv4.icanhazip.com || curl -s4 -m 10 ifconfig.me' 2>/dev/null | tr -d '[:space:]') || true
             HOST_IPV6=$(sshpass -p "$SSH_PASSWORD" ssh $SSH_OPTS -n -p "$SSH_PORT" "${CURRENT_SSH_USER}@$SSH_DEST" 'curl -s6 -m 10 ipv6.icanhazip.com || curl -s6 -m 10 ifconfig.me' 2>/dev/null | tr -d '[:space:]') || true
+            if [[ "$HOST_IPV4" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "::add-mask::$HOST_IPV4"
+            fi
+            if [[ "$HOST_IPV6" == *:* ]]; then
+              echo "::add-mask::$HOST_IPV6"
+            fi
             if [ -n "$HOST_IPV4" ] || [ -n "$HOST_IPV6" ]; then
               echo ">>> 主机公网 IP: IPv4=${HOST_IPV4:-none} IPv6=${HOST_IPV6:-none}"
             else
@@ -314,6 +321,7 @@ jobs:
                     
                     EXISTING_DNS_ID=$(echo "$DNS_CHECK" | jq -r '.result[0].id // empty')
                     EXISTING_DNS_CONTENT=$(echo "$DNS_CHECK" | jq -r '.result[0].content // empty')
+                    [ -n "$EXISTING_DNS_CONTENT" ] && echo "::add-mask::$EXISTING_DNS_CONTENT"
                     
                     if [ -z "$EXISTING_DNS_ID" ]; then
                       echo ">>> 创建缺失的 DNS CNAME: $MASKED_VLESS_HOST -> Tunnel"
@@ -476,6 +484,7 @@ jobs:
                 
                 EXISTING_DNS_ID=$(echo "$DNS_CHECK" | jq -r '.result[0].id // empty')
                 EXISTING_DNS_CONTENT=$(echo "$DNS_CHECK" | jq -r '.result[0].content // empty')
+                [ -n "$EXISTING_DNS_CONTENT" ] && echo "::add-mask::$EXISTING_DNS_CONTENT"
                 
                 if [ -z "$EXISTING_DNS_ID" ]; then
                   echo ">>> 创建 DNS CNAME: $MASKED_VLESS_HOST -> Tunnel"

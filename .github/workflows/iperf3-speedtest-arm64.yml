@@ -318,6 +318,7 @@ jobs:
                continue
             fi
             
+            [ -n "$OCI_PUBLIC_IP" ] && echo "::add-mask::$OCI_PUBLIC_IP"
             MASKED_IP=$(echo "$OCI_PUBLIC_IP" | awk -F. '{print $1"."$2"."$3".*"}')
             echo "✅ OCI 就绪: $MASKED_IP"
             

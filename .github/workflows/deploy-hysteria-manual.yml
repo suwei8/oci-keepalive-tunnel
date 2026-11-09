@@ -81,6 +81,8 @@ jobs:
         run: |
           # 🎭 Mask SSH Password in logs
           echo "::add-mask::$SSH_PASSWORD"
+          [ -n "$SSH_HOST" ] && echo "::add-mask::$SSH_HOST"
+          [ -n "$PROXY_DOMAIN" ] && echo "::add-mask::$PROXY_DOMAIN"
           
           SSH_OPTS="-o ConnectTimeout=30 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ServerAliveInterval=30"
           
