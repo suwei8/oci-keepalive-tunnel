@@ -87,6 +87,9 @@ jobs:
               "JP-东京1-arm2-Mini",
               "SG1-新加坡3-arm2",
               "US-凤凰城0权-arm",
+              # SG2-新加坡西3 是 agent-bridge 的开发环境（源码 + 运行二进制都在
+              # /home/sw/dev_root/agent-bridge），不参与机队二进制自动更新。
+              "SG2-新加坡西3",
           }
 
           matrix = []
