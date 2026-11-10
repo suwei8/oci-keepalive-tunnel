@@ -301,7 +301,30 @@ jobs:
                export DEVIN_CREDENTIALS_B64='${DEVIN_CREDENTIALS_B64}'
                export CLINE_CREDENTIALS_B64='${CLINE_CREDENTIALS_B64}'
                export CODEX_CREDENTIALS_B64='${CODEX_CREDENTIALS_B64}'
-               bash -s" \
+               # 防止同一台主机上并发跑两份更新脚本（run 42837809533 的事故）：
+               # cloudflared 隧道抖动时本地 ssh 以 rc=255 退出并重试，但远端
+               # sshd 未必感知连接已断，第一份脚本会继续跑；两份同时执行会争抢
+               # ~/.claude/downloads/claude-<version>-<arch>，报
+               # \"sha256sum: ... No such file or directory\" + \"Checksum verification failed\"
+               # 这种假故障。用 flock 串行化：重试会等旧进程结束再跑
+               # （脚本幂等，第二次通常全是 already_latest）。
+               set +e
+               if command -v flock >/dev/null 2>&1; then
+                 flock -w 900 -E 75 /tmp/agent-stack-update.lock bash -s
+                 update_rc=\$?
+               else
+                 echo \"[WARN] flock not found on host; running without lock\"
+                 bash -s
+                 update_rc=\$?
+               fi
+               set -e
+               if [ \"\$update_rc\" -eq 75 ]; then
+                 echo \"[WARN] /tmp/agent-stack-update.lock still held after 900s; another update run is active on this host, skipping this attempt\"
+                 echo \"RESULT_WORKFLOW_STATUS=skipped_locked\"
+                 echo \"RESULT_NOTES=another update run still active on host; skipped to avoid concurrent CLI installs\"
+                 exit 0
+               fi
+               exit \"\$update_rc\"" \
               < scripts/remote_update_agent_stack.sh >>"$REMOTE_OUTPUT_FILE" 2>&1
             REMOTE_RC=$?
           done
