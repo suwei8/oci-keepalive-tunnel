@@ -486,7 +486,9 @@ bridge_failed_due_to_invalid_token() {
 }
 
 has_bridge_related_install() {
-  if [ -d /home/sw/antigravity-Bridge ] || [ -x /home/sw/antigravity-bridge ] || [ -x /home/sw/agent-bridge ] || [ -x /home/sw/manage.sh ]; then
+  # 用 -e 而非 -x：安装过但权限被改坏（例如 scp 上传后没有 +x）也算已安装，
+  # 这样工作流会走修复路径，而不是被误判成「未安装」直接跳过。
+  if [ -d /home/sw/antigravity-Bridge ] || [ -e /home/sw/antigravity-bridge ] || [ -e /home/sw/agent-bridge ] || [ -e /home/sw/manage.sh ]; then
     return 0
   fi
   return 1
@@ -2116,6 +2118,14 @@ update_cline_cli() {
 main() {
   trap on_exit EXIT
   load_shell_profiles
+  # 没有 manage.sh、也没有 AgentBridge 二进制/旧目录 => 这台主机没装过 AgentBridge，
+  # 整轮直接跳过：不装任何 CLI、不动 crontab、不写凭证，只回报 skipped_no_install。
+  if ! has_bridge_related_install; then
+    RESULT_BRIDGE_STATUS="skipped_no_install"
+    add_note "no AgentBridge install (no manage.sh / agent-bridge); skipped all steps"
+    emit_results
+    exit 0
+  fi
   # Remove obsolete GEMINI.md if present
   [ -f /home/sw/.gemini/GEMINI.md ] && rm -f /home/sw/.gemini/GEMINI.md
   # Ensure nvm/node/npm available before any CLI install
