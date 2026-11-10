@@ -120,6 +120,8 @@ def cmd_build_summary(argv):
         )
 
     def skip_reason(item):
+        if item.get("workflow_status") == "skipped_locked":
+            return "另一份更新仍在跑（远端锁被占用），本轮跳过"
         env_status = item.get("env_status", "unknown")
         bridge_status = item.get("bridge_status", "unknown")
         codex_status = item.get("codex_status", "unknown")
@@ -189,7 +191,7 @@ def cmd_build_summary(argv):
     for item in results:
         workflow_status = item.get("workflow_status", "unknown")
 
-        if workflow_status == "success":
+        if workflow_status in {"success", "skipped_locked"}:
             if is_updated(item):
                 updated_lines.append(f"{host_label(item)} | {updated_reason(item)}")
             else:
