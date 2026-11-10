@@ -90,6 +90,9 @@ jobs:
               # SG2-新加坡西3 是 agent-bridge 的开发环境（源码 + 运行二进制都在
               # /home/sw/dev_root/agent-bridge），不参与机队二进制自动更新。
               "SG2-新加坡西3",
+              # CN-手机PHJ110 是插在玩客云上的 Termux 手机（跑 cliapi，只有 u0_a244，
+              # 没有 sw 账号也没有 agent-bridge），SSH 必然认证失败，直接排除。
+              "CN-手机PHJ110",
           }
 
           matrix = []
