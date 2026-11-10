@@ -1039,7 +1039,6 @@ token_path.write_text(json.dumps(token_data))
 }
 
 update_bridge() {
-  local bridge_env_sync_result="unchanged"
 
   cleanup_forbidden_bridge_files
 
@@ -1110,17 +1109,9 @@ update_bridge() {
     return
   fi
 
-  bridge_env_sync_result="$(sync_agentbridge_claude_env || echo unchanged)"
 
   if has_running_bridge_process && bridge_files_present && ! has_legacy_bridge_artifacts && bridge_version_matches_latest "$RESULT_BRIDGE_RELEASE_TAG"; then
-    if [ "$bridge_env_sync_result" = "yes" ]; then
-      if ! ensure_agentbridge_effective "restart"; then
-        RESULT_BRIDGE_STATUS="bridge_failed"
-        RESULT_WORKFLOW_STATUS="bridge_failed"
-        add_note "failed to restart bridge after env sync"
-        return
-      fi
-    elif ! ensure_agentbridge_effective "start_only_if_missing"; then
+    if ! ensure_agentbridge_effective "start_only_if_missing"; then
       RESULT_BRIDGE_STATUS="bridge_failed"
       RESULT_WORKFLOW_STATUS="bridge_failed"
       add_note "failed to normalize bridge processes"
@@ -1228,14 +1219,12 @@ parse_kilocode_version() {
 }
 
 write_codex_config() {
-  local codex_base_url="${CLIPROXYAPI_BASE_URL:-}"
-
   mkdir -p /home/sw/.codex
   umask 077
 
   # 优先使用本机已登录 ChatGPT 账户的凭证包：
   #   tar -czf - -C ~ .codex/auth.json .codex/config.toml | base64 -w0
-  # 未提供时回退到旧的 cliproxyapi API-key 写法。
+  # 未提供 CODEX_CREDENTIALS_B64 时不做任何配置（不再回退到旧 cliproxyapi 网关）
   if [ -n "${CODEX_CREDENTIALS_B64:-}" ]; then
     log_info "Deploying Codex credentials from CODEX_CREDENTIALS_B64"
     mkdir -p /tmp/codex_creds
@@ -1249,37 +1238,11 @@ write_codex_config() {
       return 0
     fi
     rm -rf /tmp/codex_creds
-    add_note "CODEX_CREDENTIALS_B64 decode failed, falling back to api config"
+    add_note "CODEX_CREDENTIALS_B64 decode failed, skipped codex config"
   fi
 
-  codex_base_url="$(printf '%s' "$codex_base_url" | sed -E 's#/v1/?$##')/v1"
-
-  cat > /home/sw/.codex/auth.json <<EOF
-{
-  "OPENAI_API_KEY": "${CLIPROXYAPI_OPENAI_API_KEY}"
-}
-EOF
-
-  cat > /home/sw/.codex/config.toml <<EOF
-approval_policy = "never"
-
-sandbox_mode = "danger-full-access"
-
-model_provider = "cliproxyapi"
-model = "gpt-5.4"
-model_reasoning_effort = "high"
-
-[model_providers.cliproxyapi]
-name = "cliproxyapi"
-base_url = "${codex_base_url}"
-wire_api = "responses"
-
-[projects."/home/sw"]
-trust_level = "trusted"
-
-[projects."/home/sw/dev_root"]
-trust_level = "trusted"
-EOF
+  add_note "CODEX_CREDENTIALS_B64 missing, skipped codex config"
+  return 0
 }
 
 parse_claude_version() {
@@ -1296,78 +1259,6 @@ run_claude_installer() {
   fi
 
   bash -lc "$install_cmd"
-}
-
-write_claude_shell_config() {
-  local bashrc="/home/sw/.bashrc"
-  local anthropic_base_url="${CLIPROXYAPI_BASE_URL:-}"
-  local anthropic_auth_token="${CLIPROXYAPI_OPENAI_API_KEY:-}"
-
-  if [ -z "$anthropic_base_url" ] || [ -z "$anthropic_auth_token" ]; then
-    return 1
-  fi
-
-  anthropic_base_url="$(printf '%s' "$anthropic_base_url" | sed -E 's#/v1/?$##')"
-
-  python3 - "$bashrc" "$anthropic_base_url" "$anthropic_auth_token" <<'PY'
-import re
-import sys
-from pathlib import Path
-
-path = Path(sys.argv[1])
-anthropic_base_url = sys.argv[2]
-anthropic_auth_token = sys.argv[3]
-marker_start = "# === CLAUDE CONFIG START ==="
-marker_end = "# === CLAUDE CONFIG END ==="
-block = f"""\
-{marker_start}
-export PATH="$HOME/.local/bin:$PATH"
-export CLAUDE_BASE_URL="{anthropic_base_url}"
-export CLAUDE_AUTH_TOKEN="{anthropic_auth_token}"
-
-claude() {{
-    (
-        unset ANTHROPIC_AUTH_TOKEN ANTHROPIC_API_KEY ANTHROPIC_BASE_URL
-        ANTHROPIC_BASE_URL="{anthropic_base_url}" \\
-        ANTHROPIC_API_KEY="{anthropic_auth_token}" \\
-        command claude "$@"
-    )
-}}
-
-alias clauded="claude --dangerously-skip-permissions"
-{marker_end}
-"""
-
-text = path.read_text() if path.exists() else ""
-text = re.sub(
-    rf"{re.escape(marker_start)}\n.*?{re.escape(marker_end)}\n?",
-    "",
-    text,
-    flags=re.S,
-)
-text = re.sub(r'^export PATH="\$HOME/\.local/bin:\$PATH"\n?', "", text, flags=re.M)
-text = re.sub(r'^export ANTHROPIC_BASE_URL=.*\n?', "", text, flags=re.M)
-text = re.sub(r'^export ANTHROPIC_AUTH_TOKEN=.*\n?', "", text, flags=re.M)
-text = re.sub(r'^export CLAUDE_BASE_URL=.*\n?', "", text, flags=re.M)
-text = re.sub(r'^export CLAUDE_AUTH_TOKEN=.*\n?', "", text, flags=re.M)
-
-updated = text
-if updated and not updated.endswith("\n"):
-    updated += "\n"
-updated += block
-
-path.write_text(updated)
-PY
-
-  export PATH="/home/sw/.local/bin:${PATH}"
-  unset ANTHROPIC_AUTH_TOKEN ANTHROPIC_API_KEY ANTHROPIC_BASE_URL
-  set +u
-  [ -f "$bashrc" ] && source "$bashrc" >/dev/null 2>&1 || true
-  set -u
-  if [ -x /home/sw/manage.sh ]; then
-    /home/sw/manage.sh restart >/dev/null 2>&1 || true
-  fi
-  hash -r || true
 }
 
 strip_api_v1_suffix() {
@@ -1437,44 +1328,6 @@ if changed:
 else:
     print("unchanged")
 PY
-}
-
-sync_agentbridge_claude_env() {
-  local env_file="/home/sw/.env"
-  local claude_base_url=""
-  local claude_api_key=""
-  local changed="no"
-  local output=""
-
-  [ -f "$env_file" ] || return 0
-
-  claude_base_url="$(strip_api_v1_suffix "${CLIPROXYAPI_BASE_URL:-}")"
-  claude_api_key="${CLIPROXYAPI_OPENAI_API_KEY:-}"
-
-  if [ -z "$claude_base_url" ] || [ -z "$claude_api_key" ]; then
-    echo "unchanged"
-    return 0
-  fi
-
-  for key in CLAUDE_BASE_URL ANTHROPIC_BASE_URL; do
-    output="$(upsert_env_file_value "$key" "$claude_base_url")"
-    if [ "$output" = "updated" ]; then
-      changed="yes"
-    fi
-  done
-
-  for key in CLAUDE_API_KEY ANTHROPIC_API_KEY; do
-    output="$(upsert_env_file_value "$key" "$claude_api_key")"
-    if [ "$output" = "updated" ]; then
-      changed="yes"
-    fi
-  done
-
-  if [ "$changed" = "yes" ]; then
-    add_note "synced AgentBridge Claude env"
-  fi
-
-  echo "$changed"
 }
 
 parse_windsurf_version() {
@@ -1548,8 +1401,6 @@ install_windsurf_package() {
 write_windsurf_mcp_configs() {
   local token=""
   local chat_ids=""
-  local claude_base_url=""
-  local claude_api_key=""
   local codex_command=""
   local claude_command=""
   local kilo_command=""
@@ -1570,8 +1421,6 @@ write_windsurf_mcp_configs() {
     return 1
   fi
 
-  claude_base_url="$(strip_api_v1_suffix "${CLIPROXYAPI_BASE_URL:-}")"
-  claude_api_key="${CLIPROXYAPI_OPENAI_API_KEY:-}"
   codex_command="$(command -v codex || true)"
   claude_command="$(command -v claude || true)"
   kilo_command="$(command -v kilo || true)"
@@ -1608,8 +1457,6 @@ write_windsurf_mcp_configs() {
         "OPENCODE_COMMAND": "$opencode_command",
         "DEVIN_COMMAND": "$devin_command",
         "CLINE_COMMAND": "$cline_command",
-        "CLAUDE_BASE_URL": "$claude_base_url",
-        "CLAUDE_API_KEY": "$claude_api_key",
         "AGENTBRIDGE_CLOUD_ENABLED": "${AGENTBRIDGE_CLOUD_ENABLED:-0}",
         "AGENTBRIDGE_GUARDIAN_HEARTBEAT_SECONDS": "${AGENTBRIDGE_GUARDIAN_HEARTBEAT_SECONDS:-900}",
         "AGENTBRIDGE_GUARDIAN_METRICS_SECONDS": "${AGENTBRIDGE_GUARDIAN_METRICS_SECONDS:-1800}",
@@ -1642,8 +1489,6 @@ EOF
         "OPENCODE_COMMAND": "$opencode_command",
         "DEVIN_COMMAND": "$devin_command",
         "CLINE_COMMAND": "$cline_command",
-        "CLAUDE_BASE_URL": "$claude_base_url",
-        "CLAUDE_API_KEY": "$claude_api_key",
         "AGENTBRIDGE_CLOUD_ENABLED": "${AGENTBRIDGE_CLOUD_ENABLED:-0}",
         "AGENTBRIDGE_GUARDIAN_HEARTBEAT_SECONDS": "${AGENTBRIDGE_GUARDIAN_HEARTBEAT_SECONDS:-900}",
         "AGENTBRIDGE_GUARDIAN_METRICS_SECONDS": "${AGENTBRIDGE_GUARDIAN_METRICS_SECONDS:-1800}",
@@ -1921,12 +1766,6 @@ update_claude() {
   if [ -z "$current_version" ]; then
     if run_claude_installer; then
       hash -r || true
-      if ! write_claude_shell_config; then
-        RESULT_CLAUDE_STATUS="claude_failed"
-        RESULT_WORKFLOW_STATUS="claude_failed"
-        add_note "missing CLIPROXYAPI secrets for claude config"
-        return
-      fi
       load_shell_profiles
       RESULT_CLAUDE_STATUS="success"
     else
@@ -1936,13 +1775,6 @@ update_claude() {
       return
     fi
   else
-    if ! write_claude_shell_config; then
-      RESULT_CLAUDE_STATUS="claude_failed"
-      RESULT_WORKFLOW_STATUS="claude_failed"
-      add_note "missing CLIPROXYAPI secrets for claude config"
-      return
-    fi
-
     if [ -z "$RESULT_CLAUDE_TARGET_VERSION" ] || [ "$RESULT_CLAUDE_TARGET_VERSION" = "unknown" ]; then
       should_update="yes"
       add_note "claude latest version unresolved, ran update"
@@ -1972,12 +1804,6 @@ update_claude() {
     fi
   fi
 
-  if ! write_claude_shell_config; then
-    RESULT_CLAUDE_STATUS="claude_failed"
-    RESULT_WORKFLOW_STATUS="claude_failed"
-    add_note "missing CLIPROXYAPI secrets for claude config"
-    return
-  fi
   load_shell_profiles
   RESULT_CLAUDE_VERSION="$(parse_claude_version || true)"
   if [ -z "$RESULT_CLAUDE_VERSION" ]; then
